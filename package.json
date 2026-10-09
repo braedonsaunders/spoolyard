@@ -1,7 +1,7 @@
 {
   "name": "spoolyard",
   "productName": "Spoolyard",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Open-source piping isometrics and spool fabrication drawings \u2014 in the browser, on the desktop, or inside BidWright.",
   "author": "Braedon Saunders",
   "license": "AGPL-3.0-only",
@@ -83,7 +83,7 @@
       "icon": "build/icon.png"
     },
     "dmg": {
-      "title": "Spoolyard ${version}"
+      "title": "Spoolyard ${version}${arch}"
     },
     "win": {
       "target": [
