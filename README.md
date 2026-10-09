@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="assets/spoolyard-title.svg" alt="Spoolyard — piping isometrics and spool fabrication" width="880">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/spoolyard-logo-dark.svg" />
+    <img src="assets/spoolyard-logo.svg" alt="spoolyard — piping isometrics and spool drawings" width="520" />
+  </picture>
 </p>
 
 <p align="center">
@@ -21,6 +24,8 @@ It runs in the browser, as a desktop app, and inside [BidWright](https://github.
 where it powers piping isometrics in Files and Tools.
 
 ![The Spoolyard editor](docs/editor.png)
+
+![The Spoolyard start screen](docs/home.png)
 
 ## What it does
 

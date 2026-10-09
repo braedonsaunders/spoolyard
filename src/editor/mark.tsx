@@ -1,21 +1,43 @@
-/** The Spoolyard mark: an isometric spool — two runs, a riser and welded flanges — on a teal tile. */
-export function SpoolyardMark({ size = 22, title }: { size?: number; title?: string }) {
+import { MARK } from "./mark-geometry";
+
+/**
+ * The Spoolyard mark: an isometric pipe spool — a pipe between two bolted flanges — drawn in true
+ * isometric with hidden lines resolved by painting back to front. `animated` draws it in and pops the
+ * bolts in cross-pattern tightening order (used by the splash).
+ */
+export function SpoolyardMark({
+  size = 24,
+  title,
+  animated = false,
+  className,
+}: {
+  size?: number;
+  title?: string;
+  animated?: boolean;
+  className?: string;
+}) {
+  const a = (delay: number, kind = "o") =>
+    animated ? { className: "sy-mark-" + kind, style: { animationDelay: delay + "s" } } : {};
   return (
-    <svg width={size} height={size} viewBox="0 0 32 32" role={title ? "img" : undefined} aria-hidden={title ? undefined : true}>
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 64 64"
+      className={"sy-mark" + (className ? " " + className : "")}
+      role={title ? "img" : undefined}
+      aria-hidden={title ? undefined : true}
+    >
       {title && <title>{title}</title>}
-      <defs>
-        <linearGradient id="spoolyard-tile" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="#16b3c9" />
-          <stop offset="1" stopColor="#0b6f8f" />
-        </linearGradient>
-      </defs>
-      <rect width="32" height="32" rx="8" fill="url(#spoolyard-tile)" />
-      <g transform="translate(0 -4)">
-      <path d="M6.5 21.5 L13 25.2 L13 14.4 L19.5 18.1 L25.5 14.6" fill="none" stroke="#fff" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M7.4 19.9 L5.6 23.1 M24.6 13.1 L26.4 16.2" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" />
-      <circle cx="13" cy="25.2" r="1.7" fill="#bff3fb" />
-      <circle cx="13" cy="14.4" r="1.7" fill="#bff3fb" />
-      <circle cx="19.5" cy="18.1" r="1.7" fill="#bff3fb" />
+      <g stroke="var(--sy-mark-ink)" strokeWidth={MARK.stroke} strokeLinejoin="round" fill="var(--sy-mark-paper)">
+        <path {...a(0.05)} pathLength={1} d={MARK.backRim} />
+        <path {...a(0.15)} pathLength={1} d={MARK.backFace} />
+        <path {...a(0.3)} pathLength={1} d={MARK.pipe} />
+        <path {...a(0.45)} pathLength={1} d={MARK.frontRim} />
+        <path {...a(0.55)} pathLength={1} d={MARK.frontFace} />
+        <path {...a(0.7, "bore")} d={MARK.bore} fill="var(--sy-mark-hole)" />
+        {MARK.bolts.map(([x, y], i) => (
+          <circle key={i} {...a(0.8 + i * 0.09, "bolt")} cx={x} cy={y} r={MARK.boltR} fill="var(--sy-accent)" stroke="none" />
+        ))}
       </g>
     </svg>
   );

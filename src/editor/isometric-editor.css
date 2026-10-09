@@ -1,4 +1,8 @@
 .iso-editor {
+  --sy-mark-ink: rgb(var(--ch-fg));
+  --sy-mark-paper: rgb(var(--ch-surface));
+  --sy-mark-hole: rgb(var(--ch-fg));
+  --sy-accent: #ee6a1c;
   container-type: inline-size;
   container-name: iso;
   --iso-canvas: #f8fafc;

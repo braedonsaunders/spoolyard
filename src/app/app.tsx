@@ -5,6 +5,8 @@ import { Home } from "./home";
 import { Splash } from "./splash";
 import { getDrawing, putDrawing, type StoredDrawing } from "./storage";
 import { desktop, openFile, saveFile } from "./platform";
+import { newIsoFromTemplate, type DrawingTemplate } from "../editor/library";
+import { assetUrl } from "../editor/assets";
 
 interface Open {
   id: string;
@@ -31,8 +33,8 @@ export function App() {
     localStorage.setItem(THEME_KEY, dark ? "dark" : "light");
   }, [dark]);
   useEffect(() => {
-    const leave = setTimeout(() => setSplash("leaving"), 1700);
-    const gone = setTimeout(() => setSplash("gone"), 2200);
+    const leave = setTimeout(() => setSplash("leaving"), 1900);
+    const gone = setTimeout(() => setSplash("gone"), 2400);
     return () => {
       clearTimeout(leave);
       clearTimeout(gone);
@@ -50,6 +52,35 @@ export function App() {
     try {
       const file = await openFile();
       if (file) start({ id: crypto.randomUUID(), name: piping(file.name), source: file.content, handle: file.handle });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [start]);
+
+  const newDrawing = useCallback(
+    async (template?: DrawingTemplate) => {
+      const id = crypto.randomUUID();
+      if (!template) return start({ id, name: "Untitled isometric.piping", source: "" });
+      try {
+        const source = JSON.stringify(await newIsoFromTemplate(template));
+        const name = "Untitled " + template.name.toLowerCase().replace(" · ", " ") + ".piping";
+        await putDrawing({ id, name, content: source, updatedAt: Date.now() });
+        start({ id, name, source });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [start],
+  );
+  const openSample = useCallback(async () => {
+    try {
+      const response = await fetch(assetUrl("samples/cooling-water-return.piping"));
+      if (!response.ok) throw new Error("The sample drawing could not load.");
+      const source = await response.text();
+      const id = crypto.randomUUID(),
+        name = "Cooling water return (sample).piping";
+      await putDrawing({ id, name, content: source, updatedAt: Date.now() });
+      start({ id, name, source });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -123,8 +154,9 @@ export function App() {
         <Home
           dark={dark}
           onTheme={() => setDark((v) => !v)}
-          onNew={() => start({ id: crypto.randomUUID(), name: "Untitled isometric.piping", source: "" })}
+          onNew={(template) => void newDrawing(template)}
           onOpenFile={() => void openFromDisk()}
+          onOpenSample={() => void openSample()}
           onOpenStored={(d: StoredDrawing) => start({ id: d.id, name: d.name, source: d.content })}
         />
       )}

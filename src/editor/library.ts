@@ -70,3 +70,33 @@ export async function newIsoWithDefaultSpec(): Promise<IsoDocument> {
 /** Most routing starts at 2″; small-bore-first specifications should not default to ⅛″. */
 export const defaultNps = (spec: PipeSpec) =>
   spec.sizes.find((s) => s.nps === 2)?.nps ?? spec.sizes[0]?.nps ?? 2;
+
+export interface DrawingTemplate {
+  id: string;
+  name: string;
+  detail: string;
+  spec: string;
+  paper: NonNullable<IsoDocument["paper"]>;
+  units: IsoDocument["units"];
+}
+/** Starting points offered by New: sheet size, units and specification. */
+export const TEMPLATES: DrawingTemplate[] = [
+  { id: "metric-tabloid", name: "Metric · Tabloid", detail: "11×17 sheet · millimetres · Spec A carbon steel", spec: "a", paper: "tabloid", units: "mm" },
+  { id: "imperial-tabloid", name: "Imperial · Tabloid", detail: "11×17 sheet · feet & inches · Spec A carbon steel", spec: "a", paper: "tabloid", units: "imperial" },
+  { id: "imperial-letter", name: "Imperial · Letter", detail: "8½×11 sheet · feet & inches · Spec A carbon steel", spec: "a", paper: "letter", units: "imperial" },
+  { id: "metric-a3", name: "Metric · A3", detail: "A3 sheet · millimetres · Spec A carbon steel", spec: "a", paper: "a3", units: "mm" },
+  { id: "stainless-tabloid", name: "Stainless · Tabloid", detail: "11×17 sheet · millimetres · Spec SS-A stainless", spec: "ss-a", paper: "tabloid", units: "mm" },
+];
+
+export async function newIsoFromTemplate(template: DrawingTemplate, title = "Piping isometric"): Promise<IsoDocument> {
+  const doc = newIso();
+  doc.title = title;
+  doc.paper = template.paper;
+  doc.units = template.units;
+  try {
+    doc.specs = [await loadLibrarySpec(template.spec)];
+  } catch {
+    // Keep the bundled Schedule 40 specification.
+  }
+  return doc;
+}
