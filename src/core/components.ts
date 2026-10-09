@@ -392,23 +392,23 @@ export const COMPONENT_TYPES: ComponentType[] = [
   },
   {
     code: 'C-SWG',
-    label: 'Concentric swage (alternate)',
+    label: 'Concentric swage',
     category: 'reducers',
     kind: 'reducer',
     endPrep: 'PLAIN',
     reducing: true,
     ports: 2,
-    description: 'Concentric swage nipple, alternate spec file.'
+    description: 'MSS SP-95 concentric swage nipple.'
   },
   {
     code: 'E-SWG',
-    label: 'Eccentric swage (alternate)',
+    label: 'Eccentric swage',
     category: 'reducers',
     kind: 'reducer',
     endPrep: 'PLAIN',
     reducing: true,
     ports: 2,
-    description: 'Eccentric swage nipple, alternate spec file.'
+    description: 'MSS SP-95 eccentric swage nipple.'
   },
   {
     code: 'R-CPLGSW',
@@ -1265,7 +1265,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     category: 'annotation',
     kind: 'annotation',
     ports: 0,
-    description: 'Heat-traced insulation symbol (guide: "Pipe Insulation-Traced").',
+    description: 'Heat-traced insulation on a pipe.',
   },
   {
     code: 'FW',
@@ -1289,15 +1289,15 @@ export const COMPONENT_TYPES: ComponentType[] = [
     category: 'annotation',
     kind: 'annotation',
     ports: 0,
-    description: 'Weld number tag (styles A–H).',
+    description: 'Weld number tag.',
   },
   {
     code: 'WLD-TAG',
-    label: 'Weld tag, alternate',
+    label: 'Weld tag',
     category: 'annotation',
     kind: 'annotation',
     ports: 0,
-    description: 'Weld number tag, alternate styles A–E.',
+    description: 'Weld number tag.',
   },
   {
     code: 'GASKTK',
@@ -1321,7 +1321,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     category: 'annotation',
     kind: 'annotation',
     ports: 0,
-    description: 'Pipe end / pipe break symbol (single and pair).',
+    description: 'Pipe end or continuation break.',
   },
   {
     code: 'GRND-SYM',
@@ -1337,7 +1337,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     category: 'annotation',
     kind: 'annotation',
     ports: 0,
-    description: 'Specification break symbol (two styles).',
+    description: 'Specification break.',
   },
   {
     code: 'CL',
@@ -1385,7 +1385,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     category: 'annotation',
     kind: 'annotation',
     ports: 0,
-    description: 'PL marker (styles 1–3); purpose not documented in the trial.',
+    description: 'PL marker.',
   },
   {
     code: 'AR',
@@ -1449,15 +1449,15 @@ export const COMPONENT_TYPES: ComponentType[] = [
     category: 'annotation',
     kind: 'annotation',
     ports: 0,
-    description: 'North arrow (eight orientations N1–N8).',
+    description: 'North arrow.',
   },
   {
     code: 'NORTH1',
-    label: 'North arrow, alternate',
+    label: 'North arrow',
     category: 'annotation',
     kind: 'annotation',
     ports: 0,
-    description: 'North arrow, alternate style.',
+    description: 'North arrow.',
   },
   {
     code: 'B-NORTH',
@@ -1473,7 +1473,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     category: 'annotation',
     kind: 'annotation',
     ports: 0,
-    description: 'Single-line balloon (variants A–D).',
+    description: 'Single-line callout balloon.',
   },
   {
     code: 'BAL21',
@@ -1481,7 +1481,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     category: 'annotation',
     kind: 'annotation',
     ports: 0,
-    description: 'Double-line balloon (variants A–H).',
+    description: 'Double-line callout balloon.',
   },
   {
     code: 'BAL3',
@@ -1489,7 +1489,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     category: 'annotation',
     kind: 'annotation',
     ports: 0,
-    description: 'Hexagonal balloon (variants A–D).',
+    description: 'Hexagonal callout balloon.',
   },
   {
     code: 'BAL4',
@@ -1497,7 +1497,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     category: 'annotation',
     kind: 'annotation',
     ports: 0,
-    description: 'Hexagonal balloon with line (variants A–D).',
+    description: 'Hexagonal callout balloon with a leader.',
   },
   {
     code: 'MTO-BAL',
