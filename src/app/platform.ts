@@ -8,8 +8,9 @@ export interface OpenedFile {
 interface DesktopBridge {
   openFile(): Promise<{ name: string; content: string; path: string } | null>;
   saveFile(options: { content: string; name: string; path?: string }): Promise<{ path: string; name: string } | null>;
-  onOpenFile(listener: (file: { name: string; content: string; path: string }) => void): void;
-  onTheme?(listener: (theme: "light" | "dark") => void): void;
+  onOpenFile(listener: (file: { name: string; content: string; path: string }) => void): () => void;
+  onTheme?(listener: (theme: "light" | "dark") => void): () => void;
+  onBeforeClose?(listener: () => Promise<boolean>): () => void;
 }
 declare global {
   interface Window {
@@ -39,11 +40,14 @@ export async function openFile(): Promise<OpenedFile | null> {
       throw e;
     }
   }
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const input = Object.assign(document.createElement("input"), { type: "file", accept: ACCEPT });
+    input.oncancel = () => resolve(null);
     input.onchange = async () => {
-      const file = input.files?.[0];
-      resolve(file ? { name: file.name, content: await file.text() } : null);
+      try {
+        const file = input.files?.[0];
+        resolve(file ? { name: file.name, content: await file.text() } : null);
+      } catch (e) { reject(e); }
     };
     input.click();
   });

@@ -1004,8 +1004,28 @@ export function formatLength(mm: number, units: IsoDocument['units']): string {
 /** Text for a length field. Millimetres stay a plain number; feet and inches use the drawing's notation. */
 export function lengthInputValue(mm: number, units: IsoDocument['units']): string {
   if (!Number.isFinite(mm)) return ''
-  if (units === 'mm') return String(round(mm, 3))
-  return formatLength(mm, units)
+  if (units === 'mm') return String(round(mm, 6))
+  const fractional = formatLength(mm, units)
+  // Keep familiar fractions when exact; decimal inches retain catalogue and metric precision.
+  return Math.abs(parseLength(fractional, units, true) - mm) < 1e-7
+    ? fractional
+    : `${round(mm / 25.4, 8)} in`
+}
+/** Small fabrication allowances must never round down to a displayed zero. */
+export function formatAllowance(mm: number, units: IsoDocument['units']): string {
+  if (!Number.isFinite(mm)) return '—'
+  return lengthInputValue(mm, units) + (units === 'mm' ? ' mm' : '')
+}
+
+/** Display units only; quantities, mass, area and costing in the model remain SI. */
+export function displayBom(row: BomRow, units: IsoDocument['units']) {
+  const imperial = units === 'imperial'
+  return {
+    quantity: row.qty / (imperial && row.unit === 'm' ? 0.3048 : 1),
+    unit: imperial && row.unit === 'm' ? 'ft' : row.unit,
+    weight: row.weightKg == null ? null : row.weightKg / (imperial ? 0.45359237 : 1),
+    area: row.areaM2 == null ? null : row.areaM2 / (imperial ? 0.09290304 : 1),
+  }
 }
 export function parseLength(value: string, units: IsoDocument['units'], allowNegative = false): number {
   let s = value.trim().toLowerCase().replace(/[′']/g, 'ft').replace(/[″"]/g, 'in').replace(/−/g, '-')
@@ -1312,29 +1332,31 @@ export function bomCsv(
       'NPS',
       'Quantity',
       'Unit',
-      'Weight kg',
-      'Surface m2',
+      doc.units === 'imperial' ? 'Weight lb' : 'Weight kg',
+      doc.units === 'imperial' ? 'Surface ft2' : 'Surface m2',
       'Cost',
       'Labor hours',
       'Heat',
       'Spool',
       'Line'
     ],
-    ...bom(doc, group).map(r => [
+    ...bom(doc, group).map(r => {
+      const shown = displayBom(r, doc.units)
+      return [
       r.item,
       r.description,
       r.spec,
       r.nps,
-      Number.isFinite(r.qty) ? round(r.qty, 3) : 'MISSING',
-      r.unit,
-      r.weightKg == null ? 'MISSING' : round(r.weightKg),
-      r.areaM2 == null ? 'MISSING' : round(r.areaM2, 3),
+      Number.isFinite(shown.quantity) ? round(shown.quantity, 3) : 'MISSING',
+      shown.unit,
+      shown.weight == null ? 'MISSING' : round(shown.weight),
+      shown.area == null ? 'MISSING' : round(shown.area, 3),
       round(r.cost),
       round(r.hours),
       r.heat,
       r.spool,
       r.line
-    ])
+    ]})
   ])
 }
 export function cutCsv(doc: IsoDocument): string {
@@ -1369,8 +1391,8 @@ export function cutCsv(doc: IsoDocument): string {
           r.nps,
           r.specId,
           length(c.overall),
-          ...c.takeouts.map(v => Number.isFinite(v) ? length(v) : 'MISSING'),
-          ...c.gaps.map(length),
+          ...c.takeouts.map(v => Number.isFinite(v) ? doc.units === 'mm' ? round(v) : formatAllowance(v, doc.units) : 'MISSING'),
+          ...c.gaps.map(v => doc.units === 'mm' ? round(v) : formatAllowance(v, doc.units)),
           Number.isFinite(c.cut) && c.cut > 0 ? length(c.cut) : 'MISSING',
           r.heat,
           prepAt(r, 0),

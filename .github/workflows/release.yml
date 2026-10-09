@@ -24,7 +24,8 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec vite build
+      - run: pnpm test
+      - run: pnpm build
       - run: pnpm exec electron-builder ${{ matrix.target }} --publish never
         env:
           # Unsigned builds until code-signing certificates are configured.

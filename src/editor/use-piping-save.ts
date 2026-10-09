@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import type { IsoDocument } from "../core/model";
+import { SaveQueue } from "./save-queue";
 
 /** Debounced autosave. A freshly created drawing (`isNew`) is saved as soon as it opens. */
 export function usePipingSave(
@@ -10,36 +12,29 @@ export function usePipingSave(
 ) {
   const [status, setStatus] = useState<"opening" | "saved" | "unsaved" | "saving" | "error">("opening");
   const [error, setError] = useState("");
-  const ref = useRef({ content: "", saved: "", pending: "", inFlight: null as Promise<void> | null, mounted: true, onSave });
-  ref.current.onSave = onSave;
-  if (ready) ref.current.content = JSON.stringify(doc);
+  const ref = useRef({ queue: new SaveQueue(onSave), mounted: true, ready });
+  ref.current.queue.write = onSave;
+  ref.current.ready = ready;
+  if (ready) ref.current.queue.content = JSON.stringify(doc);
   const flush = useCallback((): Promise<void> => {
     const state = ref.current;
-    state.pending = state.content;
-    if (state.inFlight) return state.inFlight;
-    if (!state.pending || state.pending === state.saved) return Promise.resolve();
-    state.inFlight = Promise.resolve().then(async () => {
-      try {
-        while (state.pending && state.pending !== state.saved) {
-          const value = state.pending;
-          if (state.mounted) { setStatus("saving"); setError(""); }
-          await state.onSave(value);
-          state.saved = value;
-        }
-        if (state.mounted) setStatus("saved");
-      } catch (e) {
+    if (!state.ready) return Promise.resolve();
+    if (!state.queue.dirty) return state.queue.flush();
+    if (state.mounted) { setStatus("saving"); setError(""); }
+    return state.queue.flush().then(
+      () => { if (state.mounted) setStatus(state.queue.dirty ? "unsaved" : "saved"); },
+      (e) => {
         if (state.mounted) {
           setStatus("error");
           setError(e instanceof Error ? e.message : "Save failed");
         }
         throw e;
-      } finally { state.inFlight = null; }
-    });
-    return state.inFlight;
+      },
+    );
   }, []);
   useEffect(() => {
     if (!ready) return;
-    const state = ref.current;
+    const state = ref.current.queue;
     if (!state.saved) {
       state.saved = isNew ? " " : state.content;
       if (!isNew) {
@@ -47,7 +42,7 @@ export function usePipingSave(
         return;
       }
     }
-    if (state.content === state.saved) return;
+    if (state.content === state.saved) { setStatus(state.saving ? "saving" : "saved"); return; }
     setStatus("unsaved");
     const timer = setTimeout(() => void flush().catch(() => undefined), 700);
     return () => clearTimeout(timer);
@@ -55,21 +50,35 @@ export function usePipingSave(
   useEffect(() => {
     ref.current.mounted = true;
     const online = () => void flush().catch(() => undefined);
+    const commitField = () => flushSync(() => (document.activeElement as HTMLElement | null)?.blur());
+    const hidden = () => {
+      if (document.visibilityState === "hidden") { commitField(); online(); }
+    };
+    const leaving = (e: BeforeUnloadEvent) => {
+      commitField();
+      if (!ref.current.ready || (!ref.current.queue.dirty && !ref.current.queue.saving)) return;
+      online();
+      e.preventDefault();
+      e.returnValue = "";
+    };
     const key = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
-        (document.activeElement as HTMLElement | null)?.blur();
-        // Title-block fields commit on blur; let React publish that edit before serializing it.
-        requestAnimationFrame(() => void flush().catch(() => undefined));
+        commitField();
+        void flush().catch(() => undefined);
       }
     };
     window.addEventListener("online", online);
     window.addEventListener("keydown", key);
+    window.addEventListener("beforeunload", leaving);
+    document.addEventListener("visibilitychange", hidden);
     return () => {
       ref.current.mounted = false;
       void flush().catch(() => undefined);
       window.removeEventListener("online", online);
       window.removeEventListener("keydown", key);
+      window.removeEventListener("beforeunload", leaving);
+      document.removeEventListener("visibilitychange", hidden);
     };
   }, [flush]);
   return { status, error, save: flush };

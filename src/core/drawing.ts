@@ -3,6 +3,8 @@ import {
   type Vec3,
   type PipeNode,
   formatLength,
+  formatAllowance,
+  displayBom,
   runResult,
   welds,
   connected,
@@ -431,6 +433,7 @@ export function createDrawing(
   line([805 + dx, 155], [1060 + dx, 155], 'BORDER')
   const shown = allBom.filter(row => !spool || row.spool === spool)
   for (const [i, r] of shown.slice(0, 23).entries()) {
+    const display = displayBom(r, doc.units)
     const y = 175 + i * 19
     text([810 + dx, y], String(r.item), 10)
     text(
@@ -443,7 +446,7 @@ export function createDrawing(
     text([990 + dx, y], String(r.nps), 10)
     text(
       [1032 + dx, y],
-      `${Number.isFinite(r.qty) ? round(r.qty, 2) : 'MISSING'} ${r.unit}`,
+      `${Number.isFinite(display.quantity) ? round(display.quantity, 2) : 'MISSING'} ${display.unit}`,
       9
     )
   }
@@ -474,7 +477,7 @@ export function createDrawing(
   text([715 + dx, 765], 'CUT = OVERALL - FITTINGS - ROOT GAPS', 9)
   text(
     [715 + dx, 789],
-    `ROOT GAP: ${[...new Set(doc.specs.map(s => formatLength(s.rootGap, doc.units)))].join(' / ')}`,
+    `ROOT GAP: ${[...new Set(doc.specs.map(s => formatAllowance(s.rootGap, doc.units)))].join(' / ')}`,
     10
   )
   }

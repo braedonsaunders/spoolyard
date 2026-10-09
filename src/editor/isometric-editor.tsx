@@ -1,5 +1,6 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode, type PointerEvent } from "react";
+import { flushSync } from "react-dom";
 import {
   ArrowDown,
   ArrowUp,
@@ -43,6 +44,8 @@ import {
   clone,
   connected,
   formatLength,
+  formatAllowance,
+  displayBom,
   getNode,
   getSpec,
   defaultEndPrep,
@@ -169,6 +172,7 @@ function BlockScaleInput({
       key={spacing + ":" + units}
       defaultValue={shown}
       onBlur={(e) => {
+        if (e.target.value.trim() === shown) return;
         try {
           const value = parseLength(e.target.value, units);
           if (!(value > 0) || value > 1e7) throw new Error("Enter a positive block length.");
@@ -217,6 +221,7 @@ function LengthInput({
         placeholder={allowEmpty ? "spec" : units === "imperial" ? '0"' : "0"}
         onBlur={(e) => {
           const raw = e.target.value.trim();
+          if (raw === shown) return;
           try {
             if (!raw) {
               if (allowEmpty) onCommit(undefined);
@@ -337,7 +342,12 @@ export function IsometricEditor({
     setRoutingPrep(defaultEndPrep(activeSpec, nps));
   }, [spec, activeSpec.id, nps, ready]);
   const persistence = usePipingSave(doc, ready, onSave, isNew);
-  if (controller) controller.current = { save: persistence.save };
+  const save = () => {
+    // Native menus and file switching may save while a title or dimension is still being edited.
+    flushSync(() => (document.activeElement as HTMLElement | null)?.blur());
+    return persistence.save();
+  };
+  if (controller) controller.current = { save };
   useEffect(() => {
     onStatus?.(persistence.status, persistence.error);
   }, [onStatus, persistence.status, persistence.error]);
@@ -550,6 +560,8 @@ export function IsometricEditor({
     const element = three.current;
     void import("./preview3d").then(({ mountPreview3d }) => {
       if (!cancelled) dispose = mountPreview3d(element, doc, filter);
+    }).catch(() => {
+      if (!cancelled) setError("3D review could not start. Enable hardware acceleration or use a WebGL-capable browser. Your drawing is still available in Draw.");
     });
     return () => {
       cancelled = true;
@@ -803,6 +815,7 @@ export function IsometricEditor({
       return;
     }
     if (!edit) return;
+    if (raw.trim() === lengthDraft) return;
     try {
       const value = parseLength(raw, doc.units);
       const run = doc.runs.find((r) => r.id === edit.runId);
@@ -935,7 +948,7 @@ export function IsometricEditor({
                     : "Saved"}
           </span>
           <button
-            onClick={() => void persistence.save().catch(() => undefined)}
+            onClick={() => void save().catch(() => undefined)}
             title={persistence.error || "Save (Ctrl/Cmd+S)"}
             disabled={!ready}
           >
@@ -1171,6 +1184,7 @@ export function IsometricEditor({
                         doc.units,
                       )}
                       onBlur={(e) => {
+                        if (e.target.value === e.target.defaultValue) return;
                         try {
                           const distance = parseLength(e.target.value, doc.units),
                             overall = runResult(doc, selectedRun).overall;
@@ -1795,7 +1809,7 @@ export function IsometricEditor({
                         .filter((n) => !n.associatedRunId)
                         .map((n, i) => (
                           <option value={n.id} key={n.id}>
-                            {labels[n.kind]} {i + 1} · {n.position.map((v) => lengthInputValue(v, doc.units)).join(", ")}
+                            {labels[n.kind]} {i + 1} · {n.position.map((v) => formatLength(v, doc.units)).join(", ")}
                           </option>
                         ))}
                     </select>
@@ -1859,13 +1873,20 @@ export function IsometricEditor({
                         <input aria-label="Pipe overall length" key={selection + '-' + runResult(doc, selectedRun).overall + doc.units}
                           defaultValue={lengthInputValue(runResult(doc, selectedRun).overall, doc.units)}
                           onBlur={e => {
+                            if (e.target.value === e.target.defaultValue) return;
                             try {
                               const value = parseLength(e.target.value, doc.units);
                               if (Math.abs(value - runResult(doc, selectedRun).overall) > 0.001)
                                 commit(d => resizeRun(d, selection, value));
-                            } catch (error) { setError(error instanceof Error ? error.message : String(error)); }
+                            } catch (error) {
+                              e.target.value = e.target.defaultValue;
+                              setError(error instanceof Error ? error.message : String(error));
+                            }
                           }}
-                          onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }} />
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') e.currentTarget.blur();
+                            if (e.key === 'Escape') { e.currentTarget.value = e.currentTarget.defaultValue; e.currentTarget.blur(); }
+                          }} />
                       </Field>}
                       {(["spool", "line", "heat"] as const).map((k) => (
                         <Field key={k} label={k}>
@@ -2170,7 +2191,7 @@ export function IsometricEditor({
             <table>
               <thead>
                 <tr>
-                  {["Item", "Description", "Spec", "NPS", "Quantity", "Weight kg", "Spool", "Heat"].map(
+                  {["Item", "Description", "Spec", "NPS", "Quantity", doc.units === "imperial" ? "Weight lb" : "Weight kg", "Spool", "Heat"].map(
                     (s) => (
                       <th key={s}>{s}</th>
                     ),
@@ -2178,20 +2199,22 @@ export function IsometricEditor({
                 </tr>
               </thead>
               <tbody>
-                {materials.map((m) => (
+                {materials.map((m) => {
+                  const shown = displayBom(m, doc.units);
+                  return (
                   <tr key={m.item}>
                     <td>{m.item}</td>
                     <td>{m.description}</td>
                     <td>{m.spec}</td>
                     <td>{m.nps}″</td>
                     <td>
-                      {Number.isFinite(m.qty) ? round(m.qty) : "MISSING"} {m.unit}
+                      {Number.isFinite(shown.quantity) ? round(shown.quantity) : "MISSING"} {shown.unit}
                     </td>
-                    <td>{m.weightKg == null ? "MISSING" : round(m.weightKg)}</td>
+                    <td>{shown.weight == null ? "MISSING" : round(shown.weight)}</td>
                     <td>{m.spool}</td>
                     <td>{m.heat}</td>
                   </tr>
-                ))}
+                )})}
               </tbody>
             </table>
             <h3>Pipe cut schedule</h3>
@@ -2215,8 +2238,8 @@ export function IsometricEditor({
                     <td>P{i + 1}</td>
                     <td>{c.run.spool}</td>
                     <td>{formatLength(c.overall, doc.units)}</td>
-                    <td>{c.takeouts.map(v => Number.isFinite(v) ? formatLength(v, doc.units) : 'MISSING').join(" + ")}</td>
-                    <td>{c.gaps.map(v => formatLength(v, doc.units)).join(" + ")}</td>
+                    <td>{c.takeouts.map(v => Number.isFinite(v) ? formatAllowance(v, doc.units) : 'MISSING').join(" + ")}</td>
+                    <td>{c.gaps.map(v => formatAllowance(v, doc.units)).join(" + ")}</td>
                     <td>
                       {Number.isFinite(c.cut) && c.cut > 0 ? formatLength(c.cut, doc.units) : "MISSING"}
                     </td>

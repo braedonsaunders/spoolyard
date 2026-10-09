@@ -95,10 +95,7 @@ export async function newIsoFromTemplate(template: DrawingTemplate, title = "Pip
   doc.paper = template.paper;
   doc.units = template.units;
   doc.grid = { ...defaultGrid(), spacing: defaultBlockSpacing(template.units) };
-  try {
-    doc.specs = [await loadLibrarySpec(template.spec)];
-  } catch {
-    // Keep the bundled Schedule 40 specification.
-  }
+  // Never substitute carbon steel for a requested stainless or pressure-class specification.
+  doc.specs = [await loadLibrarySpec(template.spec)];
   return doc;
 }

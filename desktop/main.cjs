@@ -4,6 +4,7 @@ const { app, BrowserWindow, Menu, dialog, ipcMain, net, protocol, shell } = requ
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
+const { writeDrawing } = require("./write-drawing.cjs");
 
 const DIST = path.join(__dirname, "..", "dist");
 const FILE_TYPES = [
@@ -18,6 +19,9 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 let win = null;
+let quitting = false;
+let closePending = false;
+let allowClose = false;
 const pending = [];
 
 async function readPiping(filePath) {
@@ -32,6 +36,8 @@ async function deliver(filePath) {
 }
 
 function createWindow() {
+  allowClose = false;
+  closePending = false;
   win = new BrowserWindow({
     width: 1480,
     height: 940,
@@ -49,6 +55,17 @@ function createWindow() {
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/.test(url)) shell.openExternal(url);
     return { action: "deny" };
+  });
+  win.webContents.on("will-navigate", (event, url) => {
+    const destination = new URL(url);
+    if (destination.protocol !== "app:" || destination.hostname !== "spoolyard") event.preventDefault();
+  });
+  win.on("close", (event) => {
+    if (allowClose) return;
+    event.preventDefault();
+    if (closePending) return;
+    closePending = true;
+    win.webContents.send("spoolyard:before-close");
   });
   win.loadURL("app://spoolyard/index.html");
   win.on("closed", () => (win = null));
@@ -112,6 +129,16 @@ ipcMain.handle("spoolyard:open", async () => {
   const result = await dialog.showOpenDialog(win, { properties: ["openFile"], filters: FILE_TYPES });
   return result.canceled ? null : readPiping(result.filePaths[0]);
 });
+ipcMain.on("spoolyard:close-result", (event, saved) => {
+  if (event.sender !== win?.webContents || !closePending) return;
+  closePending = false;
+  if (!saved) { quitting = false; return; }
+  allowClose = true;
+  if (quitting) app.quit();
+  else win.close();
+});
+app.on("before-quit", () => { quitting = true; });
+
 ipcMain.handle("spoolyard:save", async (_event, { content, name, path: target }) => {
   let filePath = target;
   if (!filePath) {
@@ -122,7 +149,7 @@ ipcMain.handle("spoolyard:save", async (_event, { content, name, path: target })
     if (result.canceled || !result.filePath) return null;
     filePath = result.filePath;
   }
-  await fs.writeFile(filePath, content, "utf8");
+  await writeDrawing(filePath, content);
   app.addRecentDocument(filePath);
   return { path: filePath, name: path.basename(filePath) };
 });
@@ -144,7 +171,7 @@ else {
     protocol.handle("app", (request) => {
       const { pathname } = new URL(request.url);
       const file = path.normalize(path.join(DIST, decodeURIComponent(pathname)));
-      if (!file.startsWith(DIST)) return new Response("Not found", { status: 404 });
+      if (!file.startsWith(DIST + path.sep)) return new Response("Not found", { status: 404 });
       return net.fetch(pathToFileURL(file).toString());
     });
     menu();

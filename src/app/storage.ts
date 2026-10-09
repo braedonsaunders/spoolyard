@@ -4,6 +4,8 @@ export interface StoredDrawing {
   name: string;
   content: string;
   updatedAt: number;
+  /** Native desktop location, retained when reopening a drawing from Recent. */
+  path?: string;
 }
 
 const open = () =>
@@ -17,9 +19,19 @@ const open = () =>
 async function run<T>(mode: IDBTransactionMode, body: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> {
   const db = await open();
   return new Promise<T>((resolve, reject) => {
-    const request = body(db.transaction("drawings", mode).objectStore("drawings"));
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
+    try {
+      const transaction = db.transaction("drawings", mode);
+      const request = body(transaction.objectStore("drawings"));
+      // A successful request can still be rolled back by a failed transaction.
+      transaction.oncomplete = () => { db.close(); resolve(request.result); };
+      transaction.onabort = () => {
+        db.close();
+        reject(transaction.error ?? request.error ?? new Error("The drawing could not be saved on this device."));
+      };
+    } catch (error) {
+      db.close();
+      reject(error);
+    }
   });
 }
 

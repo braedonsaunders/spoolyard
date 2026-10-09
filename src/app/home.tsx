@@ -23,6 +23,7 @@ import { loadSpecIndex, TEMPLATES, type DrawingTemplate, type LibrarySpecSummary
 import { deleteDrawing, listDrawings, type StoredDrawing } from "./storage";
 import { desktop } from "./platform";
 import { Thumbnail } from "./thumbnail";
+import { getPreference, setPreference } from "./preferences";
 
 type Section = "recent" | "templates" | "specs" | "learn";
 const REPO = "https://github.com/braedonsaunders/spoolyard";
@@ -107,16 +108,20 @@ export function Home({
   const [drawings, setDrawings] = useState<StoredDrawing[] | null>(null);
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<"opened" | "name">("opened");
-  const [view, setView] = useState<"grid" | "list">(() => (localStorage.getItem(VIEW_KEY) === "list" ? "list" : "grid"));
+  const [view, setView] = useState<"grid" | "list">(() => (getPreference(VIEW_KEY) === "list" ? "list" : "grid"));
+  const [error, setError] = useState("");
   const [specs, setSpecs] = useState<LibrarySpecSummary[] | null>(null);
   useEffect(() => {
     listDrawings()
       .then(setDrawings)
-      .catch(() => setDrawings([]));
+      .catch(() => { setDrawings([]); setError("Your saved drawings could not be read. Check that browser storage is available, then reload."); });
   }, []);
-  useEffect(() => localStorage.setItem(VIEW_KEY, view), [view]);
+  useEffect(() => setPreference(VIEW_KEY, view), [view]);
   useEffect(() => {
-    if (section === "specs" && !specs) loadSpecIndex().then(setSpecs).catch(() => setSpecs([]));
+    if (section === "specs" && !specs) loadSpecIndex().then(setSpecs).catch(() => {
+      setSpecs([]);
+      setError("The specification library could not load. Check your connection and reload.");
+    });
   }, [section, specs]);
 
   const shown = useMemo(() => {
@@ -127,8 +132,10 @@ export function Home({
   }, [drawings, query, sort]);
   const remove = async (d: StoredDrawing) => {
     if (!confirm(`Remove “${display(d.name)}” from this device?`)) return;
-    await deleteDrawing(d.id);
-    setDrawings((list) => list?.filter((x) => x.id !== d.id) ?? null);
+    try {
+      await deleteDrawing(d.id);
+      setDrawings((list) => list?.filter((x) => x.id !== d.id) ?? null);
+    } catch { setError("This drawing could not be removed. Please try again."); }
   };
 
   const nav: Array<[Section, string, typeof Clock]> = [
@@ -194,6 +201,7 @@ export function Home({
       </aside>
 
       <main className="sy-main">
+        {error && <p role="alert">{error}</p>}
         {section === "recent" && (
           <>
             <header className="sy-main-head">
@@ -220,7 +228,7 @@ export function Home({
                 </label>
               </div>
             </header>
-            {drawings && drawings.length === 0 ? (
+            {!drawings ? <p role="status">Loading your drawings…</p> : drawings.length === 0 ? (
               <div className="sy-empty">
                 <SpoolyardMark size={64} />
                 <h2>No drawings yet</h2>
@@ -234,10 +242,12 @@ export function Home({
                   </button>
                 </div>
               </div>
-            ) : view === "grid" ? (
+            ) : shown.length === 0 ? <p role="status">No drawings match “{query}”.</p> : view === "grid" ? (
               <div className="sy-grid">
                 {shown.map((d) => (
-                  <article key={d.id} className="sy-card" onClick={() => onOpenStored(d)}>
+                  <article key={d.id} className="sy-card" tabIndex={0} aria-label={"Open " + display(d.name)}
+                    onKeyDown={e => { if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); onOpenStored(d); } }}
+                    onClick={() => onOpenStored(d)}>
                     <Thumbnail content={d.content} />
                     <footer>
                       <span>
@@ -268,7 +278,9 @@ export function Home({
                 </thead>
                 <tbody>
                   {shown.map((d) => (
-                    <tr key={d.id} onClick={() => onOpenStored(d)}>
+                    <tr key={d.id} tabIndex={0} aria-label={"Open " + display(d.name)}
+                      onKeyDown={e => { if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); onOpenStored(d); } }}
+                      onClick={() => onOpenStored(d)}>
                       <td>
                         <SpoolyardMark size={20} /> {display(d.name)}
                       </td>
@@ -421,11 +433,32 @@ export function Home({
                 </dl>
               </section>
               <section>
+                <h2>Feet, inches and scale</h2>
+                <p>
+                  Start with an <b>Imperial</b> template from New. Set <b>1 block</b> below the drawing to
+                  <b> 12 in</b> or <b>1 ft</b> for a one-foot grid. Length fields accept feet, decimal inches,
+                  fractions such as <b>2&apos; 3 1/2&quot;</b>, and explicit metric values such as <b>100 mm</b>.
+                </p>
+                <p>
+                  Double-click a pipe dimension to edit it on the drawing. The <b>CUT</b> dimension edits the
+                  cut length while keeping fitting takeouts and gaps. Enter applies; Escape cancels.
+                </p>
+              </section>
+              <section>
                 <h2>Cut lengths</h2>
                 <p>
                   Each pipe&apos;s cut is its centreline length less the takeouts of the fittings at each end and the root
                   gap of each butt weld. Specification rows without a known dimension are flagged, and the drawing stays
                   in draft until you enter a measured takeout.
+                </p>
+              </section>
+              <section>
+                <h2>Save and issue</h2>
+                <p>
+                  Drawings save automatically to Recent on this device. In the browser, use <b>Save as…</b> or
+                  <b> Save to disk</b> for a portable .piping file. The desktop app also saves changes to the
+                  opened .piping file. Resolve fabrication checks, then use <b>Export → PDF drawing package</b>
+                  for the drawing, material schedule, cuts and weld map.
                 </p>
               </section>
             </div>

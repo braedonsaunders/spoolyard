@@ -25,7 +25,7 @@ export function EmbeddedEditor({ params }: { params: URLSearchParams }) {
         pending.current.delete(data.id ?? "");
         if (data.type === "spoolyard:saved") waiter?.resolve();
         else waiter?.reject(new Error(data.error || "Save failed"));
-      } else if (data.type === "spoolyard:save-now") void controller.current?.save();
+      } else if (data.type === "spoolyard:save-now") void controller.current?.save().catch(() => undefined);
       else if (data.type === "spoolyard:theme") document.documentElement.classList.toggle("dark", data.theme === "dark");
     };
     window.addEventListener("message", listener);

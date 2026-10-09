@@ -15,6 +15,8 @@ import {
   runResult,
   prepAt,
   formatLength,
+  formatAllowance,
+  displayBom,
 } from "../core/model";
 import { createDrawing, drawingSvg } from "../core/drawing";
 import { defaultGrid, gridLines } from "../core/grid";
@@ -62,7 +64,7 @@ export async function exportPdf(doc: IsoDocument): Promise<Blob> {
       page.drawRectangle({ x: 0, y: 0, width, height, color: rgb(1, 1, 1) });
       const settings = doc.grid ?? defaultGrid();
       const grid = settings.visible
-        ? gridLines(d, doc.nodes.find((n) => d.positions.has(n.id))?.position ?? [0, 0, 0], settings)
+        ? gridLines(d, doc.nodes.find((n) => d.positions.has(n.id))?.position ?? [0, 0, 0], settings, doc.units)
         : null;
       for (const l of grid?.lines ?? [])
         page.drawLine({
@@ -190,16 +192,18 @@ export async function exportPdf(doc: IsoDocument): Promise<Blob> {
   }
   schedule(
     "Material schedule",
-    ["Item", "Description", "Spec / NPS", "Quantity", "Weight kg", "Area m2", "Spool / heat"],
-    bom(doc).map((r) => [
+    ["Item", "Description", "Spec / NPS", "Quantity", doc.units === "imperial" ? "Weight lb" : "Weight kg", doc.units === "imperial" ? "Area ft2" : "Area m2", "Spool / heat"],
+    bom(doc).map((r) => {
+      const shown = displayBom(r, doc.units);
+      return [
       String(r.item),
       r.description,
       `${r.spec} / ${r.nps}"`,
-      `${Number.isFinite(r.qty) ? round(r.qty, 3) : "MISSING"} ${r.unit}`,
-      r.weightKg == null ? "MISSING" : String(round(r.weightKg)),
-      r.areaM2 == null ? "MISSING" : String(round(r.areaM2, 3)),
+      `${Number.isFinite(shown.quantity) ? round(shown.quantity, 3) : "MISSING"} ${shown.unit}`,
+      shown.weight == null ? "MISSING" : String(round(shown.weight)),
+      shown.area == null ? "MISSING" : String(round(shown.area, 3)),
       `${r.spool} / ${r.heat}`,
-    ]),
+    ]}),
     [30, 200, 95, 72, 72, 72, 187],
   );
   schedule(
@@ -214,9 +218,9 @@ export async function exportPdf(doc: IsoDocument): Promise<Blob> {
           r.line + " / " + r.heat,
           String(r.nps),
           formatLength(v.overall, doc.units),
-          v.takeouts.map((t) => (Number.isFinite(t) ? formatLength(t, doc.units) : "MISSING")).join(" + ") +
+          v.takeouts.map((t) => (Number.isFinite(t) ? formatAllowance(t, doc.units) : "MISSING")).join(" + ") +
             " / " +
-            v.gaps.map((g) => formatLength(g, doc.units)).join(" + "),
+            v.gaps.map((g) => formatAllowance(g, doc.units)).join(" + "),
           formatLength(v.cut, doc.units),
           prepAt(r, 0) + " / " + prepAt(r, 1),
         ];

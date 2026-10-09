@@ -5,13 +5,16 @@ import { Home } from "./home";
 import { Splash } from "./splash";
 import { getDrawing, putDrawing, type StoredDrawing } from "./storage";
 import { desktop, openFile, saveFile } from "./platform";
-import { newIsoFromTemplate, type DrawingTemplate } from "../editor/library";
+import { newIsoFromTemplate, newIsoWithDefaultSpec, type DrawingTemplate } from "../editor/library";
+import { readIsometric } from "../core/document";
+import { getPreference, setPreference } from "./preferences";
 import { assetUrl } from "../editor/assets";
 
 interface Open {
   id: string;
   name: string;
   source: string;
+  content?: string;
   /** Disk location (desktop path or browser file handle) for Save to disk. */
   handle?: unknown;
 }
@@ -21,17 +24,17 @@ const piping = (name: string) => name.replace(/\.(json|pcf|dxf)$/i, "").replace(
 export function App() {
   const [splash, setSplash] = useState<"show" | "leaving" | "gone">("show");
   const [dark, setDark] = useState(
-    () => localStorage.getItem(THEME_KEY) === "dark" || (!localStorage.getItem(THEME_KEY) && matchMedia("(prefers-color-scheme: dark)").matches),
+    () => getPreference(THEME_KEY) === "dark" || (!getPreference(THEME_KEY) && matchMedia("(prefers-color-scheme: dark)").matches),
   );
   const [open, setOpen] = useState<Open | null>(null);
   const [error, setError] = useState("");
-  const handle = useRef<unknown>(undefined);
-  const latest = useRef("");
+  const [fileBusy, setFileBusy] = useState(false);
+  const switching = useRef(false);
   const editor = useRef<EditorController | null>(null);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
-    localStorage.setItem(THEME_KEY, dark ? "dark" : "light");
+    setPreference(THEME_KEY, dark ? "dark" : "light");
   }, [dark]);
   useEffect(() => {
     const leave = setTimeout(() => setSplash("leaving"), 1900);
@@ -42,17 +45,27 @@ export function App() {
     };
   }, []);
 
-  const start = useCallback((next: Open) => {
-    handle.current = next.handle;
-    latest.current = next.source;
-    setError("");
-    setOpen(next);
-    history.replaceState(null, "", "#" + next.id);
+  const start = useCallback(async (next: Open) => {
+    if (switching.current) return;
+    switching.current = true;
+    try {
+      // Validate before replacing the current drawing, and retain unchanged imports in Recent.
+      const parsed = next.source.trim() ? readIsometric(next.source) : await newIsoWithDefaultSpec();
+      next.source = JSON.stringify(parsed);
+      next.content = next.source;
+      await editor.current?.save();
+      await putDrawing({ id: next.id, name: next.name, content: next.source, updatedAt: Date.now(), path: typeof next.handle === "string" ? next.handle : undefined });
+      setError("");
+      setOpen(next);
+      history.replaceState(null, "", "#" + next.id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally { switching.current = false; }
   }, []);
   const openFromDisk = useCallback(async () => {
     try {
       const file = await openFile();
-      if (file) start({ id: crypto.randomUUID(), name: piping(file.name), source: file.content, handle: /\.piping$/i.test(file.name) ? file.handle : undefined });
+      if (file) await start({ id: crypto.randomUUID(), name: piping(file.name), source: file.content, handle: /\.piping$/i.test(file.name) ? file.handle : undefined });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -65,8 +78,7 @@ export function App() {
       try {
         const source = JSON.stringify(await newIsoFromTemplate(template));
         const name = "Untitled " + template.name.toLowerCase().replace(" · ", " ") + ".piping";
-        await putDrawing({ id, name, content: source, updatedAt: Date.now() });
-        start({ id, name, source });
+        await start({ id, name, source });
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       }
@@ -80,8 +92,7 @@ export function App() {
       const source = await response.text();
       const id = crypto.randomUUID(),
         name = "Cooling water return (sample).piping";
-      await putDrawing({ id, name, content: source, updatedAt: Date.now() });
-      start({ id, name, source });
+      await start({ id, name, source });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -89,39 +100,56 @@ export function App() {
 
   // Desktop: View ▸ Theme in the native menu.
   useEffect(() => {
-    desktop()?.onTheme?.((theme) => setDark(theme === "dark"));
+    return desktop()?.onTheme?.((theme) => setDark(theme === "dark"));
   }, []);
   // Desktop: files opened from Finder/Explorer or a .piping double-click.
   useEffect(() => {
-    desktop()?.onOpenFile((file) => start({ id: crypto.randomUUID(), name: piping(file.name), source: file.content, handle: /\.piping$/i.test(file.name) ? file.path : undefined }));
+    return desktop()?.onOpenFile((file) => void start({ id: crypto.randomUUID(), name: piping(file.name), source: file.content, handle: /\.piping$/i.test(file.name) ? file.path : undefined }));
   }, [start]);
+  useEffect(() => desktop()?.onBeforeClose?.(async () => {
+    try { await editor.current?.save(); return true; }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)); return false; }
+  }), []);
   // Reopen the drawing in the address bar after a reload.
   useEffect(() => {
     const id = location.hash.slice(1);
     if (id)
       getDrawing(id)
-        .then((d) => d && start({ id: d.id, name: d.name, source: d.content }))
+        .then((d) => d && start({ id: d.id, name: d.name, source: d.content, handle: desktop() ? d.path : undefined }))
         .catch(() => undefined);
   }, [start]);
 
   const onSave = useCallback(
     async (content: string) => {
       if (!open) return;
-      latest.current = content;
-      await putDrawing({ id: open.id, name: open.name, content, updatedAt: Date.now() });
+      open.content = content;
+      await putDrawing({ id: open.id, name: open.name, content, updatedAt: Date.now(), path: typeof open.handle === "string" ? open.handle : undefined });
       // The desktop app writes straight back to the file on disk; browsers save to disk on request.
-      if (desktop() && typeof handle.current === "string") handle.current = await saveFile(open.name, content, handle.current);
+      if (desktop() && typeof open.handle === "string") open.handle = await saveFile(open.name, content, open.handle);
     },
     [open],
   );
   const saveToDisk = async (saveAs = false) => {
-    if (!open) return;
+    if (!open || fileBusy) return;
+    setFileBusy(true);
     try {
       await editor.current?.save();
-      handle.current = await saveFile(open.name, latest.current, handle.current, saveAs);
+      open.handle = await saveFile(open.name, open.content ?? open.source, open.handle, saveAs);
+      await putDrawing({ id: open.id, name: open.name, content: open.content ?? open.source, updatedAt: Date.now(), path: typeof open.handle === "string" ? open.handle : undefined });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-    }
+    } finally { setFileBusy(false); }
+  };
+  const goHome = async () => {
+    if (switching.current || fileBusy) return;
+    switching.current = true;
+    try {
+      await editor.current?.save();
+      editor.current = null;
+      setOpen(null);
+      history.replaceState(null, "", location.pathname + location.search);
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { switching.current = false; }
   };
 
   return (
@@ -135,18 +163,16 @@ export function App() {
           controller={editor}
           headerActions={
             <>
-              <button title="Save a copy to disk" onClick={() => void saveToDisk(!handle.current)}>
-                <HardDriveDownload size={15} /> {handle.current ? "Save to disk" : "Save as…"}
+              <button title="Save a copy to disk" disabled={fileBusy} onClick={() => void saveToDisk(!open.handle)}>
+                <HardDriveDownload size={15} /> {fileBusy ? "Saving…" : open.handle ? "Save to disk" : "Save as…"}
               </button>
               <button title={dark ? "Light theme" : "Dark theme"} aria-label="Toggle theme" onClick={() => setDark((v) => !v)}>
                 {dark ? <Sun size={15} /> : <Moon size={15} />}
               </button>
               <button
                 title="Back to your drawings"
-                onClick={() => {
-                  setOpen(null);
-                  history.replaceState(null, "", location.pathname + location.search);
-                }}
+                disabled={fileBusy}
+                onClick={() => void goHome()}
               >
                 <House size={15} /> Home
               </button>
@@ -160,7 +186,7 @@ export function App() {
           onNew={(template) => void newDrawing(template)}
           onOpenFile={() => void openFromDisk()}
           onOpenSample={() => void openSample()}
-          onOpenStored={(d: StoredDrawing) => start({ id: d.id, name: d.name, source: d.content })}
+          onOpenStored={(d: StoredDrawing) => void start({ id: d.id, name: d.name, source: d.content, handle: desktop() ? d.path : undefined })}
         />
       )}
       {error && (
