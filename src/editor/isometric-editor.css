@@ -381,6 +381,16 @@
 .iso-sheet.placing {
   cursor: copy;
 }
+.iso-insert-preview line {
+  stroke: #0b9db8;
+  stroke-width: 5;
+  opacity: 0.55;
+}
+.iso-insert-preview circle {
+  fill: #0b9db8;
+  stroke: white;
+  stroke-width: 2;
+}
 .iso-place-hint {
   position: absolute;
   top: 52px;
