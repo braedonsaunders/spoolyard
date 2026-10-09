@@ -134,7 +134,8 @@ export function gridLines(
   drawing: Drawing,
   anchor: Vec3,
   settings: GridSettings,
-  units: IsoDocument['units'] = 'mm'
+  units: IsoDocument['units'] = 'mm',
+  viewport?: { area: Drawing['area']; minSpacing: number }
 ): { lines: GridLine[]; caption: string } | null {
   const origin = drawing.project(anchor),
     [a, b] = axes(settings.plane)
@@ -150,11 +151,11 @@ export function gridLines(
   if (Math.abs(det) < 1e-8) return null
   // Keep large models readable while retaining the finer, explicit physical snap spacing.
   const perpendicular = Math.min(Math.abs(det) / Math.hypot(...u), Math.abs(det) / Math.hypot(...v))
-  const every = Math.max(1, Math.ceil(18 / perpendicular))
+  const every = Math.max(1, Math.ceil((viewport?.minSpacing ?? 18) / perpendicular))
   u = [u[0] * every, u[1] * every]
   v = [v[0] * every, v[1] * every]
   const determinant = u[0] * v[1] - u[1] * v[0]
-  const area = drawing.area
+  const area = viewport?.area ?? drawing.area
   const corners: Point[] = [
     [area[0], area[1]],
     [area[2], area[1]],
@@ -172,15 +173,21 @@ export function gridLines(
     [v, u, lattice.map(p => p[0])]
   ]
   if (drawing.view === 'iso') families.push([[u[0] + v[0], u[1] + v[1]], u, lattice.map(p => p[0] - p[1])])
-  const reach = Math.hypot(drawing.width, drawing.height)
+  const reach = Math.hypot(area[2] - area[0], area[3] - area[1])
+  const centre: Point = [(area[0] + area[2]) / 2, (area[1] + area[3]) / 2]
   for (const [dir, step, limits] of families) {
     const length = Math.hypot(...dir)
     if (length < 1e-6) continue
     for (let i = Math.floor(Math.min(...limits)) - 1; i <= Math.ceil(Math.max(...limits)) + 1; i++) {
-      const x = origin[0] + step[0] * i,
-        y = origin[1] + step[1] * i,
-        dx = (dir[0] / length) * reach,
-        dy = (dir[1] / length) * reach
+      const lineX = origin[0] + step[0] * i,
+        lineY = origin[1] + step[1] * i,
+        ux = dir[0] / length,
+        uy = dir[1] / length,
+        along = (centre[0] - lineX) * ux + (centre[1] - lineY) * uy,
+        x = lineX + ux * along,
+        y = lineY + uy * along,
+        dx = ux * reach,
+        dy = uy * reach
       const clipped = clipLine([x - dx, y - dy], [x + dx, y + dy], area)
       if (clipped) lines.push({ a: clipped[0], b: clipped[1], major: i % 5 === 0 })
     }

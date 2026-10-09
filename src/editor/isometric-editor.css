@@ -170,6 +170,7 @@
   background: color-mix(in srgb, currentColor 1%, transparent);
 }
 .iso-ribbon-group {
+  flex-shrink: 0;
   border-right: 1px solid rgb(var(--ch-border));
   padding-right: 12px;
   display: flex;
@@ -240,6 +241,9 @@
 .iso-ribbon-controls .iso-field:nth-child(2) select {
   width: 62px;
 }
+.iso-ribbon-controls select[aria-label="Active spool"] {
+  width: 100px;
+}
 .iso-axis-buttons {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -268,6 +272,7 @@
   background: radial-gradient(ellipse at 50% 40%, #f5f7f9, #e2e8ee);
 }
 .dark .iso-stage {
+  --iso-canvas: #111b2b;
   background: radial-gradient(ellipse at 50% 40%, #213045, #101927);
 }
 .iso-stage.iso-stage-grid {
@@ -288,6 +293,7 @@
   width: 100%;
   filter: none;
   overflow: hidden;
+  transition: none;
 }
 .iso-sheet.routing {
   cursor: crosshair;
@@ -310,10 +316,6 @@
 .model-space .iso-primitive {
   stroke: var(--iso-ink);
 }
-.model-space .iso-text {
-  fill: var(--iso-ink);
-  stroke: var(--iso-canvas);
-}
 .iso-text.iso-layer-dim {
   fill: #31404c;
 }
@@ -335,7 +337,7 @@
   outline: none;
   box-shadow: 0 2px 8px #10203033;
 }
-.model-space .iso-inline-length {
+.iso-stage-grid .iso-inline-length {
   background: var(--iso-canvas, #fff);
   color: var(--iso-ink, #17212c);
 }
@@ -358,6 +360,16 @@
 }
 .iso-primitive.iso-layer-bom {
   stroke: #607180;
+}
+.model-space .iso-text {
+  fill: var(--iso-ink);
+  stroke: var(--iso-canvas);
+}
+.dark .model-space .iso-text.iso-layer-weld {
+  fill: #63c9e5;
+}
+.dark .model-space .iso-primitive.iso-layer-bom {
+  stroke: #9bb6ca;
 }
 .iso-text.selected {
   fill: #008dbc;
@@ -441,9 +453,6 @@
 .iso-route-label {
   fill: #008db5;
   font-size: 13px;
-}
-.iso-infinite-grid {
-  color: #91c0d44a;
 }
 .iso-paper-input {
   font-family: Arial, sans-serif !important;
@@ -816,6 +825,20 @@
 .iso-grid-line.major {
   stroke: #b4cfdc;
   stroke-width: 0.85;
+}
+.model-space .iso-grid-line {
+  stroke: #b4cbd8;
+  stroke-width: 0.7;
+}
+.model-space .iso-grid-line.major {
+  stroke: #8bafc2;
+  stroke-width: 1;
+}
+.dark .model-space .iso-grid-line {
+  stroke: #29425a;
+}
+.dark .model-space .iso-grid-line.major {
+  stroke: #3d617d;
 }
 .iso-grid-caption {
   fill: #678b9d;

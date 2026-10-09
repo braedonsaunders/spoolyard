@@ -20,6 +20,7 @@ import {
   Loader2,
   Magnet,
   Maximize2,
+  Minimize2,
   MousePointer2,
   MoveUpRight,
   Redo2,
@@ -72,7 +73,7 @@ import {
   type Vec3,
 } from "../core/model";
 import { createDrawing, sheetWidth, type Drawing, type Point, type SheetFit } from "../core/drawing";
-import { defaultGrid, gridSvg, pickGridPoint, pickOrthoPoint } from "../core/grid";
+import { defaultGrid, gridLines, gridSvg, pickGridPoint, pickOrthoPoint } from "../core/grid";
 import { importPcf, exportPcf } from "../core/pcf";
 import { download } from "./download";
 import { exportDwg } from "./dwg";
@@ -265,6 +266,7 @@ function Tool({
       type="button"
       className={cn("iso-tool", active && "active")}
       aria-label={name}
+      aria-pressed={active}
       title={name}
       onClick={onClick}
       disabled={disabled}
@@ -292,6 +294,8 @@ export function IsometricEditor({
   const [tab, setTab] = useState("draw"),
     [surface, setSurface] = useState<"paper" | "grid">("paper"),
     [tool, setTool] = useState("select");
+  const [fullscreen, setFullscreen] = useState(!!document.fullscreenElement);
+  const [stageSize, setStageSize] = useState({ width: 1100, height: 850 });
   const [selection, setSelection] = useState(""),
     [start, setStart] = useState(""),
     [spec, setSpec] = useState("CS40"),
@@ -431,8 +435,43 @@ export function IsometricEditor({
       setSelection("");
       setStart(d.nodes.at(-1)?.id ?? "");
     });
+  const activateTool = (next: string) => {
+    setArmed(null);
+    setCursor(null);
+    setTool(next);
+    if (next === "pipe") setView("iso");
+  };
+  useEffect(() => {
+    const changed = () => setFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", changed);
+    return () => document.removeEventListener("fullscreenchange", changed);
+  }, []);
+  const toggleFullscreen = async () => {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await document.documentElement.requestFullscreen();
+    } catch {
+      setError("Fullscreen could not start. Check that your browser allows fullscreen for this page.");
+    }
+  };
+  useLayoutEffect(() => {
+    const element = stage.current;
+    if (!element) return;
+    const measure = () => {
+      const { width, height } = element.getBoundingClientRect();
+      if (width && height) setStageSize({ width, height });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [tab]);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && document.fullscreenElement) {
+        void document.exitFullscreen().catch(() => undefined);
+        return;
+      }
       if ((e.target as HTMLElement)?.closest("input,select,textarea")) return;
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
         e.preventDefault();
@@ -452,9 +491,11 @@ export function IsometricEditor({
       } else if (e.key === "Delete" || e.key === "Backspace") {
         e.preventDefault();
         remove();
-      } else if (e.key.toLowerCase() === "p") setTool("pipe");
-      else if (e.key.toLowerCase() === "h") setTool("pan");
-      else if (e.key.toLowerCase() === "v") setTool("select");
+      } else if (e.ctrlKey || e.metaKey || e.altKey) return;
+      else if (e.key.toLowerCase() === "p") activateTool("pipe");
+      else if (e.key.toLowerCase() === "h") activateTool("pan");
+      else if (e.key.toLowerCase() === "v") activateTool("select");
+      else if (e.key.toLowerCase() === "i") activateTool("insert");
     };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
@@ -515,22 +556,15 @@ export function IsometricEditor({
   }, [doc, filter, surface, view, holding]);
   const pick = (p: Point) =>
     routing && grid.ortho !== false ? pickOrthoPoint(drawing, p, anchor, grid) : pickGridPoint(drawing, p, anchor, grid);
-  const axes = grid.plane === "xy" ? [0, 1] : grid.plane === "xz" ? [0, 2] : [1, 2];
-  const origin = drawing.project(anchor),
-    ga = [...anchor] as Vec3,
-    gb = [...anchor] as Vec3;
-  ga[axes[0]] += 1;
-  gb[axes[1]] += 1;
-  const pa = drawing.project(ga),
-    pb = drawing.project(gb);
-  const ax = pa[0] - origin[0],
-    ay = pa[1] - origin[1],
-    bx = pb[0] - origin[0],
-    by = pb[1] - origin[1];
-  const visualSpacing =
-    grid.spacing *
-    Math.max(1, Math.ceil(12 / (grid.spacing * Math.max(Math.hypot(ax, ay), Math.hypot(bx, by)))));
-  const gridTransform = "matrix(" + [ax, ay, bx, by, origin[0], origin[1]].join(" ") + ")";
+  const viewportWidth = surface === "grid" ? 850 * stageSize.width / stageSize.height : W;
+  const viewportX = W / 2 - viewportWidth / 2 / zoom + pan[0];
+  const viewportY = 425 - 425 / zoom + pan[1];
+  const modelGrid = surface === "grid" && grid.visible
+    ? gridLines(drawing, anchor, grid, doc.units, {
+        area: [viewportX, viewportY, viewportX + viewportWidth / zoom, viewportY + 850 / zoom],
+        minSpacing: 18 * 850 / stageSize.height / zoom,
+      })
+    : null;
   const issues = useMemo(() => validateIso(doc), [doc]),
     materials = useMemo(() => bom(doc), [doc]),
     cuts = useMemo(() => doc.runs.filter(r => !r.connector).map((r) => runResult(doc, r)), [doc]),
@@ -585,7 +619,7 @@ export function IsometricEditor({
     setZoom(
       Math.min(
         4,
-        Math.max(0.01, Math.min(850 / Math.max(200, maxX - minX), 600 / Math.max(150, maxY - minY))),
+        Math.max(0.01, Math.min(viewportWidth * 0.8 / Math.max(200, maxX - minX), 600 / Math.max(150, maxY - minY))),
       ),
     );
   };
@@ -656,13 +690,13 @@ export function IsometricEditor({
     if (latest.current !== before) setArmed(null);
   };
   const chooseComponent = (type: ComponentType, row?: CatalogItem) => {
+    setTool("insert");
+    setTab("draw");
     const run = doc.runs.find((r) => r.id === selection && !r.connector);
     if (run) insertFitting(run.id, type, row);
     else {
       const key = row?.id ?? type.code;
       setArmed((current) => (current && (current.row?.id ?? current.type.code) === key ? null : { type, row }));
-      setTool("select");
-      setTab("draw");
     }
   };
   const chooseSpec = async (value: string, runId = "") => {
@@ -707,7 +741,7 @@ export function IsometricEditor({
     const target = event.target as Element,
       owner = target.closest("[data-owner]")?.getAttribute("data-owner"),
       node = target.closest("[data-node]")?.getAttribute("data-node");
-    if (armed && tool === "select" && owner && !node) {
+    if (armed && tool === "insert" && owner && !node) {
       const run = doc.runs.find((r) => r.id === owner && !r.connector);
       if (run) {
         insertFitting(owner, armed.type, armed.row);
@@ -722,7 +756,7 @@ export function IsometricEditor({
       selectConnection(node);
       return;
     }
-    if (owner && tool === "select") {
+    if (owner && (tool === "select" || tool === "insert")) {
       setSelection(owner);
       return;
     }
@@ -955,6 +989,15 @@ export function IsometricEditor({
             <Save size={15} /> Save
           </button>
           {headerActions}
+          <button
+            aria-label={fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+            title={fullscreen ? "Exit fullscreen (Esc)" : "Enter fullscreen"}
+            aria-pressed={fullscreen}
+            disabled={!document.fullscreenEnabled}
+            onClick={() => void toggleFullscreen()}
+          >
+            {fullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+          </button>
         </div>
       </header>
       )}
@@ -1011,20 +1054,18 @@ export function IsometricEditor({
                 name="Select"
                 icon={MousePointer2}
                 active={tool === "select"}
-                onClick={() => setTool("select")}
+                onClick={() => activateTool("select")}
               />
+              <Tool name="Pan" icon={Hand} active={tool === "pan"} onClick={() => activateTool("pan")} />
               <Tool
                 name="Pipe"
                 icon={MoveUpRight}
                 active={tool === "pipe"}
-                onClick={() => {
-                  setTool("pipe");
-                  setView("iso");
-                }}
+                onClick={() => activateTool("pipe")}
               />
-              <Tool name="Pan" icon={Hand} active={tool === "pan"} onClick={() => setTool("pan")} />
+              <Tool name="Insert" icon={Plus} active={tool === "insert"} onClick={() => activateTool("insert")} />
             </div>
-            <small>DRAW · V / P / H</small>
+            <small>DRAW · V / H / P / I</small>
           </div>
           <div className="iso-ribbon-group">
             <div className="iso-ribbon-controls">
@@ -1152,7 +1193,7 @@ export function IsometricEditor({
         </div>
       )}
       <div className="iso-main">
-        {tab === "draw" && (
+        {tab === "draw" && tool === "insert" && (
           <aside className="iso-components" aria-label="Insert component">
             <div className="iso-components-head">
               <strong>Insert</strong>
@@ -1285,12 +1326,12 @@ export function IsometricEditor({
                     surface === "grid" && "model-space",
                     tool === "pipe" && "routing",
                     tool === "pan" && "panning",
-                    armed && tool === "select" && "placing",
+                    armed && tool === "insert" && "placing",
                   )}
                   viewBox={[
-                    W / 2 - W / 2 / zoom + pan[0],
-                    425 - 425 / zoom + pan[1],
-                    W / zoom,
+                    viewportX,
+                    viewportY,
+                    viewportWidth / zoom,
                     850 / zoom,
                   ].join(" ")}
                   aria-label="Editable isometric drawing"
@@ -1376,46 +1417,16 @@ export function IsometricEditor({
                     place(e);
                   }}
                 >
-                  <defs>
-                    <pattern
-                      id="iso-infinite-grid"
-                      width={visualSpacing}
-                      height={visualSpacing}
-                      patternUnits="userSpaceOnUse"
-                      patternTransform={gridTransform}
-                    >
-                      <path
-                        d={
-                          "M0 0H" +
-                          visualSpacing +
-                          "V" +
-                          visualSpacing +
-                          "H0ZM0 " +
-                          visualSpacing +
-                          "L" +
-                          visualSpacing +
-                          " 0"
-                        }
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1"
-                        vectorEffect="non-scaling-stroke"
-                      />
-                    </pattern>
-                  </defs>
-                  {surface === "paper" ? (
+                  {surface === "paper" && (
                     <rect x="0" y="0" width={W} height="850" fill="#fff" />
-                  ) : (
-                    grid.visible && (
-                      <rect
-                        x={W / 2 - W / 2 / zoom + pan[0]}
-                        y={425 - 425 / zoom + pan[1]}
-                        width={W / zoom}
-                        height={850 / zoom}
-                        fill="url(#iso-infinite-grid)"
-                        className="iso-infinite-grid"
-                      />
-                    )
+                  )}
+                  {modelGrid && (
+                    <g data-isometric-grid="true" pointerEvents="none">
+                      {modelGrid.lines.map((line, i) => (
+                        <line key={i} x1={line.a[0]} y1={line.a[1]} x2={line.b[0]} y2={line.b[1]}
+                          className={cn("iso-grid-line", line.major && "major")} vectorEffect="non-scaling-stroke" />
+                      ))}
+                    </g>
                   )}
                   {surface === "paper" && grid.visible && (
                     <g dangerouslySetInnerHTML={{ __html: gridSvg(drawing, anchor, grid, doc.units) }} />

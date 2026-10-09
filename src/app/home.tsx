@@ -394,7 +394,7 @@ export function Home({
                     Press <kbd>Esc</kbd> to finish the run; <b>New spool</b> starts the next one.
                   </li>
                   <li>
-                    Choose a component in Insert, then click the pipe. Or select the pipe first and the component
+                    Choose <b>Insert</b> (or press <kbd>I</kbd>) to open the components, then choose a component and click the pipe. Or select the pipe first and the component
                     lands on it. Elbows appear when the run changes direction.
                   </li>
                 </ol>
@@ -407,13 +407,17 @@ export function Home({
                   </dt>
                   <dd>Select</dd>
                   <dt>
+                    <kbd>H</kbd>
+                  </dt>
+                  <dd>Pan</dd>
+                  <dt>
                     <kbd>P</kbd>
                   </dt>
                   <dd>Pipe</dd>
                   <dt>
-                    <kbd>H</kbd>
+                    <kbd>I</kbd>
                   </dt>
-                  <dd>Pan</dd>
+                  <dd>Insert component</dd>
                   <dt>
                     <kbd>Esc</kbd>
                   </dt>
