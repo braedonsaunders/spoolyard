@@ -1,0 +1,119 @@
+{
+  "name": "spoolyard",
+  "productName": "Spoolyard",
+  "version": "0.1.0",
+  "description": "Open-source piping isometrics and spool fabrication drawings \u2014 in the browser, on the desktop, or inside BidWright.",
+  "author": "Braedon Saunders",
+  "license": "AGPL-3.0-only",
+  "homepage": "https://github.com/braedonsaunders/spoolyard",
+  "repository": "github:braedonsaunders/spoolyard",
+  "private": true,
+  "type": "module",
+  "main": "desktop/main.cjs",
+  "packageManager": "pnpm@10.30.3",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "desktop": "pnpm build && electron .",
+    "dist:mac": "pnpm build && electron-builder --mac",
+    "dist:win": "pnpm build && electron-builder --win"
+  },
+  "dependencies": {
+    "@pdf-lib/fontkit": "1.1.1",
+    "lucide-react": "^0.474.0",
+    "pdf-lib": "1.17.1",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "three": "^0.183.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@types/three": "^0.183.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "electron": "33.4.11",
+    "electron-builder": "^25.1.8",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.2",
+    "vite": "^7.0.0"
+  },
+  "build": {
+    "appId": "com.braedonsaunders.spoolyard",
+    "productName": "Spoolyard",
+    "artifactName": "Spoolyard-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**",
+      "desktop/**",
+      "package.json"
+    ],
+    "fileAssociations": [
+      {
+        "ext": "piping",
+        "name": "Spoolyard isometric",
+        "role": "Editor",
+        "mimeType": "application/x-spoolyard-piping"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.graphics-design",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png"
+    },
+    "dmg": {
+      "title": "Spoolyard ${version}"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Graphics",
+      "icon": "build/icon.png"
+    },
+    "publish": null
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron",
+      "esbuild"
+    ]
+  }
+}
