@@ -760,10 +760,13 @@ export function validateIso(doc: IsoDocument): string[] {
         spec = getSpec(doc, r.specId)
       if (!spec.sizes.some(s => s.nps === r.nps))
         issues.push(`${r.spool}: NPS ${r.nps} is missing from ${spec.name}.`)
-      if (!Number.isFinite(result.cut))
-        issues.push(
-          `${r.spool}: Enter fitting takeouts for ${getNode(doc, r.from).kind}/${getNode(doc, r.to).kind}.`
-        )
+      if (!Number.isFinite(result.cut)) {
+        for (const node of [getNode(doc, r.from), getNode(doc, r.to)]) {
+          if (takeout(doc, node, r.id) != null) continue
+          const label = node.description || COMPONENT_TYPES.find(t => t.code === node.component)?.label || fitting(doc, node)?.description || node.kind
+          issues.push(`${r.spool}: Enter fitting takeouts for ${label}${node.tag ? ' (' + node.tag + ')' : ''}, NPS ${r.nps}″. Pipe cut length is pending.`)
+        }
+      }
       else if (!r.connector && result.cut <= 0)
         issues.push(
           `${r.spool}: Pipe cut length is ${formatLength(result.cut, doc.units)}; check measurements and takeouts.`

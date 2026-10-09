@@ -63,6 +63,7 @@ import {
   resizeRun,
   resizeRunToCut,
   sub,
+  takeout,
   validateIso,
   welds,
   type IsoDocument,
@@ -72,7 +73,7 @@ import {
   type Vec3,
 } from "../core/model";
 import { createDrawing, sheetWidth, type Drawing, type Point, type SheetFit } from "../core/drawing";
-import { defaultGrid, gridLines, gridSvg, pickGridPoint, pickOrthoPoint } from "../core/grid";
+import { defaultGrid, GRID_ORIGIN, gridLines, gridSvg, pickGridPoint, pickOrthoPoint } from "../core/grid";
 import { importPcf, exportPcf } from "../core/pcf";
 import { download } from "./download";
 import { exportDwg } from "./dwg";
@@ -569,7 +570,7 @@ export function IsometricEditor({
   const viewportX = W / 2 - viewportWidth / 2 / zoom + pan[0];
   const viewportY = 425 - 425 / zoom + pan[1];
   const modelGrid = surface === "grid" && grid.visible
-    ? gridLines(drawing, anchor, grid, doc.units, {
+    ? gridLines(drawing, GRID_ORIGIN, grid, doc.units, {
         area: [viewportX, viewportY, viewportX + viewportWidth / zoom, viewportY + 850 / zoom],
         minSpacing: 18 * 850 / stageSize.height / zoom,
       })
@@ -581,6 +582,9 @@ export function IsometricEditor({
   const selectedRun = doc.runs.find((r) => r.id === selection),
     selectedNode = doc.nodes.find((n) => n.id === selection);
   const selectedTrack = selectedNode ? componentTrack(doc, selectedNode.id) : null;
+  const pendingCuts = cuts.filter(c => !Number.isFinite(c.cut) || c.cut <= 0);
+  const missingTakeoutNodes = doc.nodes.filter(node => cuts.some(c =>
+    (c.run.from === node.id || c.run.to === node.id) && takeout(doc, node, c.run.id) == null));
   const selectedEdges = selectedNode ? connected(doc, selectedNode.id) : [];
   const selectedHeader = selectedEdges.reduce<typeof selectedEdges[number] | undefined>((largest, run) => !largest || run.nps > largest.nps ? run : largest, undefined)
     ?? doc.runs.find(r => r.id === selectedNode?.associatedRunId);
@@ -1304,6 +1308,9 @@ export function IsometricEditor({
                   ))}
                 </select>
               </div>
+              {!!pendingCuts.length && !armed && <button className="iso-cut-notice" onClick={() => setTab("materials")}>
+                Pipe lengths pending · Review {pendingCuts.length} {pendingCuts.length === 1 ? "cut" : "cuts"}
+              </button>}
               {armed && tab === "draw" && (
                 <div className="iso-place-hint" role="status">
                   {insertHover ? "Click to place " : "Click a pipe to place "}{armed.type.label}
@@ -1447,7 +1454,7 @@ export function IsometricEditor({
                     </g>
                   )}
                   {surface === "paper" && grid.visible && (
-                    <g dangerouslySetInnerHTML={{ __html: gridSvg(drawing, anchor, grid, doc.units) }} />
+                    <g dangerouslySetInnerHTML={{ __html: gridSvg(drawing, GRID_ORIGIN, grid, doc.units) }} />
                   )}
                   {drawing.primitives
                     .filter(
@@ -2111,6 +2118,9 @@ export function IsometricEditor({
                             ))}
                         </select>
                       </Field>
+                      {missingTakeoutNodes.some(n => n.id === selectedNode.id) && <p className="iso-help iso-takeout-help">
+                        This fitting has no known takeout. Enter the centre-to-pipe-end distance below to calculate the pipe cuts. Use the individual port takeouts in Fabrication details if they differ.
+                      </p>}
                       <LengthInput
                         label="Measured takeout"
                         aria="Measured takeout"
@@ -2244,6 +2254,23 @@ export function IsometricEditor({
                 <Download size={14} /> Cut CSV
               </button>
             </div>
+            {!!pendingCuts.length && <div className="iso-dimension-review" role="status">
+              <strong>Pipe cut lengths are pending</strong>
+              <p>Pipe quantities use cut lengths after fitting takeouts and root gaps. Overall centreline lengths are shown in the cut schedule below.</p>
+              {missingTakeoutNodes.length ? <>
+                <p>Enter a measured takeout for these fittings:</p>
+                {missingTakeoutNodes.map(node => <button key={node.id} onClick={() => {
+                  setSelection(node.id); setTab("draw"); setTool("select");
+                  requestAnimationFrame(() => {
+                    const input = document.querySelector<HTMLInputElement>('[aria-label="Measured takeout"]');
+                    input?.focus(); input?.scrollIntoView({ block: "nearest" });
+                  });
+                }}>
+                  {node.description || COMPONENT_TYPES.find(t => t.code === node.component)?.label || node.kind}
+                  {node.tag ? " · " + node.tag : ""} · {connected(doc, node.id)[0]?.spool} · Enter takeout
+                </button>)}
+              </> : <p>One or more pipe cuts have no length remaining after fitting takeouts and root gaps. Review their measurements below.</p>}
+            </div>}
             <h3>Bill of materials</h3>
             <table>
               <thead>
@@ -2265,7 +2292,7 @@ export function IsometricEditor({
                     <td>{m.spec}</td>
                     <td>{m.nps}″</td>
                     <td>
-                      {Number.isFinite(shown.quantity) ? round(shown.quantity) : "MISSING"} {shown.unit}
+                      {Number.isFinite(shown.quantity) ? `${round(shown.quantity)} ${shown.unit}` : "Pending cut lengths"}
                     </td>
                     <td>{shown.weight == null ? "MISSING" : round(shown.weight)}</td>
                     <td>{m.spool}</td>

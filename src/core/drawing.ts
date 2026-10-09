@@ -446,12 +446,16 @@ export function createDrawing(
     text([990 + dx, y], String(r.nps), 10)
     text(
       [1032 + dx, y],
-      `${Number.isFinite(display.quantity) ? round(display.quantity, 2) : 'MISSING'} ${display.unit}`,
+      Number.isFinite(display.quantity) ? `${round(display.quantity, 2)} ${display.unit}` : 'TBD*',
       9
     )
   }
   if (shown.length > 23)
     text([810 + dx, 625], `+${shown.length - 23} rows: see material schedule`, 10)
+  if (shown.some(row => !Number.isFinite(row.qty))) {
+    text([810 + dx, 611], '* Pipe cut lengths need review.', 9)
+    if (shown.length <= 23) text([810 + dx, 625], 'Check fitting takeouts and pipe lengths.', 9)
+  }
   rect(35, 650, W - 70, 160)
   line([35, 705], [W - 35, 705], 'BORDER')
   line([700 + dx, 650], [700 + dx, 810], 'BORDER')

@@ -19,7 +19,7 @@ import {
   displayBom,
 } from "../core/model";
 import { createDrawing, drawingSvg } from "../core/drawing";
-import { defaultGrid, gridLines } from "../core/grid";
+import { defaultGrid, GRID_ORIGIN, gridLines } from "../core/grid";
 export async function exportPdf(doc: IsoDocument): Promise<Blob> {
   const pdf = await PDFDocument.create();
   pdf.setTitle(`${doc.drawing} - ${doc.title}`);
@@ -64,7 +64,7 @@ export async function exportPdf(doc: IsoDocument): Promise<Blob> {
       page.drawRectangle({ x: 0, y: 0, width, height, color: rgb(1, 1, 1) });
       const settings = doc.grid ?? defaultGrid();
       const grid = settings.visible
-        ? gridLines(d, doc.nodes.find((n) => d.positions.has(n.id))?.position ?? [0, 0, 0], settings, doc.units)
+        ? gridLines(d, GRID_ORIGIN, settings, doc.units)
         : null;
       for (const l of grid?.lines ?? [])
         page.drawLine({
@@ -199,7 +199,7 @@ export async function exportPdf(doc: IsoDocument): Promise<Blob> {
       String(r.item),
       r.description,
       `${r.spec} / ${r.nps}"`,
-      `${Number.isFinite(shown.quantity) ? round(shown.quantity, 3) : "MISSING"} ${shown.unit}`,
+      Number.isFinite(shown.quantity) ? `${round(shown.quantity, 3)} ${shown.unit}` : "Pending cuts",
       shown.weight == null ? "MISSING" : String(round(shown.weight)),
       shown.area == null ? "MISSING" : String(round(shown.area, 3)),
       `${r.spool} / ${r.heat}`,

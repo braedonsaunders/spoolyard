@@ -2,6 +2,8 @@ import { formatLength, type IsoDocument, type Vec3 } from './model'
 import type { Drawing, Point } from './drawing'
 
 export type GridPlane = 'xy' | 'xz' | 'yz'
+/** The graph paper stays in drawing coordinates, independent of the selected routing connection. */
+export const GRID_ORIGIN: Vec3 = [0, 0, 0]
 export interface GridSettings {
   visible: boolean
   snap: boolean
