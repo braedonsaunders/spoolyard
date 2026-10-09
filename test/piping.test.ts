@@ -107,6 +107,35 @@ test('invalid pipe cuts never become negative purchased quantities or weights',(
  const pipes=bom(d).filter(r=>r.unit==='m');assert.ok(pipes.every(r=>!Number.isFinite(r.qty)&&r.weightKg===null&&r.cost===0));
 });
 
+test('one isometric block is a real length, and feet or inches stay valid in either unit mode', async () => {
+  const { defaultBlockSpacing, defaultGrid, gridLines } = await import('../src/core/grid.ts');
+  const { resizeRunToCut, cutCsv } = await import('../src/core/model.ts');
+  assert.equal(defaultBlockSpacing('mm'), 100);
+  assert.equal(parseLength('12 in', 'mm'), parseLength("1'", 'imperial'));
+  assert.equal(parseLength('100 mm', 'imperial'), 100);
+  assert.equal(parseLength('1 ft', 'mm'), parseLength('12"', 'imperial'));
+  assert.equal(formatLength(defaultBlockSpacing('imperial'), 'imperial'), '1′ 0″');
+  const d = newIso();
+  d.units = 'imperial';
+  d.grid = { ...defaultGrid(), spacing: defaultBlockSpacing('imperial') };
+  appendRun(d, null, [defaultBlockSpacing('imperial'), 0, 0], 'CS40', 2, 'SP', '');
+  const drawing = createDrawing(d);
+  const overall = drawing.primitives.find(p => p.type === 'text' && p.role === 'overall');
+  assert.ok(overall && overall.type === 'text');
+  if (overall && overall.type === 'text') assert.equal(overall.text, '1′ 0″');
+  const grid = gridLines(drawing, [0, 0, 0], d.grid!, 'imperial');
+  assert.match(grid!.caption, /1 block = 1′ 0″/);
+  assert.match(cutCsv(d), /1′ 0″/);
+  assert.doesNotMatch(cutCsv(d), /Overall mm/);
+  resizeRunToCut(d, d.runs[0].id, 6 * 25.4);
+  assert.ok(Math.abs(runResult(d, d.runs[0]).cut - 6 * 25.4) < 1e-6);
+  assert.ok(Math.abs(runResult(d, d.runs[0]).overall - 6 * 25.4) < 1e-6);
+  const valve = insertComponent(d, d.runs[0].id, 'valve');
+  valve.takeout = 25.4;
+  d.dimensionMode = 'both';
+  const cut = createDrawing(d).primitives.find(p => p.type === 'text' && p.role === 'cut');
+  assert.ok(cut && cut.type === 'text' && cut.text.startsWith('CUT '));
+});
 test('PCF preserves per-pipe gap overrides and endpoint tags and preparations',()=>{
  const d=newIso();const a=appendRun(d,null,[1000,0,0],'CS40',2,'SP','LINE');appendRun(d,a.id,[0,1000,0],'CS40',2,'SP','LINE');
  d.runs[0].rootGap=5;d.runs[0].toTag='FW-1';d.runs[0].toField=true;d.runs[1].fromPrep='SW';

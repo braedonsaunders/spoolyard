@@ -1,4 +1,4 @@
-import type { Vec3 } from './model'
+import { formatLength, type IsoDocument, type Vec3 } from './model'
 import type { Drawing, Point } from './drawing'
 
 export type GridPlane = 'xy' | 'xz' | 'yz'
@@ -16,6 +16,10 @@ export const defaultGrid = (): GridSettings => ({
   spacing: 100,
   plane: 'xy'
 })
+/** Centreline length of one isometric block. Imperial drawings start at 12 inches; metric drawings at 100 mm. */
+export function defaultBlockSpacing(units: IsoDocument['units']): number {
+  return units === 'imperial' ? 12 * 25.4 : 100
+}
 const axes = (plane: GridPlane): [number, number] =>
   plane === 'xy' ? [0, 1] : plane === 'xz' ? [0, 2] : [1, 2]
 
@@ -129,7 +133,8 @@ function clipLine(a: Point, b: Point, box: [number, number, number, number]): [P
 export function gridLines(
   drawing: Drawing,
   anchor: Vec3,
-  settings: GridSettings
+  settings: GridSettings,
+  units: IsoDocument['units'] = 'mm'
 ): { lines: GridLine[]; caption: string } | null {
   const origin = drawing.project(anchor),
     [a, b] = axes(settings.plane)
@@ -180,15 +185,21 @@ export function gridLines(
       if (clipped) lines.push({ a: clipped[0], b: clipped[1], major: i % 5 === 0 })
     }
   }
+  const block = formatLength(settings.spacing, units)
   return {
     lines,
-    caption: `${settings.plane.toUpperCase()} grid · ${settings.spacing * every} mm${every > 1 ? ` shown · ${settings.spacing} mm snap` : ''}`
+    caption: `${settings.plane.toUpperCase()} · 1 block = ${block}${every > 1 ? ` · lines every ${every} blocks` : ''}`
   }
 }
 
-export function gridSvg(drawing: Drawing, anchor: Vec3, settings: GridSettings): string {
+export function gridSvg(
+  drawing: Drawing,
+  anchor: Vec3,
+  settings: GridSettings,
+  units: IsoDocument['units'] = 'mm'
+): string {
   if (!settings.visible) return ''
-  const grid = gridLines(drawing, anchor, settings)
+  const grid = gridLines(drawing, anchor, settings, units)
   const [x, y] = drawing.area
   if (!grid) return `<text x="${x + 5}" y="${y + 17}" font-size="10">Grid plane is edge-on in this view</text>`
   const out = grid.lines.map(

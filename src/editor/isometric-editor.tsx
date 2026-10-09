@@ -1,5 +1,5 @@
 
-import { useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode, type PointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode, type PointerEvent } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -48,6 +48,7 @@ import {
   defaultEndPrep,
   id,
   insertComponent,
+  lengthInputValue,
   newIso,
   parseIsoJson,
   parseLength,
@@ -57,6 +58,7 @@ import {
   setAutoFitting,
   removeComponent,
   resizeRun,
+  resizeRunToCut,
   sub,
   validateIso,
   welds,
@@ -143,6 +145,103 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
     </label>
   );
 }
+const BLOCK_PRESETS = ["6 in", "12 in", "1 ft", "2 ft", "5 ft", "100 mm", "250 mm", "500 mm", "1 m"];
+function BlockScaleInput({
+  spacing,
+  units,
+  className,
+  onCommit,
+  onError,
+}: {
+  spacing: number;
+  units: IsoDocument["units"];
+  className?: string;
+  onCommit: (mm: number) => void;
+  onError: (message: string) => void;
+}) {
+  const shown = lengthInputValue(spacing, units);
+  return (
+    <input
+      className={className}
+      aria-label="Isometric block scale"
+      title={'Length of one isometric block. 12 in, 1 ft, 2\' 6", or 100 mm.'}
+      list="iso-block-scales"
+      key={spacing + ":" + units}
+      defaultValue={shown}
+      onBlur={(e) => {
+        try {
+          const value = parseLength(e.target.value, units);
+          if (!(value > 0) || value > 1e7) throw new Error("Enter a positive block length.");
+          if (Math.abs(value - spacing) > 0.001) onCommit(value);
+          else e.target.value = shown;
+        } catch (err) {
+          e.target.value = shown;
+          onError(err instanceof Error ? err.message : String(err));
+        }
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") e.currentTarget.blur();
+        if (e.key === "Escape") {
+          e.currentTarget.value = shown;
+          e.currentTarget.blur();
+        }
+      }}
+    />
+  );
+}
+function LengthInput({
+  label,
+  aria,
+  mm,
+  units,
+  allowEmpty,
+  onCommit,
+  onError,
+}: {
+  label: string;
+  aria: string;
+  mm: number | undefined;
+  units: IsoDocument["units"];
+  allowEmpty?: boolean;
+  onCommit: (mm: number | undefined) => void;
+  onError: (message: string) => void;
+}) {
+  const shown = mm == null || !Number.isFinite(mm) ? "" : lengthInputValue(mm, units);
+  return (
+    <Field label={label}>
+      <input
+        aria-label={aria}
+        title={'Feet and inches or millimetres, for example 2\' 3 1/2", 12 in, or 100 mm.'}
+        key={shown + ":" + units + ":" + label}
+        defaultValue={shown}
+        placeholder={allowEmpty ? "spec" : units === "imperial" ? '0"' : "0"}
+        onBlur={(e) => {
+          const raw = e.target.value.trim();
+          try {
+            if (!raw) {
+              if (allowEmpty) onCommit(undefined);
+              else e.target.value = shown;
+              return;
+            }
+            const value = parseLength(raw, units);
+            if (!(value >= 0)) throw new Error("Enter a length of zero or more.");
+            if (mm == null || Math.abs(value - mm) > 0.001) onCommit(value);
+          } catch (err) {
+            e.target.value = shown;
+            onError(err instanceof Error ? err.message : String(err));
+          }
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.currentTarget.blur();
+          if (e.key === "Escape") {
+            e.currentTarget.value = shown;
+            e.currentTarget.blur();
+          }
+        }}
+      />
+    </Field>
+  );
+}
 function Tool({
   name,
   icon: Icon,
@@ -206,16 +305,22 @@ export function IsometricEditor({
   const [zoom, setZoom] = useState(1),
     [pan, setPan] = useState<Point>([0, 0]),
     [cursor, setCursor] = useState<Vec3 | null>(null);
+  const [lengthEdit, setLengthEdit] = useState<{ runId: string; role: "overall" | "cut" } | null>(null);
+  const [lengthBox, setLengthBox] = useState<{ left: number; top: number; width: number; height: number; fontSize: number } | null>(null);
   const [undoCount, setUndoCount] = useState(0),
     [redoCount, setRedoCount] = useState(0),
     [busy, setBusy] = useState("");
   const undo = useRef<IsoDocument[]>([]),
     redo = useRef<IsoDocument[]>([]),
     svg = useRef<SVGSVGElement>(null),
+    stage = useRef<HTMLDivElement>(null),
     importInput = useRef<HTMLInputElement>(null),
     three = useRef<HTMLDivElement>(null),
-    specInput = useRef<HTMLInputElement>(null);
+    specInput = useRef<HTMLInputElement>(null),
+    lengthInput = useRef<HTMLInputElement>(null);
   const drag = useRef<{ x: number; y: number; pan: Point; scale: number } | null>(null);
+  const lengthCancel = useRef(false);
+  const lengthClosing = useRef(false);
   const nodeDrag = useRef<{
     id: string;
     point: Point;
@@ -259,6 +364,7 @@ export function IsometricEditor({
         setSpec(loaded.specs[0].id);
         setNps(loaded.runs.at(-1)?.nps ?? defaultNps(loaded.specs[0]));
         setStart(loaded.nodes.at(-1)?.id ?? "");
+        setSpan(loaded.units === "imperial" ? "10'" : "1000");
         setReady(true);
       })
       .catch((e) => {
@@ -678,6 +784,83 @@ export function IsometricEditor({
     commit((d) => {
       d.grid = { ...(d.grid ?? defaultGrid()), ...patch };
     });
+  const openLength = (runId: string, role: "overall" | "cut") => {
+    const run = doc.runs.find((r) => r.id === runId && !r.connector);
+    if (!run) return;
+    lengthCancel.current = false;
+    lengthClosing.current = false;
+    setSelection(runId);
+    setTool("select");
+    setLengthEdit({ runId, role });
+  };
+  const finishLength = (raw: string) => {
+    if (lengthClosing.current) return;
+    lengthClosing.current = true;
+    const edit = lengthEdit;
+    setLengthEdit(null);
+    if (lengthCancel.current) {
+      lengthCancel.current = false;
+      return;
+    }
+    if (!edit) return;
+    try {
+      const value = parseLength(raw, doc.units);
+      const run = doc.runs.find((r) => r.id === edit.runId);
+      if (!run || run.connector) throw new Error("Select a pipe to change its length.");
+      const current = runResult(doc, run);
+      const target = edit.role === "cut" ? current.cut : current.overall;
+      if (!Number.isFinite(target) || Math.abs(value - target) > 0.001)
+        commit((d) =>
+          edit.role === "cut" ? resizeRunToCut(d, edit.runId, value) : resizeRun(d, edit.runId, value),
+        );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+  const bindLengthInput = useCallback((el: HTMLInputElement | null) => {
+    lengthInput.current = el;
+    if (!el) return;
+    el.focus();
+    el.select();
+  }, []);
+  const lengthDraft = useMemo(() => {
+    if (!lengthEdit) return "";
+    const run = doc.runs.find((r) => r.id === lengthEdit.runId);
+    if (!run) return "";
+    const result = runResult(doc, run);
+    return lengthInputValue(lengthEdit.role === "cut" ? result.cut : result.overall, doc.units);
+  }, [lengthEdit, doc]);
+  useLayoutEffect(() => {
+    if (!lengthEdit || !svg.current || !stage.current) {
+      setLengthBox(null);
+      return;
+    }
+    const text = svg.current.querySelector(
+      `text[data-length="${lengthEdit.role}"][data-owner="${CSS.escape(lengthEdit.runId)}"]`,
+    );
+    if (!text) {
+      setLengthBox(null);
+      return;
+    }
+    const box = text.getBoundingClientRect();
+    const host = stage.current.getBoundingClientRect();
+    const next = {
+      left: box.left - host.left,
+      top: box.top - host.top - 1,
+      width: Math.max(108, box.width + 36),
+      height: Math.max(24, box.height + 8),
+      fontSize: Math.max(13, box.height),
+    };
+    setLengthBox((prev) =>
+      prev &&
+      Math.abs(prev.left - next.left) < 0.5 &&
+      Math.abs(prev.top - next.top) < 0.5 &&
+      Math.abs(prev.width - next.width) < 0.5 &&
+      Math.abs(prev.height - next.height) < 0.5
+        ? prev
+        : next,
+    );
+  }, [lengthEdit, doc, zoom, pan, view, surface, filter]);
   const titleInput = (
     key: "title" | "drawing" | "revision" | "customer" | "project" | "drawnBy" | "checkedBy" | "notes",
     x: number,
@@ -874,6 +1057,8 @@ export function IsometricEditor({
                 <input
                   aria-label="Measured pipe length"
                   value={span}
+                  placeholder={doc.units === "imperial" ? "10' or 12\"" : "1000"}
+                  title={'Feet and inches or millimetres, for example 10\', 2\' 3 1/2", 12 in, or 1000 mm.'}
                   onChange={(e) => setSpan(e.target.value)}
                 />
               </Field>
@@ -981,11 +1166,10 @@ export function IsometricEditor({
                     <input
                       aria-label="Component distance from pipe start"
                       key={selection + "-" + fraction}
-                      defaultValue={
-                        doc.units === "mm"
-                          ? String(round(runResult(doc, selectedRun).overall * fraction / 100, 3))
-                          : formatLength(runResult(doc, selectedRun).overall * fraction / 100, doc.units)
-                      }
+                      defaultValue={lengthInputValue(
+                        runResult(doc, selectedRun).overall * fraction / 100,
+                        doc.units,
+                      )}
                       onBlur={(e) => {
                         try {
                           const distance = parseLength(e.target.value, doc.units),
@@ -1018,6 +1202,7 @@ export function IsometricEditor({
         {["draw", "sheet"].includes(tab) && (
           <>
             <div
+              ref={stage}
               className={cn("iso-stage", surface === "grid" && "iso-stage-grid")}
               onWheel={(e) => {
                 e.preventDefault();
@@ -1173,6 +1358,7 @@ export function IsometricEditor({
                       e.currentTarget.releasePointerCapture(e.pointerId);
                       return;
                     }
+                    if ((e.target as Element).closest("[data-length]") && e.detail >= 2) return;
                     place(e);
                   }}
                 >
@@ -1218,7 +1404,7 @@ export function IsometricEditor({
                     )
                   )}
                   {surface === "paper" && grid.visible && (
-                    <g dangerouslySetInnerHTML={{ __html: gridSvg(drawing, anchor, grid) }} />
+                    <g dangerouslySetInnerHTML={{ __html: gridSvg(drawing, anchor, grid, doc.units) }} />
                   )}
                   {drawing.primitives
                     .filter(
@@ -1273,20 +1459,50 @@ export function IsometricEditor({
                           fill={surface === "paper" ? "white" : "var(--iso-canvas)"}
                         />
                       ) : (
-                        <text
-                          key={i}
-                          data-owner={p.owner}
-                          x={p.p[0]}
-                          y={p.p[1]}
-                          fontSize={p.size}
-                          className={cn(
-                            "iso-text",
-                            "iso-layer-" + p.layer.toLowerCase(),
-                            p.owner === selection && "selected",
+                        <g key={i}>
+                          <text
+                            data-owner={p.owner}
+                            data-length={p.role}
+                            x={p.p[0]}
+                            y={p.p[1]}
+                            fontSize={p.size}
+                            className={cn(
+                              "iso-text",
+                              "iso-layer-" + p.layer.toLowerCase(),
+                              p.owner === selection && "selected",
+                            )}
+                            style={
+                              lengthEdit != null && lengthEdit.runId === p.owner && lengthEdit.role === p.role
+                                ? { visibility: "hidden" }
+                                : undefined
+                            }
+                          >
+                            {p.text}
+                          </text>
+                          {p.role && p.owner && !(lengthEdit != null && lengthEdit.runId === p.owner && lengthEdit.role === p.role) && (
+                            <rect
+                              data-owner={p.owner}
+                              data-length={p.role}
+                              x={p.p[0] - 4}
+                              y={p.p[1] - p.size}
+                              width={Math.max(36, p.text.length * p.size * 0.62 + 8)}
+                              height={p.size + 8}
+                              fill="transparent"
+                              className="iso-length-hit"
+                              onDoubleClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                openLength(p.owner!, p.role!);
+                              }}
+                            >
+                              <title>
+                                {p.role === "cut"
+                                  ? "Double-click to edit the cut length"
+                                  : "Double-click to edit the centreline length"}
+                              </title>
+                            </rect>
                           )}
-                        >
-                          {p.text}
-                        </text>
+                        </g>
                       ),
                     )}
                   {[...drawing.positions].map(([key, p]) => (
@@ -1369,6 +1585,33 @@ export function IsometricEditor({
                   )}
                 </svg>
               )}
+              {lengthEdit && lengthBox && (
+                <input
+                  key={lengthEdit.runId + ":" + lengthEdit.role}
+                  ref={bindLengthInput}
+                  className="iso-inline-length"
+                  aria-label={lengthEdit.role === "cut" ? "Pipe cut length" : "Pipe overall length"}
+                  style={{
+                    left: lengthBox.left,
+                    top: lengthBox.top,
+                    width: lengthBox.width,
+                    height: lengthBox.height,
+                    fontSize: lengthBox.fontSize,
+                  }}
+                  defaultValue={lengthDraft}
+                  onBlur={(event) => finishLength(event.target.value)}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onWheel={(event) => event.stopPropagation()}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") event.currentTarget.blur();
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      lengthCancel.current = true;
+                      setLengthEdit(null);
+                    }
+                  }}
+                />
+              )}
               <div className="iso-bottom-controls">
                 <div>
                   <button
@@ -1396,16 +1639,19 @@ export function IsometricEditor({
                       <option key={v}>{v}</option>
                     ))}
                   </select>
-                  <input
-                    type="number"
-                    aria-label="Grid spacing mm"
-                    min="1"
-                    value={grid.spacing}
-                    onChange={(e) => {
-                      if (Number(e.target.value) > 0) setGrid({ spacing: Number(e.target.value) });
-                    }}
+                  <span>1 block</span>
+                  <BlockScaleInput
+                    className="iso-block-scale"
+                    spacing={grid.spacing}
+                    units={doc.units}
+                    onCommit={(spacing) => setGrid({ spacing })}
+                    onError={setError}
                   />
-                  <span>mm</span>
+                  <datalist id="iso-block-scales">
+                    {BLOCK_PRESETS.map((preset) => (
+                      <option key={preset} value={preset} />
+                    ))}
+                  </datalist>
                 </div>
                 <div>
                   <button aria-label="Zoom out" onClick={() => setZoom((z) => Math.max(0.01, z / 1.2))}>
@@ -1477,16 +1723,35 @@ export function IsometricEditor({
                   <Field label="Units">
                     <select
                       value={doc.units}
-                      onChange={(e) =>
+                      onChange={(e) => {
+                        const units = e.target.value as IsoDocument["units"];
+                        const previous = doc.units;
                         commit((d) => {
-                          d.units = e.target.value as IsoDocument["units"];
-                        })
-                      }
+                          d.units = units;
+                        });
+                        try {
+                          setSpan(lengthInputValue(parseLength(span, previous), units));
+                        } catch {
+                          setSpan(units === "imperial" ? "10'" : "1000");
+                        }
+                      }}
                     >
                       <option value="mm">Millimetres</option>
                       <option value="imperial">Feet / inches</option>
                     </select>
                   </Field>
+                  <Field label="Isometric scale">
+                    <BlockScaleInput
+                      spacing={grid.spacing}
+                      units={doc.units}
+                      onCommit={(spacing) => setGrid({ spacing })}
+                      onError={setError}
+                    />
+                  </Field>
+                  <div className="iso-help">
+                    One grid block is this centreline length. Type 12 in, 1 ft, or 100 mm — an explicit unit
+                    works in either mode. Snap uses the same length. Double-click a pipe dimension to edit it.
+                  </div>
                   {(["iso", "plan", "front", "side"] as const).map((v) => (
                     <label className="iso-check" key={v}>
                       <input
@@ -1530,7 +1795,7 @@ export function IsometricEditor({
                         .filter((n) => !n.associatedRunId)
                         .map((n, i) => (
                           <option value={n.id} key={n.id}>
-                            {labels[n.kind]} {i + 1} · {n.position.map((v) => round(v)).join(", ")}
+                            {labels[n.kind]} {i + 1} · {n.position.map((v) => lengthInputValue(v, doc.units)).join(", ")}
                           </option>
                         ))}
                     </select>
@@ -1591,8 +1856,8 @@ export function IsometricEditor({
                         </span>
                       </div>
                       {!selectedRun.connector && <Field label="Overall length">
-                        <input aria-label="Pipe overall length" key={selection + '-' + runResult(doc, selectedRun).overall}
-                          defaultValue={doc.units === 'mm' ? String(round(runResult(doc, selectedRun).overall, 3)) : formatLength(runResult(doc, selectedRun).overall, doc.units)}
+                        <input aria-label="Pipe overall length" key={selection + '-' + runResult(doc, selectedRun).overall + doc.units}
+                          defaultValue={lengthInputValue(runResult(doc, selectedRun).overall, doc.units)}
                           onBlur={e => {
                             try {
                               const value = parseLength(e.target.value, doc.units);
@@ -1658,19 +1923,19 @@ export function IsometricEditor({
                           </Field>
                         </div>
                       ))}
-                      <Field label="Root gap override (mm)">
-                        <input
-                          type="number"
-                          min="0"
-                          value={selectedRun.rootGap ?? ""}
-                          onChange={(e) =>
-                            commit((d) => {
-                              d.runs.find((r) => r.id === selection)!.rootGap =
-                                e.target.value === "" ? undefined : Number(e.target.value);
-                            })
-                          }
-                        />
-                      </Field>
+                      <LengthInput
+                        label="Root gap override"
+                        aria="Root gap override"
+                        mm={selectedRun.rootGap}
+                        units={doc.units}
+                        allowEmpty
+                        onError={setError}
+                        onCommit={(value) =>
+                          commit((d) => {
+                            d.runs.find((r) => r.id === selection)!.rootGap = value;
+                          })
+                        }
+                      />
                       <div className="iso-inspector-section">
                         <strong>On this pipe</strong>
                         <p className="iso-help">
@@ -1768,19 +2033,19 @@ export function IsometricEditor({
                             ))}
                         </select>
                       </Field>
-                      <Field label="Measured takeout (mm)">
-                        <input
-                          type="number"
-                          min="0"
-                          value={selectedNode.takeout ?? ""}
-                          onChange={(e) =>
-                            commit((d) => {
-                              getNode(d, selection).takeout =
-                                e.target.value === "" ? undefined : Number(e.target.value);
-                            })
-                          }
-                        />
-                      </Field>
+                      <LengthInput
+                        label="Measured takeout"
+                        aria="Measured takeout"
+                        mm={selectedNode.takeout}
+                        units={doc.units}
+                        allowEmpty
+                        onError={setError}
+                        onCommit={(value) =>
+                          commit((d) => {
+                            getNode(d, selection).takeout = value;
+                          })
+                        }
+                      />
                       <details className="iso-offset">
                         <summary>Fabrication details</summary>
                         {(["weightKg", "areaM2", "unitCost", "laborHours", "quantity"] as const).map((k) => (
@@ -1799,35 +2064,37 @@ export function IsometricEditor({
                             />
                           </Field>
                         ))}
-                        <Field label="Branch takeout (mm)">
-                          <input
-                            type="number"
-                            min="0"
-                            value={selectedNode.branchTakeout ?? ""}
-                            onChange={(e) =>
+                        <LengthInput
+                          label="Branch takeout"
+                          aria="Branch takeout"
+                          mm={selectedNode.branchTakeout}
+                          units={doc.units}
+                          allowEmpty
+                          onError={setError}
+                          onCommit={(value) =>
+                            commit((d) => {
+                              getNode(d, selection).branchTakeout = value;
+                            })
+                          }
+                        />
+                        {connected(doc, selectedNode.id).map((r, i) => (
+                          <LengthInput
+                            key={r.id}
+                            label={"Port " + (i + 1) + " takeout"}
+                            aria={"Port " + (i + 1) + " takeout"}
+                            mm={selectedNode.portTakeouts?.[r.id]}
+                            units={doc.units}
+                            allowEmpty
+                            onError={setError}
+                            onCommit={(value) =>
                               commit((d) => {
-                                getNode(d, selection).branchTakeout =
-                                  e.target.value === "" ? undefined : Number(e.target.value);
+                                const n = getNode(d, selection);
+                                n.portTakeouts ??= {};
+                                if (value == null) delete n.portTakeouts[r.id];
+                                else n.portTakeouts[r.id] = value;
                               })
                             }
                           />
-                        </Field>
-                        {connected(doc, selectedNode.id).map((r, i) => (
-                          <Field key={r.id} label={"Port " + (i + 1) + " takeout (mm)"}>
-                            <input
-                              type="number"
-                              min="0"
-                              value={selectedNode.portTakeouts?.[r.id] ?? ""}
-                              onChange={(e) =>
-                                commit((d) => {
-                                  const n = getNode(d, selection);
-                                  n.portTakeouts ??= {};
-                                  if (e.target.value === "") delete n.portTakeouts[r.id];
-                                  else n.portTakeouts[r.id] = Number(e.target.value);
-                                })
-                              }
-                            />
-                          </Field>
                         ))}
                       </details>
                       <Field label="Description">
@@ -1948,8 +2215,8 @@ export function IsometricEditor({
                     <td>P{i + 1}</td>
                     <td>{c.run.spool}</td>
                     <td>{formatLength(c.overall, doc.units)}</td>
-                    <td>{c.takeouts.map(v => Number.isFinite(v) ? round(v, 3) : 'MISSING').join(" + ")} mm</td>
-                    <td>{c.gaps.join(" + ")} mm</td>
+                    <td>{c.takeouts.map(v => Number.isFinite(v) ? formatLength(v, doc.units) : 'MISSING').join(" + ")}</td>
+                    <td>{c.gaps.map(v => formatLength(v, doc.units)).join(" + ")}</td>
                     <td>
                       {Number.isFinite(c.cut) && c.cut > 0 ? formatLength(c.cut, doc.units) : "MISSING"}
                     </td>
@@ -2023,7 +2290,7 @@ export function IsometricEditor({
                     <td>{w.nps}″</td>
                     <td>{w.prep}</td>
                     <td>{w.field ? "Field" : "Shop"}</td>
-                    <td>{w.position.map((v) => round(v)).join(", ")}</td>
+                    <td>{w.position.map((v) => lengthInputValue(v, doc.units)).join(", ")}</td>
                   </tr>
                 ))}
               </tbody>

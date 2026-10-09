@@ -214,10 +214,9 @@ export async function exportPdf(doc: IsoDocument): Promise<Blob> {
           r.line + " / " + r.heat,
           String(r.nps),
           formatLength(v.overall, doc.units),
-          v.takeouts.map((t) => (Number.isFinite(t) ? String(round(t)) : "MISSING")).join(" + ") +
-            " mm / " +
-            v.gaps.join(" + ") +
-            " mm",
+          v.takeouts.map((t) => (Number.isFinite(t) ? formatLength(t, doc.units) : "MISSING")).join(" + ") +
+            " / " +
+            v.gaps.map((g) => formatLength(g, doc.units)).join(" + "),
           formatLength(v.cut, doc.units),
           prepAt(r, 0) + " / " + prepAt(r, 1),
         ];

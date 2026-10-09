@@ -317,6 +317,28 @@
 .iso-text.iso-layer-dim {
   fill: #31404c;
 }
+.iso-length-hit {
+  cursor: text;
+}
+.iso-inline-length {
+  position: absolute;
+  z-index: 4;
+  box-sizing: border-box;
+  margin: 0;
+  border: 1.5px solid #087fbe;
+  border-radius: 3px;
+  background: #fff;
+  color: #17212c;
+  font-family: Arial, sans-serif;
+  font-weight: 650;
+  padding: 0 6px;
+  outline: none;
+  box-shadow: 0 2px 8px #10203033;
+}
+.model-space .iso-inline-length {
+  background: var(--iso-canvas, #fff);
+  color: var(--iso-ink, #17212c);
+}
 .iso-text.iso-layer-text {
   fill: #6d7a86;
 }
@@ -525,6 +547,9 @@
   background: transparent;
   color: inherit;
   padding: 2px;
+}
+.iso-bottom-controls input.iso-block-scale {
+  width: 96px;
 }
 .iso-bottom-controls select {
   border: 0;

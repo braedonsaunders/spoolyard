@@ -661,6 +661,17 @@ export function resizeRun(doc: IsoDocument, runId: string, overall: number): voi
     }
   }
 }
+/** Change the cut length. The centreline grows or shrinks by the same amount, keeping takeouts and root gaps. */
+export function resizeRunToCut(doc: IsoDocument, runId: string, cut: number): void {
+  const run = doc.runs.find(r => r.id === runId)
+  if (!run || run.connector) throw new Error('Select a pipe to change its length.')
+  if (!Number.isFinite(cut) || cut <= 0) throw new Error('Enter a positive cut length.')
+  const result = runResult(doc, run)
+  const extra = result.takeouts[0] + result.takeouts[1] + result.gaps[0] + result.gaps[1]
+  if (!Number.isFinite(extra))
+    throw new Error('Enter fitting takeouts before editing the cut length.')
+  resizeRun(doc, runId, cut + extra)
+}
 /** Spreadsheet-style letters provide a stable A..Z, AA..AZ weld sequence. */
 export function weldNumber(
   value: number,
@@ -755,7 +766,7 @@ export function validateIso(doc: IsoDocument): string[] {
         )
       else if (!r.connector && result.cut <= 0)
         issues.push(
-          `${r.spool}: Pipe cut length is ${round(result.cut)} mm; check measurements and takeouts.`
+          `${r.spool}: Pipe cut length is ${formatLength(result.cut, doc.units)}; check measurements and takeouts.`
         )
       if (!r.spool.trim()) issues.push('Every pipe needs a spool number.')
     } catch (e) {
@@ -989,6 +1000,12 @@ export function formatLength(mm: number, units: IsoDocument['units']): string {
   const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a)
   const g = gcd(fraction, 16)
   return `${sign}${feet ? feet + '′ ' : ''}${inch}${fraction ? ' ' + fraction / g + '/' + 16 / g : ''}″`
+}
+/** Text for a length field. Millimetres stay a plain number; feet and inches use the drawing's notation. */
+export function lengthInputValue(mm: number, units: IsoDocument['units']): string {
+  if (!Number.isFinite(mm)) return ''
+  if (units === 'mm') return String(round(mm, 3))
+  return formatLength(mm, units)
 }
 export function parseLength(value: string, units: IsoDocument['units'], allowNegative = false): number {
   let s = value.trim().toLowerCase().replace(/[′']/g, 'ft').replace(/[″"]/g, 'in').replace(/−/g, '-')
@@ -1321,6 +1338,9 @@ export function bomCsv(
   ])
 }
 export function cutCsv(doc: IsoDocument): string {
+  const length = (mm: number) =>
+    doc.units === 'mm' ? round(mm) : formatLength(mm, doc.units)
+  const suffix = doc.units === 'mm' ? ' mm' : ''
   return csv([
     [
       'Pipe',
@@ -1328,12 +1348,12 @@ export function cutCsv(doc: IsoDocument): string {
       'Line',
       'NPS',
       'Spec',
-      'Overall mm',
-      'Start takeout mm',
-      'End takeout mm',
-      'Start gap mm',
-      'End gap mm',
-      'Cut mm',
+      'Overall' + suffix,
+      'Start takeout' + suffix,
+      'End takeout' + suffix,
+      'Start gap' + suffix,
+      'End gap' + suffix,
+      'Cut' + suffix,
       'Heat',
       'Start preparation',
       'End preparation'
@@ -1348,10 +1368,10 @@ export function cutCsv(doc: IsoDocument): string {
           r.line,
           r.nps,
           r.specId,
-          round(c.overall),
-          ...c.takeouts.map(v => Number.isFinite(v) ? round(v) : 'MISSING'),
-          ...c.gaps,
-          Number.isFinite(c.cut) && c.cut > 0 ? round(c.cut) : 'MISSING',
+          length(c.overall),
+          ...c.takeouts.map(v => Number.isFinite(v) ? length(v) : 'MISSING'),
+          ...c.gaps.map(length),
+          Number.isFinite(c.cut) && c.cut > 0 ? length(c.cut) : 'MISSING',
           r.heat,
           prepAt(r, 0),
           prepAt(r, 1)

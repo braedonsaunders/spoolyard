@@ -22,6 +22,8 @@ export type Primitive =
       size: number
       layer: string
       owner?: string
+      /** Set on a pipe dimension so the editor can edit that length in place. */
+      role?: 'overall' | 'cut'
     }
 export interface Drawing {
   width: number
@@ -153,14 +155,22 @@ export function createDrawing(
     value: string,
     size = 12,
     layer = 'TEXT',
-    owner?: string
+    owner?: string,
+    role?: 'overall' | 'cut'
   ) => {
     boxes.push([p[0] - 1, p[1] - size - 1, p[0] + textWidth(value, size) + 1, p[1] + 2])
-    d.primitives.push({ type: 'text', p, text: value, size, layer, owner })
+    d.primitives.push({ type: 'text', p, text: value, size, layer, owner, role })
     return p
   }
   /** Centres a short note on a point. On a sheet, keeps it inside the model viewport. */
-  const note = (center: Point, value: string, size: number, layer: string, owner?: string) => {
+  const note = (
+    center: Point,
+    value: string,
+    size: number,
+    layer: string,
+    owner?: string,
+    role?: 'overall' | 'cut'
+  ) => {
     const width = textWidth(value, size)
     let left = center[0] - width / 2,
       baseline = center[1] + size * 0.32
@@ -169,7 +179,7 @@ export function createDrawing(
       left = Math.max(x0, Math.min(left, x1 - width))
       baseline = Math.max(150, Math.min(baseline, 625))
     }
-    return text([left, baseline], value, size, layer, owner)
+    return text([left, baseline], value, size, layer, owner, role)
   }
   const free = (center: Point, value: string, size: number) => {
     const width = textWidth(value, size)
@@ -296,7 +306,8 @@ export function createDrawing(
     )
     const primary = 10.5,
       off = 16,
-      width = textWidth(copy.primary, primary)
+      width = textWidth(copy.primary, primary),
+      primaryRole = doc.dimensionMode === 'cut' ? 'cut' : 'overall'
     if (g.len > width + 22) {
       const gap = width / 2 + 5,
         centre = move(g.mid, g.normal, off)
@@ -304,12 +315,12 @@ export function createDrawing(
       line(move(centre, g.dir, gap), move(g.b, g.normal, off), 'DIM', g.r.id)
       line(move(g.a, g.normal, 4), move(g.a, g.normal, off + 3), 'DIM', g.r.id)
       line(move(g.b, g.normal, 4), move(g.b, g.normal, off + 3), 'DIM', g.r.id)
-      note(centre, copy.primary, primary, 'DIM', g.r.id)
-      if (copy.secondary) note([centre[0], centre[1] + 12], copy.secondary, 8, 'DIM', g.r.id)
+      note(centre, copy.primary, primary, 'DIM', g.r.id, primaryRole)
+      if (copy.secondary) note([centre[0], centre[1] + 12], copy.secondary, 8, 'DIM', g.r.id, 'cut')
     } else {
       const at = move(g.mid, g.normal, off)
-      note(at, copy.primary, primary, 'DIM', g.r.id)
-      if (copy.secondary) note([at[0], at[1] + 12], copy.secondary, 8, 'DIM', g.r.id)
+      note(at, copy.primary, primary, 'DIM', g.r.id, primaryRole)
+      if (copy.secondary) note([at[0], at[1] + 12], copy.secondary, 8, 'DIM', g.r.id, 'cut')
     }
     if (callout.has(g.r.id)) {
       const value = `${g.r.nps}″ ${g.r.specId}`,
@@ -463,7 +474,7 @@ export function createDrawing(
   text([715 + dx, 765], 'CUT = OVERALL - FITTINGS - ROOT GAPS', 9)
   text(
     [715 + dx, 789],
-    `ROOT GAP: ${[...new Set(doc.specs.map(s => s.rootGap))].join('/')} mm`,
+    `ROOT GAP: ${[...new Set(doc.specs.map(s => formatLength(s.rootGap, doc.units)))].join(' / ')}`,
     10
   )
   }
@@ -519,7 +530,7 @@ export function drawingSvg(
   d: Drawing,
   selected = '',
   interactive = false,
-  grid?: { settings: GridSettings; anchor: Vec3 }
+  grid?: { settings: GridSettings; anchor: Vec3; units?: IsoDocument['units'] }
 ): string {
   const shape = (p: Primitive) => {
     const attrs = `data-owner="${escape(p.owner ?? '')}" class="${p.layer.toLowerCase()}${p.owner === selected ? ' selected' : ''}"`
@@ -537,5 +548,5 @@ export function drawingSvg(
         )
         .join('')
     : ''
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${d.width} ${d.height}" role="img" aria-label="Piping isometric drawing" style="background:white;color:#17212c"><style>text{font-family:Arial,sans-serif;fill:#17212c;paint-order:stroke fill;stroke:#fff;stroke-width:3px;stroke-linejoin:round}text.dim{fill:#31404c}text.text{fill:#6d7a86}text.weld{fill:#0c6880;font-weight:600}text.bom{fill:#1c2b38;font-weight:600}text.symbol{stroke:none}line,circle{stroke:#17212c}line.pipe{stroke:#1c2b38}line.dim{stroke:#8ea4b4}line.weld,circle.weld{stroke:#0c6880}line.bom,circle.bom{stroke:#607180}.selected{stroke:#087fbe}text.selected{fill:#087fbe}.node-hit{cursor:pointer;stroke:none!important}.iso-grid-line{stroke:#c6dbea;stroke-width:0.6}.iso-grid-line.major{stroke:#a5c8df;stroke-width:0.85}.iso-grid-caption{fill:#4f7289}.grid-cursor{stroke:#087fbe;fill:#087fbe;pointer-events:none}text{user-select:none}</style>${interactive && grid ? gridSvg(d, grid.anchor, grid.settings) : ''}${d.primitives.map(shape).join('')}${hits}${interactive ? '<g data-grid-cursor pointer-events="none"></g>' : ''}</svg>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${d.width} ${d.height}" role="img" aria-label="Piping isometric drawing" style="background:white;color:#17212c"><style>text{font-family:Arial,sans-serif;fill:#17212c;paint-order:stroke fill;stroke:#fff;stroke-width:3px;stroke-linejoin:round}text.dim{fill:#31404c}text.text{fill:#6d7a86}text.weld{fill:#0c6880;font-weight:600}text.bom{fill:#1c2b38;font-weight:600}text.symbol{stroke:none}line,circle{stroke:#17212c}line.pipe{stroke:#1c2b38}line.dim{stroke:#8ea4b4}line.weld,circle.weld{stroke:#0c6880}line.bom,circle.bom{stroke:#607180}.selected{stroke:#087fbe}text.selected{fill:#087fbe}.node-hit{cursor:pointer;stroke:none!important}.iso-grid-line{stroke:#c6dbea;stroke-width:0.6}.iso-grid-line.major{stroke:#a5c8df;stroke-width:0.85}.iso-grid-caption{fill:#4f7289}.grid-cursor{stroke:#087fbe;fill:#087fbe;pointer-events:none}text{user-select:none}</style>${interactive && grid ? gridSvg(d, grid.anchor, grid.settings, grid.units) : ''}${d.primitives.map(shape).join('')}${hits}${interactive ? '<g data-grid-cursor pointer-events="none"></g>' : ''}</svg>`
 }

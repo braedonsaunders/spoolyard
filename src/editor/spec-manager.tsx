@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { BookOpen, ChevronDown, Copy, Download, FilePlus2, Loader2, Plus, Search, Trash2, Upload } from "lucide-react";
 import { cn } from "./cn";
-import { clone, getSpec, type CatalogItem, type IsoDocument, type PipeSpec } from "../core/model";
+import { clone, getSpec, lengthInputValue, parseLength, type CatalogItem, type IsoDocument, type PipeSpec } from "../core/model";
 import { COMPONENT_CATEGORIES, COMPONENT_TYPES, type ComponentType } from "../core/components";
 import { loadLibrarySpec, loadSpecIndex, namespaceSpec, uniqueSpecId, type LibrarySpecSummary } from "./library";
 import { download } from "./download";
@@ -286,9 +286,41 @@ export function SpecManager({
                   />
                 </label>
               ))}
+              <label className="iso-field">
+                <span>Butt-weld root gap</span>
+                <input
+                  aria-label="Butt-weld root gap"
+                  title={'Feet and inches or millimetres, for example 1/8", 3 mm.'}
+                  key={spec.id + ":" + spec.rootGap + ":" + doc.units}
+                  defaultValue={lengthInputValue(spec.rootGap, doc.units)}
+                  onBlur={(e) => {
+                    const raw = e.target.value.trim();
+                    if (!raw) {
+                      e.target.value = lengthInputValue(spec.rootGap, doc.units);
+                      return;
+                    }
+                    try {
+                      const value = parseLength(raw, doc.units);
+                      if (!(value >= 0)) throw new Error("Enter a root gap of zero or more.");
+                      if (Math.abs(value - spec.rootGap) > 0.001)
+                        edit((s) => {
+                          s.rootGap = value;
+                        });
+                    } catch (err) {
+                      e.target.value = lengthInputValue(spec.rootGap, doc.units);
+                      const error = err instanceof Error ? err : new Error(String(err));
+                      edit(() => {
+                        throw error;
+                      });
+                    }
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") e.currentTarget.blur();
+                  }}
+                />
+              </label>
               {(
                 [
-                  ["rootGap", "Butt-weld root gap (mm)"],
                   ["density", "Density (kg/m³)"],
                   ["pipeCostM", "Pipe cost per metre"],
                   ["pipeLaborHoursM", "Pipe labour h/m"],
