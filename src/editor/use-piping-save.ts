@@ -10,33 +10,32 @@ export function usePipingSave(
 ) {
   const [status, setStatus] = useState<"opening" | "saved" | "unsaved" | "saving" | "error">("opening");
   const [error, setError] = useState("");
-  const ref = useRef({ content: "", saved: "", pending: "", running: false, mounted: true, onSave });
+  const ref = useRef({ content: "", saved: "", pending: "", inFlight: null as Promise<void> | null, mounted: true, onSave });
   ref.current.onSave = onSave;
   if (ready) ref.current.content = JSON.stringify(doc);
-  const flush = useCallback(async () => {
+  const flush = useCallback((): Promise<void> => {
     const state = ref.current;
     state.pending = state.content;
-    if (state.running || !state.pending || state.pending === state.saved) return;
-    state.running = true;
-    try {
-      while (state.pending && state.pending !== state.saved) {
-        const value = state.pending;
-        if (state.mounted) {
-          setStatus("saving");
-          setError("");
+    if (state.inFlight) return state.inFlight;
+    if (!state.pending || state.pending === state.saved) return Promise.resolve();
+    state.inFlight = Promise.resolve().then(async () => {
+      try {
+        while (state.pending && state.pending !== state.saved) {
+          const value = state.pending;
+          if (state.mounted) { setStatus("saving"); setError(""); }
+          await state.onSave(value);
+          state.saved = value;
         }
-        await state.onSave(value);
-        state.saved = value;
-      }
-      if (state.mounted) setStatus("saved");
-    } catch (e) {
-      if (state.mounted) {
-        setStatus("error");
-        setError(e instanceof Error ? e.message : "Save failed");
-      }
-    } finally {
-      state.running = false;
-    }
+        if (state.mounted) setStatus("saved");
+      } catch (e) {
+        if (state.mounted) {
+          setStatus("error");
+          setError(e instanceof Error ? e.message : "Save failed");
+        }
+        throw e;
+      } finally { state.inFlight = null; }
+    });
+    return state.inFlight;
   }, []);
   useEffect(() => {
     if (!ready) return;
@@ -50,23 +49,25 @@ export function usePipingSave(
     }
     if (state.content === state.saved) return;
     setStatus("unsaved");
-    const timer = setTimeout(() => void flush(), 700);
+    const timer = setTimeout(() => void flush().catch(() => undefined), 700);
     return () => clearTimeout(timer);
   }, [doc, ready, flush, isNew]);
   useEffect(() => {
     ref.current.mounted = true;
-    const online = () => void flush();
+    const online = () => void flush().catch(() => undefined);
     const key = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
-        void flush();
+        (document.activeElement as HTMLElement | null)?.blur();
+        // Title-block fields commit on blur; let React publish that edit before serializing it.
+        requestAnimationFrame(() => void flush().catch(() => undefined));
       }
     };
     window.addEventListener("online", online);
     window.addEventListener("keydown", key);
     return () => {
       ref.current.mounted = false;
-      void flush();
+      void flush().catch(() => undefined);
       window.removeEventListener("online", online);
       window.removeEventListener("keydown", key);
     };

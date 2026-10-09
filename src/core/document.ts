@@ -1,9 +1,11 @@
 import { type IsoDocument, parseIsoJson } from "./model";
 import { createDrawing } from "./drawing";
+import { importPcf } from "./pcf";
 
 /** Read the original CAD extension record as well as standalone .piping JSON. */
 export function readIsometric(content: string): IsoDocument {
   if (content.trimStart().startsWith("{")) return parseIsoJson(content);
+  if (/^UNITS-CO-ORDS\s+/mi.test(content) && /^UNITS-BORE\s+/mi.test(content)) return importPcf(content).doc;
   const lines = content.split(/\r?\n/),
     records: Array<Array<[number, string]>> = [];
   let record: Array<[number, string]> = [];
@@ -97,7 +99,9 @@ export function isometricDxf(doc: IsoDocument): string {
     if (p.type === "line")
       put(100, "AcDbLine", 10, p.a[0], 20, -p.a[1], 30, 0, 11, p.b[0], 21, -p.b[1], 31, 0);
     else if (p.type === "circle") put(100, "AcDbCircle", 10, p.p[0], 20, -p.p[1], 30, 0, 40, p.r);
-    else
+    else {
+      const content = p.text.replace(/\\/g, "\\\\").replace(/[{}]/g, "\\$&").replace(/\r?\n/g, "\\P");
+      const chunks = content.match(/.{1,240}/gu) ?? [""];
       put(
         100,
         "AcDbMText",
@@ -113,9 +117,9 @@ export function isometricDxf(doc: IsoDocument): string {
         Math.max(1, p.text.length * p.size),
         71,
         1,
-        1,
-        p.text.replace(/\\/g, "\\\\").replace(/[{}]/g, ""),
       );
+      for (const [index, chunk] of chunks.entries()) put(index === chunks.length - 1 ? 1 : 3, chunk);
+    }
   }
   put(
     0,

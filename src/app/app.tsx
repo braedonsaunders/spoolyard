@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { HardDriveDownload, House, Moon, Sun } from "lucide-react";
-import { IsometricEditor } from "../editor/isometric-editor";
+import { IsometricEditor, type EditorController } from "../editor/isometric-editor";
 import { Home } from "./home";
 import { Splash } from "./splash";
 import { getDrawing, putDrawing, type StoredDrawing } from "./storage";
@@ -27,6 +27,7 @@ export function App() {
   const [error, setError] = useState("");
   const handle = useRef<unknown>(undefined);
   const latest = useRef("");
+  const editor = useRef<EditorController | null>(null);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
@@ -51,7 +52,7 @@ export function App() {
   const openFromDisk = useCallback(async () => {
     try {
       const file = await openFile();
-      if (file) start({ id: crypto.randomUUID(), name: piping(file.name), source: file.content, handle: file.handle });
+      if (file) start({ id: crypto.randomUUID(), name: piping(file.name), source: file.content, handle: /\.piping$/i.test(file.name) ? file.handle : undefined });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -92,7 +93,7 @@ export function App() {
   }, []);
   // Desktop: files opened from Finder/Explorer or a .piping double-click.
   useEffect(() => {
-    desktop()?.onOpenFile((file) => start({ id: crypto.randomUUID(), name: piping(file.name), source: file.content, handle: file.path }));
+    desktop()?.onOpenFile((file) => start({ id: crypto.randomUUID(), name: piping(file.name), source: file.content, handle: /\.piping$/i.test(file.name) ? file.path : undefined }));
   }, [start]);
   // Reopen the drawing in the address bar after a reload.
   useEffect(() => {
@@ -116,6 +117,7 @@ export function App() {
   const saveToDisk = async (saveAs = false) => {
     if (!open) return;
     try {
+      await editor.current?.save();
       handle.current = await saveFile(open.name, latest.current, handle.current, saveAs);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -130,6 +132,7 @@ export function App() {
           source={open.source}
           fileName={open.name}
           onSave={onSave}
+          controller={editor}
           headerActions={
             <>
               <button title="Save a copy to disk" onClick={() => void saveToDisk(!handle.current)}>

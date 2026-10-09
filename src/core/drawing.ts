@@ -136,12 +136,13 @@ export function createDrawing(
     owner?: string
   ) => {
     let at: Point = [...p]
-    const width = value.length * size * 0.52
+    const width = value.length * size * 0.62
     if (owner && ['DIM', 'TEXT', 'WELD'].includes(layer)) {
-      at = [
-        Math.max(50, Math.min(at[0], 780 + dx - width)),
-        Math.max(150, Math.min(at[1], 625))
+      const clamp = (point: Point): Point => [
+        Math.max(50, Math.min(point[0], 780 + dx - width)),
+        Math.max(150, Math.min(point[1], 625))
       ]
+      at = clamp(at)
       for (let attempt = 0; attempt < 24; attempt++) {
         const box: [number, number, number, number] = [
           at[0] - 2,
@@ -156,20 +157,25 @@ export function createDrawing(
           )
         )
           break
-        at = [
+        at = clamp([
           p[0],
           p[1] +
             (attempt % 2 === 0 ? -1 : 1) *
               Math.ceil((attempt + 1) / 2) *
               (size + 5)
-        ]
+        ])
       }
+      if (layer !== 'WELD' && Math.hypot(at[0] - p[0], at[1] - p[1]) > size + 5)
+        line(p, [at[0], at[1] - size / 2], layer, owner)
     }
     occupied.push([at[0] - 2, at[1] - size - 2, at[0] + width + 2, at[1] + 3])
     d.primitives.push({ type: 'text', p: at, text: value, size, layer, owner })
+    return at
   }
-  const circle = (p: Point, r: number, layer = 'SYMBOL', owner?: string) =>
+  const circle = (p: Point, r: number, layer = 'SYMBOL', owner?: string) => {
     d.primitives.push({ type: 'circle', p, r, layer, owner })
+    if (owner) occupied.push([p[0] - r - 3, p[1] - r - 3, p[0] + r + 3, p[1] + r + 3])
+  }
   const rect = (x: number, y: number, w: number, h: number) => {
     line([x, y], [x + w, y], 'BORDER')
     line([x + w, y], [x + w, y + h], 'BORDER')
@@ -241,11 +247,13 @@ export function createDrawing(
   }
   function symbol(n: PipeNode, p: Point) {
     const edges = connected(doc, n.id),
-      edge = edges[0]
+      edge = edges[0] ?? doc.runs.find(r => r.id === n.associatedRunId)
     const neighbour = edge
       ? positions.get(edge.from === n.id ? edge.to : edge.from)
       : undefined
-    const delta: Point = neighbour
+    const delta: Point = n.associatedRunId && edge
+      ? [positions.get(edge.to)![0] - positions.get(edge.from)![0], positions.get(edge.to)![1] - positions.get(edge.from)![1]]
+      : neighbour
       ? [neighbour[0] - p[0], neighbour[1] - p[1]]
       : [1, 0]
     const norm = Math.hypot(...delta) || 1,
@@ -296,13 +304,15 @@ export function createDrawing(
       (p0[1] - fit.centre[1]) * scale + 360
     ]
     circle(p, 3, 'WELD', w.nodeId)
-    text(
+    const label = text(
       [p[0] + 7, p[1] + 15],
       `${w.tag}${w.field ? ' FW' : ''}`,
       9,
       'WELD',
       w.nodeId
     )
+    if (Math.hypot(label[0] - p[0], label[1] - p[1]) > 20)
+      line(p, [label[0], label[1] - 4.5], 'WELD', w.nodeId)
   }
   const north = project([0, 1, 0]),
     northLength = Math.hypot(...north)

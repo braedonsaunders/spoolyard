@@ -1,4 +1,5 @@
 import type { GridSettings } from './grid'
+import { COMPONENT_TYPES } from './components'
 /** Spoolyard piping semantics (file schema id "bidwright-piping" is kept for compatibility). Coordinates and fabrication lengths are millimetres. */
 export type Vec3 = [number, number, number]
 export type Kind =
@@ -88,13 +89,15 @@ export interface PipeNode {
   tag?: string
   associatedRunId?: string
   quantity?: number
-  endPrep?: 'BW' | 'SW' | 'THD' | 'PLAIN'
+  endPrep?: EndPrep
   /** Schematic-only displacement, independent of the physical coordinates. */
   labelOffset?: [number, number]
   /** Component-type code chosen from the catalogue; drives the drawn symbol. */
   component?: string
+  /** Deflection of a measured/custom bend; standard elbows use their catalogue angle. */
+  bendAngle?: number
 }
-export type EndPrep = 'BW' | 'SW' | 'THD' | 'PLAIN'
+export type EndPrep = 'BW' | 'SW' | 'THD' | 'FL' | 'PLAIN'
 export interface PipeRun {
   id: string
   from: string
@@ -112,7 +115,7 @@ export interface PipeRun {
   fromTag?: string
   toTag?: string
   rootGap?: number
-  endPrep: 'BW' | 'SW' | 'THD' | 'PLAIN'
+  endPrep: EndPrep
 }
 export interface IsoDocument {
   schema: 'bidwright-piping'
@@ -356,7 +359,7 @@ export function takeout(
   if (node.portTakeouts?.[runId] != null) return node.portTakeouts[runId]
   const item = fitting(doc, node)
   if (node.branchEdgeId === runId)
-    return node.branchTakeout ?? item?.branchTakeout
+    return node.branchTakeout ?? (item?.takeoutMissing ? undefined : item?.branchTakeout)
   // A specification row without a known dimension must be measured, never read as zero.
   return node.takeout ?? (item?.takeoutMissing ? undefined : item?.takeout)
 }
@@ -374,7 +377,7 @@ export function runResult(doc: IsoDocument, run: PipeRun): RunResult {
     takeout(doc, b, run.id) ?? NaN
   ]
   const gaps: [number, number] = [a, b].map((n, i) =>
-    prepAt(run, i) === 'BW' &&
+    !run.connector && prepAt(run, i) === 'BW' &&
     n.kind !== 'end' &&
     n.kind !== 'support' &&
     n.kind !== 'annotation' &&
@@ -418,94 +421,81 @@ export function preferredFitting(
       f =>
         f.kind === kind &&
         f.nps === nps &&
-        (smallerNps == null || smallerNps === nps ? !f.smallerNps : f.smallerNps === smallerNps)
+        (smallerNps == null || smallerNps === nps ? !f.smallerNps || f.smallerNps === nps : f.smallerNps === smallerNps)
     )
     .sort((a, b) => score(a) - score(b))[0]
 }
 const prepAtNode = (run: PipeRun, nodeId: string) => prepAt(run, run.from === nodeId ? 0 : 1)
+/** Default to the fitting family actually available at this size in the selected specification. */
+export function defaultEndPrep(spec: PipeSpec, nps: number): EndPrep {
+  const elbow = preferredFitting(spec, 'elbow90', nps, 'BW')
+  return COMPONENT_TYPES.find(t => t.code === elbow?.component)?.endPrep === 'THD'
+    ? 'THD'
+    : COMPONENT_TYPES.find(t => t.code === elbow?.component)?.endPrep === 'SW' ? 'SW' : 'BW'
+}
 export function setAutoFitting(doc: IsoDocument, nodeId: string): void {
-  const node = getNode(doc, nodeId),
-    edges = connected(doc, nodeId)
-  if (
-    edges.length === 2 &&
-    (node.kind === 'end' || node.kind === 'elbow90' || node.kind === 'elbow45')
-  ) {
-    const vectors = edges.map(r =>
-      sub(
-        getNode(doc, r.from === nodeId ? r.to : r.from).position,
-        node.position
-      )
-    )
-    const angle =
-      (Math.acos(
-        Math.max(
-          -1,
-          Math.min(
-            1,
-            vectors[0].reduce((s, v, i) => s + v * vectors[1][i], 0) /
-              (length(vectors[0]) * length(vectors[1]))
-          )
-        )
-      ) *
-        180) /
-      Math.PI
+  const node = getNode(doc, nodeId), edges = connected(doc, nodeId)
+  if (!['end', 'weld', 'elbow90', 'elbow45', 'tee'].includes(node.kind)) return
+  const vectors = edges.map(r => sub(getNode(doc, r.from === nodeId ? r.to : r.from).position, node.position))
+  const cosine = (i: number, j: number) => vectors[i].reduce((sum, v, k) => sum + v * vectors[j][k], 0) / (length(vectors[i]) * length(vectors[j]))
+  const changeKind = (kind: Kind) => {
+    if (node.kind === kind) return
+    node.kind = kind
+    for (const key of ['catalogId', 'component', 'takeout', 'branchTakeout', 'portTakeouts', 'branchEdgeId', 'description', 'bendAngle'] as const) delete node[key]
+  }
+  const choose = (kind: Kind, header: PipeRun, smallerNps?: number, code?: string) => {
+    const spec = getSpec(doc, header.specId), existing = fitting(doc, node)
+    // Keep a chosen SR elbow or measured dimension when the route still uses the same fitting.
+    if (existing && spec.fittings.includes(existing) && existing.kind === kind && existing.nps === header.nps &&
+      (smallerNps == null || smallerNps === header.nps ? !existing.smallerNps || existing.smallerNps === header.nps : existing.smallerNps === smallerNps) &&
+      (!code || existing.component === code)) return
+    const item = code
+      ? spec.fittings.find(f => f.component === code && f.nps === header.nps && (!smallerNps || f.smallerNps === smallerNps || smallerNps === header.nps && !f.smallerNps))
+      : preferredFitting(spec, kind, header.nps, prepAtNode(header, nodeId), smallerNps)
+    node.catalogId = item?.id
+    if (item?.component) node.component = item.component
+    else delete node.component
+  }
+  if (edges.length <= 1) {
+    changeKind('end')
+  } else if (edges.length === 2) {
+    const angle = Math.acos(Math.max(-1, Math.min(1, cosine(0, 1)))) * 180 / Math.PI
     if (Math.abs(angle - 180) < 0.1) {
-      node.kind = 'weld'
-      delete node.catalogId
+      changeKind('weld')
       return
     }
-    node.kind = Math.abs(angle - 135) < 0.1 ? 'elbow45' : 'elbow90'
-    const elbow = preferredFitting(
-      getSpec(doc, edges[0].specId),
-      node.kind,
-      edges[0].nps,
-      prepAtNode(edges[0], nodeId)
-    )
-    node.catalogId = elbow?.id
-    if (elbow?.component) node.component = elbow.component
-    else delete node.component
-    if (node.kind === 'elbow90' && Math.abs(angle - 90) > 0.1) {
+    const bend = 180 - angle, kind = Math.abs(bend - 45) < 0.1 ? 'elbow45' : 'elbow90'
+    changeKind(kind)
+    const header = edges.reduce((a, b) => a.nps >= b.nps ? a : b)
+    if (Math.abs(bend - 90) < 0.1 || Math.abs(bend - 45) < 0.1) {
+      delete node.bendAngle
+      choose(kind, header, Math.min(...edges.map(r => r.nps)))
+    } else {
       delete node.catalogId
-      delete node.takeout
-      node.description = `${round(180 - angle)}° bend · enter centre-to-end`
+      delete node.component
+      node.bendAngle = bend
+      node.description = `${round(bend)}° bend · enter centre-to-end`
     }
-  } else if (
-    edges.length === 3 &&
-    ['end', 'weld', 'elbow90', 'elbow45'].includes(node.kind)
-  ) {
-    node.kind = 'tee'
-    const branch = edges.find(r => {
-      const v = sub(
-        getNode(doc, r.from === nodeId ? r.to : r.from).position,
-        node.position
-      )
-      return edges
-        .filter(e => e !== r)
-        .every(e => {
-          const o = sub(
-            getNode(doc, e.from === nodeId ? e.to : e.from).position,
-            node.position
-          )
-          return (
-            Math.abs(
-              v.reduce((sum, n, i) => sum + n * o[i], 0) /
-                (length(v) * length(o))
-            ) < 0.001
-          )
-        })
+  } else if (edges.length === 3) {
+    changeKind('tee')
+    const branchIndex = vectors.findIndex((_, i) => {
+      const main = [0, 1, 2].filter(j => j !== i)
+      return cosine(main[0], main[1]) < -0.999999
     })
+    const branch = edges[branchIndex]
     node.branchEdgeId = branch?.id
-    const header = edges.find(e => e !== branch) ?? edges[0]
-    const tee = preferredFitting(
-      getSpec(doc, header.specId),
-      'tee',
-      header.nps,
-      prepAtNode(header, nodeId),
-      branch?.nps
-    )
-    node.catalogId = tee?.id
-    if (tee?.component) node.component = tee.component
-    else delete node.component
+    if (!branch) { delete node.catalogId; return }
+    const header = edges.find(r => r !== branch)!
+    const branchAngle = Math.acos(Math.max(-1, Math.min(1, Math.abs(cosine(branchIndex, edges.indexOf(header)))))) * 180 / Math.PI
+    const prefix = prepAtNode(header, nodeId) === 'SW' ? 'SW' : prepAtNode(header, nodeId) === 'THD' ? 'SC' : 'W'
+    const lateral = Math.abs(branchAngle - 45) < 0.1
+    choose('tee', header, branch.nps, lateral ? `${prefix}-${branch.nps === header.nps ? 'LAT' : 'RLAT'}` : undefined)
+  } else if (edges.length === 4) {
+    changeKind('tee')
+    const header = edges.reduce((a, b) => a.nps >= b.nps ? a : b), prep = prepAtNode(header, nodeId)
+    const prefix = prep === 'SW' ? 'SW' : prep === 'THD' ? 'SC' : 'W'
+    choose('tee', header, Math.min(...edges.map(r => r.nps)), `${prefix}-${edges.every(r => r.nps === header.nps) ? 'CRS' : 'RCRS'}`)
+    delete node.branchEdgeId
   }
 }
 export function appendRun(
@@ -515,9 +505,10 @@ export function appendRun(
   specId: string,
   nps: number,
   spool: string,
-  line: string
+  line: string,
+  endPrep: EndPrep = 'BW'
 ): PipeNode {
-  if (length(delta) <= 0) throw new Error('Enter a positive length.')
+  if (!delta.every(Number.isFinite) || length(delta) <= 0) throw new Error('Enter a positive length.')
   let a = fromId ? getNode(doc, fromId) : undefined
   if (!a) {
     a = { id: id(), position: [0, 0, 0], kind: 'end' }
@@ -544,7 +535,7 @@ export function appendRun(
     spool,
     line,
     heat: '',
-    endPrep: 'BW'
+    endPrep
   })
   setAutoFitting(doc, a.id)
   setAutoFitting(doc, b.id)
@@ -589,6 +580,11 @@ export function insertComponent(
   }
   if (oldEnd.branchEdgeId === runId) oldEnd.branchEdgeId = next.id
   doc.runs.push(next)
+  const start = getNode(doc, r.from).position, delta = sub(getNode(doc, previous).position, start)
+  const norm = delta.reduce((sum, v) => sum + v * v, 0)
+  for (const attached of doc.nodes.filter(n => n.associatedRunId === runId))
+    if (sub(attached.position, start).reduce((sum, v, i) => sum + v * delta[i], 0) / norm > fraction)
+      attached.associatedRunId = next.id
   return node
 }
 export function attachComponent(
@@ -615,6 +611,55 @@ export function attachComponent(
   }
   doc.nodes.push(node)
   return node
+}
+/** Apply a catalogue selection with the preparation and port dimensions of that component. */
+export function applyComponent(doc: IsoDocument, node: PipeNode, code: string, row?: CatalogItem): void {
+  const type = COMPONENT_TYPES.find(t => t.code === code)
+  if (!type || type.kind === 'pipe') throw new Error('Choose a fitting or drawing symbol.')
+  node.kind = type.kind
+  node.component = code
+  node.catalogId = row?.id
+  node.description = row ? undefined : type.label
+  delete node.takeout
+  delete node.branchTakeout
+  delete node.portTakeouts
+  delete node.bendAngle
+  const edges = connected(doc, node.id)
+  for (const [index, run] of edges.entries()) {
+    const prep = node.kind === 'flange' && index > 0 ? 'FL' : type.endPrep
+    if (prep) run[run.from === node.id ? 'fromPrep' : 'toPrep'] = prep
+    // Flange nodes locate the mating face: its length is consumed on the pipe side only.
+    if (node.kind === 'flange' && index > 0) {
+      node.portTakeouts ??= {}
+      node.portTakeouts[run.id] = 0
+    }
+  }
+}
+
+/** Change an overall length while translating the downstream route, preserving its bends and lengths. */
+export function resizeRun(doc: IsoDocument, runId: string, overall: number): void {
+  const run = doc.runs.find(r => r.id === runId)
+  if (!run || run.connector) throw new Error('Select a pipe to change its length.')
+  if (!Number.isFinite(overall) || overall <= 0) throw new Error('Enter a positive length.')
+  const a = getNode(doc, run.from), b = getNode(doc, run.to), delta = sub(b.position, a.position), old = length(delta)
+  if (!old) throw new Error('A zero-length pipe has no routing direction.')
+  const moving = new Set([b.id]), queue = [b.id]
+  for (let i = 0; i < queue.length; i++)
+    for (const edge of connected(doc, queue[i]).filter(r => r.id !== runId)) {
+      const other = edge.from === queue[i] ? edge.to : edge.from
+      if (other === a.id) throw new Error('This pipe is in a closed loop. Move its connections individually to change the loop.')
+      if (!moving.has(other)) { moving.add(other); queue.push(other) }
+    }
+  const offset = mul(delta, (overall - old) / old)
+  for (const node of doc.nodes) {
+    const host = doc.runs.find(r => r.id === node.associatedRunId)
+    if (moving.has(node.id) || host && host.id !== runId && moving.has(host.from) && moving.has(host.to))
+      node.position = add(node.position, offset)
+    else if (node.associatedRunId === runId) {
+      const fraction = sub(node.position, a.position).reduce((sum, v, i) => sum + v * delta[i], 0) / (old * old)
+      node.position = add(node.position, mul(offset, fraction))
+    }
+  }
 }
 /** Spreadsheet-style letters provide a stable A..Z, AA..AZ weld sequence. */
 export function weldNumber(
@@ -643,6 +688,7 @@ export function welds(doc: IsoDocument): Weld[] {
         n.kind === 'gasket' ||
         n.kind === 'bolt' ||
         prepAt(r, index) === 'PLAIN' ||
+        prepAt(r, index) === 'FL' ||
         prepAt(r, index) === 'THD'
       )
         continue
@@ -667,15 +713,20 @@ export function welds(doc: IsoDocument): Weld[] {
         out.some(w => distance(w.position, position) < 0.001 && w.nps === r.nps)
       )
         continue
+      const jointEnds = n.kind === 'weld' ? connected(doc, n.id).map(edge => ({
+        tag: edge.from === n.id ? edge.fromTag : edge.toTag,
+        field: edge.from === n.id ? edge.fromField : edge.toField
+      })) : []
       const tag =
         (index === 0 ? r.fromTag : r.toTag) ??
+        jointEnds.find(end => end.tag)?.tag ??
         (n.kind === 'weld' ? n.tag : undefined)
       out.push({
         tag: tag ?? `${doc.weldPrefix}${weldNumber(seq++, doc.weldNumbering)}`,
         runId: r.id,
         nodeId: n.id,
         nps: r.nps,
-        field: (index === 0 ? r.fromField : r.toField) ?? !!n.field,
+        field: jointEnds.some(end => end.field) || ((index === 0 ? r.fromField : r.toField) ?? !!n.field),
         prep: prepAt(r, index),
         position
       })
@@ -713,18 +764,43 @@ export function validateIso(doc: IsoDocument): string[] {
   }
   for (const n of doc.nodes) {
     const degree = connected(doc, n.id).length
-    if (n.kind === 'tee' && degree !== 3)
-      issues.push('A tee needs three connected pipes.')
+    const item = fitting(doc, n)
+    const component = COMPONENT_TYPES.find(t => t.code === (n.component ?? item?.component))
+    const ports = component?.ports ?? (n.kind === 'tee' ? 3 : ['valve', 'reducer', 'elbow90', 'elbow45', 'weld'].includes(n.kind) ? 2 : n.kind === 'cap' ? 1 : undefined)
+    if (n.catalogId && !item) issues.push('A selected catalogue fitting is missing from the specification.')
+    if (ports && degree !== ports && !(n.kind === 'flange' && degree === 1) && !n.associatedRunId)
+      issues.push(`${component?.label ?? n.kind} needs ${ports} connected pipe${ports === 1 ? '' : 's'}.`)
+    if (n.kind === 'end' && degree > 1)
+      issues.push('An open end cannot join multiple pipes; select a fitting.')
     if (
       (n.kind === 'valve' ||
         n.kind === 'reducer' ||
         n.kind.startsWith('elbow')) &&
-      degree !== 2
+      degree !== (ports ?? 2)
     )
       issues.push(`${n.kind} needs two connected pipes.`)
     if (n.kind === 'tee' && degree === 3 && !n.branchEdgeId)
       issues.push('Select the branch pipe for each tee.')
     const edges = connected(doc, n.id)
+    if (item && !/effective|engagement|insertion/i.test(item.source) && edges.some(r => ['SW', 'THD'].includes(prepAtNode(r, n.id)) && n.takeout == null && n.portTakeouts?.[r.id] == null))
+      issues.push(`${item.description}: enter an effective takeout including socket or thread engagement.`)
+    if (item && edges.length) {
+      const sizes = [...new Set(edges.map(r => r.nps))].sort((a, b) => b - a)
+      const expected = [...new Set([item.nps, item.smallerNps ?? item.nps])].sort((a, b) => b - a)
+      if (sizes.length !== expected.length || sizes.some((size, i) => size !== expected[i]))
+        issues.push(`${item.description}: fitting sizes do not match the connected pipes.`)
+      if (edges.some(r => !getSpec(doc, r.specId).fittings.some(f => f.id === item.id)))
+        issues.push(`${item.description}: fitting is outside the connected pipe specification.`)
+    } else if (['elbow90', 'elbow45', 'weld'].includes(n.kind) && new Set(edges.map(r => r.nps)).size > 1)
+      issues.push(`${n.kind}: different pipe sizes require a reducing fitting.`)
+    if (n.kind === 'weld' && degree === 2) {
+      const tags = edges.map(r => r.from === n.id ? r.fromTag : r.toTag).filter(Boolean)
+      if (new Set(tags).size > 1) issues.push('A shared weld has conflicting tags on its two pipe ends.')
+      if (prepAtNode(edges[0], n.id) !== prepAtNode(edges[1], n.id))
+        issues.push('A shared weld has conflicting end preparations.')
+      if ((edges[0].rootGap ?? getSpec(doc, edges[0].specId).rootGap) !== (edges[1].rootGap ?? getSpec(doc, edges[1].specId).rootGap))
+        issues.push('A shared weld has conflicting root gaps.')
+    }
     const angleBetween = (a: PipeRun, b: PipeRun) => {
       const vector = (r: PipeRun) =>
         sub(getNode(doc, r.from === n.id ? r.to : r.from).position, n.position)
@@ -747,28 +823,38 @@ export function validateIso(doc: IsoDocument): string[] {
     }
     if ((n.kind === 'elbow90' || n.kind === 'elbow45') && degree === 2) {
       const bend = 180 - angleBetween(edges[0], edges[1]),
-        expected = n.kind === 'elbow90' ? 90 : 45
+        expected = n.bendAngle ?? (n.kind === 'elbow90' ? 90 : 45)
       if (!Number.isFinite(bend) || Math.abs(bend - expected) > 1)
         issues.push(
           `${n.kind}: connected directions must form a ${expected} degree bend.`
         )
     }
     if (
-      ['valve', 'reducer', 'weld'].includes(n.kind) &&
+      ['valve', 'reducer', 'weld', 'flange', 'gasket'].includes(n.kind) &&
       degree === 2 &&
       Math.abs(angleBetween(edges[0], edges[1]) - 180) > 1
     )
       issues.push(`${n.kind}: the two pipe connections must be in line.`)
     if (n.kind === 'tee' && degree === 3 && n.branchEdgeId) {
       const main = edges.filter(r => r.id !== n.branchEdgeId),
-        branch = edges.find(r => r.id === n.branchEdgeId)!
+        branch = edges.find(r => r.id === n.branchEdgeId)
+      const expected = /LAT$/.test(component?.code ?? '') ? 45 : 90
       if (
+        !branch || main.length !== 2 ||
         Math.abs(angleBetween(main[0], main[1]) - 180) > 1 ||
-        Math.abs(angleBetween(main[0], branch) - 90) > 1
+        Math.abs(Math.min(angleBetween(main[0], branch), angleBetween(main[1], branch)) - expected) > 1
       )
         issues.push(
-          'Tee: main pipes must be in line and the branch perpendicular.'
+          `Tee: main pipes must be in line and the branch at ${expected} degrees.`
         )
+      if (branch && item && (branch.nps !== (item.smallerNps ?? item.nps) || main.some(r => r.nps !== item.nps)))
+        issues.push('Tee: header and branch sizes do not match the fitting ports.')
+    }
+    if (n.kind === 'tee' && degree === 4) {
+      const opposite = edges.slice(1).find(r => Math.abs(angleBetween(edges[0], r) - 180) < 1)
+      const other = edges.filter(r => r !== edges[0] && r !== opposite)
+      if (!opposite || other.length !== 2 || Math.abs(angleBetween(other[0], other[1]) - 180) > 1 || Math.abs(angleBetween(edges[0], other[0]) - 90) > 1)
+        issues.push('Cross: connections must form two perpendicular straight headers.')
     }
     if (
       n.kind === 'reducer' &&
@@ -821,11 +907,12 @@ export function bom(
   }
   for (const r of doc.runs.filter(r => !r.connector)) {
     const s = getSpec(doc, r.specId),
+      size = s.sizes.find(size => size.nps === r.nps),
       v = runResult(doc, r),
       metres = Number.isFinite(v.cut) && v.cut > 0 ? v.cut / 1000 : NaN
     addRow(
       {
-        description: `Pipe · ${s.material} · Sch ${s.schedule}`,
+        description: `Pipe · ${size?.material || s.material} · Sch ${size?.schedule || s.schedule}`,
         spec: s.id,
         nps: r.nps,
         qty: metres,
@@ -844,7 +931,7 @@ export function bom(
         spool: r.spool,
         line: r.line
       },
-      '',
+      JSON.stringify([size?.od, size?.wall, size?.kgM]),
       r.id
     )
   }
@@ -863,7 +950,7 @@ export function bom(
       {
         description: n.description ?? f?.description ?? n.kind,
         spec: s.id,
-        nps: edge.nps,
+        nps: f?.nps ?? Math.max(...connected(doc, n.id).map(r => r.nps), edge.nps),
         qty,
         unit: 'ea',
         weightKg: kg == null ? null : kg * qty,
@@ -894,45 +981,42 @@ export function bom(
 export function formatLength(mm: number, units: IsoDocument['units']): string {
   if (!Number.isFinite(mm)) return '—'
   if (units === 'mm') return `${round(mm, 1)} mm`
-  const sixteenths = Math.round((mm / 25.4) * 16),
+  const sign = mm < 0 ? '−' : ''
+  const sixteenths = Math.round((Math.abs(mm) / 25.4) * 16),
     feet = Math.floor(sixteenths / 192),
     inch = Math.floor((sixteenths % 192) / 16),
     fraction = sixteenths % 16
   const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a)
   const g = gcd(fraction, 16)
-  return `${feet ? feet + '′ ' : ''}${inch}${fraction ? ' ' + fraction / g + '/' + 16 / g : ''}″`
+  return `${sign}${feet ? feet + '′ ' : ''}${inch}${fraction ? ' ' + fraction / g + '/' + 16 / g : ''}″`
 }
-export function parseLength(
-  value: string,
-  units: IsoDocument['units']
-): number {
-  const s = value.trim().replace(/[′']/g, 'ft').replace(/[″"]/g, 'in')
+export function parseLength(value: string, units: IsoDocument['units'], allowNegative = false): number {
+  let s = value.trim().toLowerCase().replace(/[′']/g, 'ft').replace(/[″"]/g, 'in').replace(/−/g, '-')
   if (!s) throw new Error('Enter a length.')
-  if (units === 'mm' && /^\d+(\.\d+)?$/.test(s)) return Number(s)
-  if (/^\d+(\.\d+)?\s*mm$/.test(s)) return parseFloat(s)
-  if (/^\d+(\.\d+)?$/.test(s)) return Number(s) * 25.4
-  let feet = 0,
-    inch = 0
-  let rem = s
-  const ft = rem.match(/^(\d+(?:\.\d+)?)\s*ft\s*/)
-  if (ft) {
-    feet = Number(ft[1])
-    rem = rem.slice(ft[0].length)
+  const negative = s.startsWith('-')
+  if (negative && !allowNegative) throw new Error('Enter a positive length; use signed measurements for XYZ offsets.')
+  s = s.replace(/^[+-]\s*/, '').replace(/ft\s*-\s*/, 'ft ').replace(/(\d)\s*-\s*(?=\d+\/)/g, '$1 ')
+  const decimal = '(?:\\d+(?:\\.\\d*)?|\\.\\d+)'
+  let result: number
+  const metric = s.match(new RegExp(`^(${decimal})\\s*(mm|cm|m)$`))
+  if (metric) result = Number(metric[1]) * ({ mm: 1, cm: 10, m: 1000 }[metric[2]]!)
+  else if (new RegExp(`^${decimal}$`).test(s)) result = Number(s) * (units === 'mm' ? 1 : 25.4)
+  else {
+    let feet = 0, inch = 0, rem = s
+    const ft = rem.match(new RegExp(`^(${decimal})\\s*ft\\s*`))
+    if (ft) { feet = Number(ft[1]); rem = rem.slice(ft[0].length) }
+    rem = rem.replace(/in\s*$/, '').trim()
+    if (!ft && !rem) throw new Error('Enter a length.')
+    if (rem) {
+      const match = rem.match(/^(?:(\d+(?:\.\d+)?|\.\d+)\s*)?(?:(\d+)\/(\d+))?$/)
+      if (!match || (!match[1] && !match[2]) || (match[3] && Number(match[3]) === 0))
+        throw new Error("Use millimetres or feet/inches, e.g. 2' 3 1/2\".")
+      inch = Number(match[1] ?? 0) + (match[2] ? Number(match[2]) / Number(match[3]) : 0)
+    }
+    result = (feet * 12 + inch) * (ft || /in\s*$/.test(s) || units === 'imperial' ? 25.4 : 1)
   }
-  rem = rem.replace(/in\s*$/, '').trim()
-  if (rem) {
-    const match = rem.match(/^(?:(\d+(?:\.\d+)?)\s*)?(?:(\d+)\/(\d+))?$/)
-    if (
-      !match ||
-      (!match[1] && !match[2]) ||
-      (match[3] && Number(match[3]) === 0)
-    )
-      throw new Error('Use millimetres or feet/inches, e.g. 2\' 3 1/2".')
-    inch =
-      Number(match[1] ?? 0) +
-      (match[2] ? Number(match[2]) / Number(match[3]) : 0)
-  }
-  return (feet * 12 + inch) * 25.4
+  if (!Number.isFinite(result)) throw new Error('Enter a finite length.')
+  return negative ? -result : result
 }
 export function parseIsoJson(raw: string): IsoDocument {
   if (raw.length > 8_000_000)
@@ -1038,7 +1122,8 @@ export function parseIsoJson(raw: string): IsoDocument {
         'areaM2',
         'unitCost',
         'laborHours',
-        'quantity'
+        'quantity',
+        'bendAngle'
       ])
     )
       throw new Error('Invalid piping connection.')
@@ -1118,6 +1203,8 @@ export function parseIsoJson(raw: string): IsoDocument {
         catalogs.has(f.id) ||
         !knownKinds.includes(f.kind) ||
         !positive(f.nps) ||
+        (f.smallerNps != null && !positive(f.smallerNps)) ||
+        (f.takeoutMissing != null && typeof f.takeoutMissing !== 'boolean') ||
         !nonnegative(f.takeout) ||
         !isString(f.description) ||
         !isString(f.source) ||
@@ -1142,7 +1229,7 @@ export function parseIsoJson(raw: string): IsoDocument {
     for (const key of ['fromPrep', 'toPrep'])
       if (
         r[key as keyof PipeRun] != null &&
-        !['BW', 'SW', 'THD', 'PLAIN'].includes(String(r[key as keyof PipeRun]))
+        !['BW', 'SW', 'THD', 'FL', 'PLAIN'].includes(String(r[key as keyof PipeRun]))
       )
         throw new Error('Invalid end preparation.')
     for (const key of ['connector', 'fromField', 'toField'])
@@ -1167,7 +1254,7 @@ export function parseIsoJson(raw: string): IsoDocument {
       !isString(r.spool) ||
       !isString(r.line) ||
       !isString(r.heat) ||
-      !['BW', 'SW', 'THD', 'PLAIN'].includes(r.endPrep)
+      !['BW', 'SW', 'THD', 'FL', 'PLAIN'].includes(r.endPrep)
     )
       throw new Error('Invalid pipe run.')
     runs.add(r.id)
@@ -1262,9 +1349,9 @@ export function cutCsv(doc: IsoDocument): string {
           r.nps,
           r.specId,
           round(c.overall),
-          ...c.takeouts.map(v => round(v)),
+          ...c.takeouts.map(v => Number.isFinite(v) ? round(v) : 'MISSING'),
           ...c.gaps,
-          round(c.cut),
+          Number.isFinite(c.cut) && c.cut > 0 ? round(c.cut) : 'MISSING',
           r.heat,
           prepAt(r, 0),
           prepAt(r, 1)

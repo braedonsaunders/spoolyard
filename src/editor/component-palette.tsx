@@ -8,7 +8,8 @@ import { ComponentGlyph } from "./component-glyph";
 import { rowComponent } from "./spec-manager";
 
 /** Bends and branches are created by routing; the palette inserts everything that sits on a straight pipe. */
-export const insertable = (t: ComponentType) => !["pipe", "elbow90", "elbow45", "tee"].includes(t.kind);
+export const insertable = (t: ComponentType) => !["pipe", "elbow90", "elbow45", "tee"].includes(t.kind) &&
+  (t.ports === 2 || ['support', 'bolt', 'annotation'].includes(t.kind));
 
 /** Every catalogue component, with the selected specification's rows for this size first. */
 export function ComponentPalette({

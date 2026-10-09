@@ -36,6 +36,7 @@ import {
 import { cn } from "./cn";
 import {
   appendRun,
+  applyComponent,
   attachComponent,
   bom,
   bomCsv,
@@ -44,6 +45,7 @@ import {
   formatLength,
   getNode,
   getSpec,
+  defaultEndPrep,
   id,
   insertComponent,
   newIso,
@@ -54,11 +56,13 @@ import {
   runResult,
   setAutoFitting,
   removeComponent,
+  resizeRun,
   sub,
   validateIso,
   welds,
   type IsoDocument,
   type Kind,
+  type EndPrep,
   type Vec3,
 } from "../core/model";
 import { createDrawing, isoProject, sheetWidth, type Drawing, type Point, type SheetFit } from "../core/drawing";
@@ -212,6 +216,7 @@ export function IsometricEditor({
     [start, setStart] = useState(""),
     [spec, setSpec] = useState("CS40"),
     [nps, setNps] = useState(2);
+  const [routingPrep, setRoutingPrep] = useState<EndPrep>('BW');
   const [span, setSpan] = useState("1000"),
     [spool, setSpool] = useState("SP-001"),
     [line, setLine] = useState(""),
@@ -231,7 +236,7 @@ export function IsometricEditor({
     importInput = useRef<HTMLInputElement>(null),
     three = useRef<HTMLDivElement>(null),
     specInput = useRef<HTMLInputElement>(null);
-  const drag = useRef<{ x: number; y: number; pan: Point } | null>(null);
+  const drag = useRef<{ x: number; y: number; pan: Point; scale: number } | null>(null);
   const nodeDrag = useRef<{
     id: string;
     point: Point;
@@ -241,6 +246,12 @@ export function IsometricEditor({
   } | null>(null);
   const latest = useRef(doc);
   latest.current = doc;
+  const activeSpec = doc.specs.find(s => s.id === spec) ?? doc.specs[0];
+  useEffect(() => {
+    if (activeSpec.id !== spec) setSpec(activeSpec.id);
+    if (!activeSpec.sizes.some(size => size.nps === nps)) setNps(defaultNps(activeSpec));
+    setRoutingPrep(defaultEndPrep(activeSpec, nps));
+  }, [spec, activeSpec.id, nps, ready]);
   const persistence = usePipingSave(doc, ready, onSave, isNew);
   if (controller) controller.current = { save: persistence.save };
   useEffect(() => {
@@ -412,10 +423,25 @@ export function IsometricEditor({
   const gridTransform = "matrix(" + [ax, ay, bx, by, origin[0], origin[1]].join(" ") + ")";
   const issues = useMemo(() => validateIso(doc), [doc]),
     materials = useMemo(() => bom(doc), [doc]),
-    cuts = useMemo(() => doc.runs.map((r) => runResult(doc, r)), [doc]),
+    cuts = useMemo(() => doc.runs.filter(r => !r.connector).map((r) => runResult(doc, r)), [doc]),
     joints = useMemo(() => welds(doc), [doc]);
   const selectedRun = doc.runs.find((r) => r.id === selection),
     selectedNode = doc.nodes.find((n) => n.id === selection);
+  const selectedEdges = selectedNode ? connected(doc, selectedNode.id) : [];
+  const selectedHeader = selectedEdges.reduce<typeof selectedEdges[number] | undefined>((largest, run) => !largest || run.nps > largest.nps ? run : largest, undefined)
+    ?? doc.runs.find(r => r.id === selectedNode?.associatedRunId);
+  const selectConnection = (key: string) => {
+    setStart(key);
+    setSelection(key);
+    const run = connected(doc, key)[0];
+    if (run) {
+      setSpool(run.spool);
+      setLine(run.line);
+      setSpec(run.specId);
+      setNps(run.nps);
+      setRoutingPrep(prepAt(run, run.from === key ? 0 : 1));
+    }
+  };
   useEffect(() => {
     if (tab !== "3d" || !three.current) return;
     // three.js loads only when the 3D review opens.
@@ -464,10 +490,11 @@ export function IsometricEditor({
         d,
         from,
         delta,
-        spec,
+        activeSpec.id,
         nps,
         spool,
         line,
+        routingPrep,
       );
       setStart(node.id);
       setSelection(node.id);
@@ -484,13 +511,11 @@ export function IsometricEditor({
       owner = target.closest("[data-owner]")?.getAttribute("data-owner"),
       node = target.closest("[data-node]")?.getAttribute("data-node");
     if (node) {
-      setStart(node);
-      setSelection(node);
-      const run = connected(doc, node)[0];
-      if (run) {
-        setSpool(run.spool);
-        setLine(run.line);
+      if (tool === 'pipe' && routing && node !== start) {
+        add(sub(getNode(doc, node).position, anchor));
+        return;
       }
+      selectConnection(node);
       return;
     }
     if (owner && tool === "select") {
@@ -641,7 +666,7 @@ export function IsometricEditor({
                     : "Saved"}
           </span>
           <button
-            onClick={() => void persistence.save()}
+            onClick={() => void persistence.save().catch(() => undefined)}
             title={persistence.error || "Save (Ctrl/Cmd+S)"}
             disabled={!ready}
           >
@@ -743,7 +768,7 @@ export function IsometricEditor({
                   value={nps}
                   onChange={(e) => setNps(Number(e.target.value))}
                 >
-                  {getSpec(doc, spec).sizes.map((s) => (
+                  {activeSpec.sizes.map((s) => (
                     <option value={s.nps} key={s.nps}>
                       {s.nps}″
                     </option>
@@ -756,6 +781,15 @@ export function IsometricEditor({
                   value={span}
                   onChange={(e) => setSpan(e.target.value)}
                 />
+              </Field>
+              <Field label="Connection">
+                <select aria-label="Routing end preparation" value={routingPrep} onChange={e => setRoutingPrep(e.target.value as EndPrep)}>
+                  <option value="BW">Butt weld</option>
+                  <option value="SW">Socket weld</option>
+                  <option value="THD">Threaded</option>
+                  <option value="FL">Flanged</option>
+                  <option value="PLAIN">Plain</option>
+                </select>
               </Field>
             </div>
             <small>MEASURED ROUTING</small>
@@ -788,6 +822,7 @@ export function IsometricEditor({
                 <button
                   key={name}
                   aria-label={"Route " + name}
+                  disabled={!ready}
                   title={"Route " + name.toLowerCase() + " by the entered length"}
                   onClick={() => {
                     try {
@@ -911,14 +946,13 @@ export function IsometricEditor({
                         destination: [...position],
                         moved: false,
                       };
-                      setSelection(node);
-                      setStart(node);
+                      selectConnection(node);
                       return;
                     }
                     if (tool === "pan" || e.button === 1) {
                       e.preventDefault();
                       e.currentTarget.setPointerCapture(e.pointerId);
-                      drag.current = { x: e.clientX, y: e.clientY, pan: [...pan] };
+                      drag.current = { x: e.clientX, y: e.clientY, pan: [...pan], scale: svg.current?.getScreenCTM()?.a ?? 1 };
                     }
                   }}
                   onPointerMove={(e) => {
@@ -941,10 +975,9 @@ export function IsometricEditor({
                       return;
                     }
                     if (drag.current) {
-                      const bounds = e.currentTarget.getBoundingClientRect();
                       setPan([
-                        drag.current.pan[0] - ((e.clientX - drag.current.x) * W) / zoom / bounds.width,
-                        drag.current.pan[1] - ((e.clientY - drag.current.y) * 850) / zoom / bounds.height,
+                        drag.current.pan[0] - (e.clientX - drag.current.x) / drag.current.scale,
+                        drag.current.pan[1] - (e.clientY - drag.current.y) / drag.current.scale,
                       ]);
                       return;
                     }
@@ -1304,7 +1337,7 @@ export function IsometricEditor({
                     <input value={line} onChange={(e) => setLine(e.target.value)} />
                   </Field>
                   <Field label="Continue from">
-                    <select value={start} onChange={(e) => setStart(e.target.value)}>
+                    <select value={start} onChange={(e) => selectConnection(e.target.value)}>
                       <option value="">New origin</option>
                       {doc.nodes
                         .filter((n) => !n.associatedRunId)
@@ -1362,6 +1395,18 @@ export function IsometricEditor({
                           Pipe cut<strong>{formatLength(runResult(doc, selectedRun).cut, doc.units)}</strong>
                         </span>
                       </div>
+                      {!selectedRun.connector && <Field label="Overall length">
+                        <input aria-label="Pipe overall length" key={selection + '-' + runResult(doc, selectedRun).overall}
+                          defaultValue={doc.units === 'mm' ? String(round(runResult(doc, selectedRun).overall, 3)) : formatLength(runResult(doc, selectedRun).overall, doc.units)}
+                          onBlur={e => {
+                            try {
+                              const value = parseLength(e.target.value, doc.units);
+                              if (Math.abs(value - runResult(doc, selectedRun).overall) > 0.001)
+                                commit(d => resizeRun(d, selection, value));
+                            } catch (error) { setError(error instanceof Error ? error.message : String(error)); }
+                          }}
+                          onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }} />
+                      </Field>}
                       {(["spool", "line", "heat"] as const).map((k) => (
                         <Field key={k} label={k}>
                           <input
@@ -1387,7 +1432,7 @@ export function IsometricEditor({
                                 })
                               }
                             >
-                              {["BW", "SW", "THD", "PLAIN"].map((v) => (
+                              {["BW", "SW", "THD", "FL", "PLAIN"].map((v) => (
                                 <option key={v}>{v}</option>
                               ))}
                             </select>
@@ -1442,6 +1487,30 @@ export function IsometricEditor({
                             onChange={(e) => setFraction(Number(e.target.value))}
                           />
                         </Field>
+                        <Field label="Distance from pipe start">
+                          <input aria-label="Component distance from pipe start"
+                            key={selection + '-' + fraction}
+                            defaultValue={doc.units === 'mm' ? String(round(runResult(doc, selectedRun).overall * fraction / 100, 3)) : formatLength(runResult(doc, selectedRun).overall * fraction / 100, doc.units)}
+                            onBlur={e => {
+                              try {
+                                const distance = parseLength(e.target.value, doc.units), overall = runResult(doc, selectedRun).overall;
+                                if (distance <= 0 || distance >= overall) throw new Error('Position must be between the pipe ends.');
+                                setFraction(100 * distance / overall);
+                              } catch (error) { setError(error instanceof Error ? error.message : String(error)); }
+                            }}
+                            onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }} />
+                        </Field>
+                        {!selectedRun.connector && <button className="iso-primary" onClick={() => commit(d => {
+                          const junction = insertComponent(d, selection, 'tee', fraction / 100);
+                          setStart(junction.id);
+                          setSelection(junction.id);
+                          setSpool(selectedRun.spool);
+                          setLine(selectedRun.line);
+                          setSpec(selectedRun.specId);
+                          setNps(selectedRun.nps);
+                          setTool('pipe');
+                          setView('iso');
+                        })}>Branch from this pipe</button>}
                         <ComponentPalette
                           spec={getSpec(doc, selectedRun.specId)}
                           nps={selectedRun.nps}
@@ -1451,9 +1520,12 @@ export function IsometricEditor({
                               const node = ["support", "bolt", "annotation"].includes(kind)
                                 ? attachComponent(d, selection, kind, fraction / 100)
                                 : insertComponent(d, selection, kind, fraction / 100);
-                              node.component = type.code;
-                              node.catalogId = row?.id;
-                              if (!row) node.description = type.label;
+                              applyComponent(d, node, type.code, row);
+                              if (kind === 'reducer' && row?.smallerNps) {
+                                const next = d.runs.find(r => r.from === node.id)!;
+                                next.nps = row.smallerNps;
+                                setAutoFitting(d, next.to);
+                              }
                               setSelection(node.id);
                             })
                           }
@@ -1483,21 +1555,20 @@ export function IsometricEditor({
                               const n = getNode(d, selection),
                                 t = COMPONENT_TYPES.find((x) => x.code === e.target.value);
                               if (!t) return;
-                              n.component = t.code;
-                              n.kind = t.kind as Kind;
-                              const edge = connected(d, n.id)[0] ?? d.runs.find((r) => r.id === n.associatedRunId);
-                              n.catalogId = edge
+                              const edge = d.runs.find(r => r.id === selectedHeader?.id);
+                              const row = edge
                                 ? getSpec(d, edge.specId).fittings.find(
                                     (f) => rowComponent(f)?.code === t.code && f.nps === edge.nps,
-                                  )?.id
+                                  )
                                 : undefined;
+                              applyComponent(d, n, t.code, row);
                             })
                           }
                         >
                           {!selectedNode.component && <option value="">{labels[selectedNode.kind]}</option>}
                           {COMPONENT_TYPES.filter((t) =>
                             selectedNode.kind === "end"
-                              ? t.kind === "cap"
+                              ? t.kind === "cap" || t.kind === "flange"
                               : t.kind === selectedNode.kind ||
                                 (["elbow90", "elbow45"].includes(selectedNode.kind) &&
                                   ["elbow90", "elbow45"].includes(t.kind)),
@@ -1513,21 +1584,22 @@ export function IsometricEditor({
                           value={selectedNode.catalogId ?? ""}
                           onChange={(e) =>
                             commit((d) => {
-                              getNode(d, selection).catalogId = e.target.value || undefined;
+                              const node = getNode(d, selection);
+                              const row = d.specs.flatMap(s => s.fittings).find(f => f.id === e.target.value);
+                              if (row?.component) applyComponent(d, node, row.component, row);
+                              else node.catalogId = e.target.value || undefined;
                             })
                           }
                         >
                           <option value="">Custom / measured</option>
-                          {getSpec(doc, connected(doc, selection)[0]?.specId ?? spec)
+                          {getSpec(doc, selectedHeader?.specId ?? activeSpec.id)
                             .fittings.filter(
                               (f) =>
                                 (selectedNode.component
                                   ? rowComponent(f)?.code === selectedNode.component
                                   : f.kind === selectedNode.kind) &&
                                 f.nps ===
-                                  (connected(doc, selection)[0]?.nps ??
-                                    doc.runs.find((r) => r.id === selectedNode.associatedRunId)?.nps ??
-                                    nps),
+                                  (selectedHeader?.nps ?? nps),
                             )
                             .map((f) => (
                               <option key={f.id} value={f.id}>
@@ -1613,7 +1685,7 @@ export function IsometricEditor({
                       <button
                         className="iso-primary"
                         onClick={() => {
-                          setStart(selection);
+                          selectConnection(selection);
                           setTool("pipe");
                         }}
                       >
@@ -1623,13 +1695,14 @@ export function IsometricEditor({
                   )}
                   <details className="iso-offset">
                     <summary>Rolling offset · XYZ</summary>
+                    <p className="iso-help">X = East / West, Y = North / South, Z = Up / Down. Use a minus sign for West, South or Down.</p>
                     <form
                       onSubmit={(e) => {
                         e.preventDefault();
                         const values = new FormData(e.currentTarget);
                         try {
                           add(
-                            ["x", "y", "z"].map((k) => parseLength(String(values.get(k)), doc.units)) as Vec3,
+                            ["x", "y", "z"].map((k) => parseLength(String(values.get(k)), doc.units, true)) as Vec3,
                           );
                         } catch (err) {
                           setError(String(err));
@@ -1717,7 +1790,7 @@ export function IsometricEditor({
                     <td>P{i + 1}</td>
                     <td>{c.run.spool}</td>
                     <td>{formatLength(c.overall, doc.units)}</td>
-                    <td>{c.takeouts.join(" + ")} mm</td>
+                    <td>{c.takeouts.map(v => Number.isFinite(v) ? round(v, 3) : 'MISSING').join(" + ")} mm</td>
                     <td>{c.gaps.join(" + ")} mm</td>
                     <td>
                       {Number.isFinite(c.cut) && c.cut > 0 ? formatLength(c.cut, doc.units) : "MISSING"}

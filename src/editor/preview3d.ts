@@ -189,7 +189,15 @@ export function mountPreview3d(container: HTMLElement, doc: IsoDocument, spool =
   }
   const span = Math.max(100, size.length()),
     camera = new THREE.PerspectiveCamera(42, 1, Math.max(0.1, span / 10000), span * 100);
-  camera.position.copy(center).add(new THREE.Vector3(span * 0.8, span * 0.6, span * 0.8));
+  // Fit the bounding sphere inside the camera's narrower field of view, including portrait windows.
+  const direction = new THREE.Vector3(.8, .6, .8).normalize();
+  const fitDistance = (aspect: number) => {
+    const vertical = THREE.MathUtils.degToRad(camera.fov) / 2;
+    const horizontal = Math.atan(Math.tan(vertical) * aspect);
+    return span / 2 / Math.sin(Math.min(vertical, horizontal)) * 1.15;
+  };
+  let fittedDistance = fitDistance(1);
+  camera.position.copy(center).addScaledVector(direction, fittedDistance);
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.target.copy(center);
   controls.update();
@@ -200,6 +208,9 @@ export function mountPreview3d(container: HTMLElement, doc: IsoDocument, spool =
       h = Math.max(1, container.clientHeight);
     renderer.setSize(w, h);
     camera.aspect = w / h;
+    const offset = camera.position.clone().sub(controls.target), nextDistance = fitDistance(camera.aspect);
+    camera.position.copy(controls.target).add(offset.multiplyScalar(nextDistance / fittedDistance));
+    fittedDistance = nextDistance;
     camera.updateProjectionMatrix();
     render();
   };

@@ -69,3 +69,14 @@ test('ortho routing follows the iso axis nearest the pointer and the held sheet 
   assert.deepEqual(held.project([1000, 0, 0]), before);
   assert.notDeepEqual(createDrawing(doc).project([1000, 0, 0]), before);
 });
+
+test('NPS 1½ XS and Schedule 80 pipe has its published 5.08 mm wall and consistent mass', () => {
+  for (const file of readdirSync(dir).filter(f => f.endsWith('.json'))) {
+    const spec = load(file.replace('.json', ''));
+    const size = spec.sizes.find((s: { nps: number }) => s.nps === 1.5);
+    if (!['XS', 'SCH.80', 'SCH.80S'].includes(size.schedule)) continue;
+    assert.equal(size.wall, 5.08, file);
+    const mass = Math.PI * (size.od - size.wall) * size.wall * spec.density / 1e6;
+    assert.ok(Math.abs(size.kgM - mass) < .001, file);
+  }
+});

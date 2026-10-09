@@ -15,7 +15,9 @@ import {
   parseIsoJson,
   takeout,
   bom,
-  prepAt
+  prepAt,
+  fitting,
+  runResult
 } from './model'
 interface PcfRecord {
   type: string
@@ -169,6 +171,12 @@ export function importPcf(text: string): {
     trial.specs = specs
     doc.specs = parseIsoJson(JSON.stringify(trial)).specs
   }
+  const metadata = headers.get('ATTRIBUTE95')?.match(/^SPOOLYARD-DRAWING (.+)$/)
+  if (metadata) {
+    const values = JSON.parse(decodeURIComponent(metadata[1]))
+    for (const key of ['title', 'drawing', 'revision', 'customer', 'project', 'drawnBy', 'checkedBy', 'notes', 'units', 'north', 'dimensionMode', 'grid', 'paper', 'outputViews', 'weldStart', 'weldPrefix', 'weldNumbering'] as const)
+      if (Object.hasOwn(values, key)) Object.assign(doc, { [key]: values[key] })
+  }
   const specFor = (name: string) => {
     let spec = doc.specs.find(s => s.id === name)
     if (!spec) {
@@ -262,6 +270,15 @@ export function importPcf(text: string): {
         ? Number(first(r, 'BOLT-QUANTITY'))
         : 1
     }
+    const attributes = first(r, 'ATTRIBUTE96')?.match(/^SPOOLYARD-COMPONENT (.+)$/)
+    if (attributes) {
+      const values = JSON.parse(decodeURIComponent(attributes[1]))
+      for (const key of ['kind', 'component', 'catalogId', 'description', 'takeout', 'branchTakeout', 'weightKg', 'areaM2', 'unitCost', 'laborHours', 'heat', 'field', 'tag', 'quantity', 'labelOffset', 'bendAngle'] as const)
+        if (Object.hasOwn(values, key)) Object.assign(node, { [key]: values[key] })
+    } else if (r.type === 'ELBOW' || r.type === 'BEND') {
+      const angle = Number(first(r, 'ANGLE'))
+      if (angle && angle !== 45 && angle !== 90) node.bendAngle = angle
+    }
     const weight = first(r, 'WEIGHT')
     if (weight) {
       const n = Number(weight)
@@ -295,7 +312,7 @@ export function importPcf(text: string): {
     connector = false
   ): PipeRun => {
     const prep = (s: string): PipeRun['endPrep'] =>
-      ['BW', 'SW', 'THD'].includes(s) ? (s as PipeRun['endPrep']) : 'PLAIN'
+      ['BW', 'SW', 'THD', 'FL'].includes(s) ? (s as PipeRun['endPrep']) : 'PLAIN'
     const spec = specFor(first(r, 'PIPING-SPEC') ?? r.spec),
       run: PipeRun = {
         id: id(),
@@ -359,7 +376,7 @@ export function importPcf(text: string): {
       list = ports.get(key(position))
     if (list?.length) return list[0]
     let node = doc.nodes.find(
-      n => n.kind === 'end' && distance(n.position, position) < 0.001
+      n => ['end', 'weld'].includes(n.kind) && distance(n.position, position) < 0.001
     )
     if (!node) {
       node = { id: id(), position, kind: 'end' }
@@ -416,6 +433,8 @@ export function importPcf(text: string): {
   return { doc: parseIsoJson(JSON.stringify(doc)), warnings }
 }
 export function exportPcf(doc: IsoDocument): string {
+  if (doc.runs.some(r => !Number.isFinite(runResult(doc, r).cut) || !r.connector && runResult(doc, r).cut <= 0))
+    throw new Error('Enter the missing fitting takeouts and correct non-positive pipe cuts before exporting PCF.')
   const safe = (s: string) => s.replace(/[\r\n\t]/g, ' ')
   const out = [
     'ISOGEN-FILES ISOGEN.FLS',
@@ -426,7 +445,8 @@ export function exportPcf(doc: IsoDocument): string {
     `    REVISION ${safe(doc.revision)}`,
     `    PROJECT-IDENTIFIER ${safe(doc.project)}`,
     `    ATTRIBUTE99 BIDWRIGHT-ROOT-GAP ${doc.specs[0].rootGap}`,
-    `    ATTRIBUTE98 BIDWRIGHT-SPECS ${encodeURIComponent(JSON.stringify(doc.specs))}`
+    `    ATTRIBUTE98 BIDWRIGHT-SPECS ${encodeURIComponent(JSON.stringify(doc.specs))}`,
+    `    ATTRIBUTE95 SPOOLYARD-DRAWING ${encodeURIComponent(JSON.stringify(Object.fromEntries(Object.entries(doc).filter(([key]) => !['schema', 'version', 'nodes', 'runs', 'specs'].includes(key)))))}`
   ]
   const fmt = (p: Vec3, nps: number, prep = 'BW') =>
     `${p.map(v => v.toFixed(4)).join(' ')} ${nps} ${prep}`
@@ -454,6 +474,7 @@ export function exportPcf(doc: IsoDocument): string {
       `    PIPING-SPEC ${associated.specId}`,
       `    SPOOL-IDENTIFIER ${associated.spool}`
     )
+    out.push(`    ATTRIBUTE96 SPOOLYARD-COMPONENT ${encodeURIComponent(JSON.stringify(Object.fromEntries(Object.entries(n).filter(([key]) => !['id', 'position', 'portTakeouts', 'branchEdgeId', 'associatedRunId'].includes(key)))))}`)
     for (const r of edges)
       out.push(
         `    ${n.branchEdgeId === r.id ? 'BRANCH1-POINT' : 'END-POINT'} ${fmt(port(n, r), r.nps, prepAt(r, r.from === n.id ? 0 : 1))}`
@@ -461,9 +482,10 @@ export function exportPcf(doc: IsoDocument): string {
     if (n.kind === 'support' || n.kind === 'bolt')
       out.push(`    CO-ORDS ${fmt(n.position, associated.nps)}`)
     if (n.kind === 'bolt') out.push(`    BOLT-QUANTITY ${n.quantity ?? 1}`)
-    if (n.kind === 'elbow45') out.push('    ANGLE 45')
+    if (n.kind === 'elbow45' || n.kind === 'elbow90') out.push(`    ANGLE ${n.bendAngle ?? (n.kind === 'elbow45' ? 45 : 90)}`)
     if (n.field) out.push('    CATEGORY-ERECTION')
-    if (n.weightKg != null) out.push(`    WEIGHT ${n.weightKg}`)
+    const weight = n.weightKg ?? fitting(doc, n)?.weightKg
+    if (weight != null) out.push(`    WEIGHT ${weight}`)
     if (n.kind === 'weld' && n.tag)
       out.push(`    WELD-IDENTIFIER ${safe(n.tag)}`)
   }
