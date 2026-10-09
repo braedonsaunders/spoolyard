@@ -63,12 +63,35 @@ export interface SheetFit {
   centre: Point
   scale: number
 }
+/** A length for the drawing: no repeated unit, trailing zeroes dropped. */
+function compactLength(mm: number, units: IsoDocument['units']): string {
+  if (!Number.isFinite(mm)) return '—'
+  if (units === 'mm') return String(round(mm, 1))
+  return formatLength(mm, units)
+}
+function dimensionCopy(
+  overall: number,
+  cut: number,
+  units: IsoDocument['units'],
+  mode: IsoDocument['dimensionMode']
+): { primary: string; secondary?: string } {
+  const overallText = compactLength(overall, units),
+    cutText = compactLength(cut, units),
+    differ = Number.isFinite(overall) && Number.isFinite(cut) && Math.abs(overall - cut) > 0.05
+  if (mode === 'cut') return { primary: 'CUT ' + cutText }
+  if (mode === 'overall' || !differ) return { primary: overallText }
+  return { primary: overallText, secondary: 'CUT ' + cutText }
+}
+
 export function createDrawing(
   doc: IsoDocument,
   spool = '',
   view: 'iso' | 'plan' | 'front' | 'side' = 'iso',
-  hold?: SheetFit
+  hold?: SheetFit,
+  options?: { model?: boolean }
 ): Drawing {
+  const model = options?.model === true
+  const facing = model ? 'iso' : view
   const runs = doc.runs.filter(r => !spool || r.spool === spool),
     nodes = doc.nodes.filter(n =>
       runs.some(
@@ -76,16 +99,16 @@ export function createDrawing(
       )
     )
   const project = (p: Vec3): Point =>
-    view === 'plan'
+    facing === 'plan'
       ? [p[0], -p[1]]
-      : view === 'front'
+      : facing === 'front'
         ? [p[0], -p[2]]
-        : view === 'side'
+        : facing === 'side'
           ? [p[1], -p[2]]
           : isoProject(p, doc.north)
-  const W = sheetWidth(doc),
+  const W = model ? 1100 : sheetWidth(doc),
     dx = W - 1100,
-    cx = 410 + dx / 2
+    cx = model ? 550 : 410 + dx / 2
   const raw = nodes.map(n => project(n.position))
   const xs = raw.map(p => p[0]),
     ys = raw.map(p => p[1])
@@ -93,41 +116,38 @@ export function createDrawing(
     minY = raw.length ? Math.min(...ys) : 0,
     maxX = raw.length ? Math.max(...xs) : 1,
     maxY = raw.length ? Math.max(...ys) : 1
-  const fit: SheetFit = hold ?? {
-    centre: [(maxX + minX) / 2, (maxY + minY) / 2],
-    scale: nodes.length
-      ? Math.min((660 + dx) / Math.max(1, maxX - minX), 420 / Math.max(1, maxY - minY))
-      : 0.3
-  }
+  const fit: SheetFit = model
+    ? { centre: [0, 0], scale: 0.3 }
+    : hold ?? {
+        centre: [(maxX + minX) / 2, (maxY + minY) / 2],
+        scale: nodes.length
+          ? Math.min((660 + dx) / Math.max(1, maxX - minX), 420 / Math.max(1, maxY - minY))
+          : 0.3
+      }
   const scale = fit.scale
+  const toPoint = (q: Point): Point =>
+    model
+      ? [q[0] * 0.3 + 550, q[1] * 0.3 + 425]
+      : [(q[0] - fit.centre[0]) * scale + cx, (q[1] - fit.centre[1]) * scale + 360]
   const positions = new Map(
-    nodes.map((n, i) => [
-      n.id,
-      [
-        (raw[i][0] - fit.centre[0]) * scale + cx,
-        (raw[i][1] - fit.centre[1]) * scale + 360
-      ] as Point
-    ])
+    nodes.map((n, i) => [n.id, toPoint(raw[i])] as [string, Point])
   )
   const d: Drawing = {
     width: W,
     height: SHEET_HEIGHT,
-    area: [50, 115, 780 + dx, 630],
+    area: model ? [0, 0, W, SHEET_HEIGHT] : [50, 115, 780 + dx, 630],
     fit,
     primitives: [],
     positions,
-    view,
-    project: p => {
-      const raw = project(p)
-      return [
-        (raw[0] - fit.centre[0]) * scale + cx,
-        (raw[1] - fit.centre[1]) * scale + 360
-      ]
-    }
+    view: facing,
+    project: p => toPoint(project(p))
   }
   const line = (a: Point, b: Point, layer = 'PIPE', owner?: string) =>
     d.primitives.push({ type: 'line', a, b, layer, owner })
-  const occupied: Array<[number, number, number, number]> = []
+  const boxes: Array<[number, number, number, number]> = []
+  const textWidth = (value: string, size: number) => value.length * size * 0.62
+  const overlaps = (box: [number, number, number, number]) =>
+    boxes.some(b => box[0] < b[2] && box[2] > b[0] && box[1] < b[3] && box[3] > b[1])
   const text = (
     p: Point,
     value: string,
@@ -135,46 +155,36 @@ export function createDrawing(
     layer = 'TEXT',
     owner?: string
   ) => {
-    let at: Point = [...p]
-    const width = value.length * size * 0.62
-    if (owner && ['DIM', 'TEXT', 'WELD'].includes(layer)) {
-      const clamp = (point: Point): Point => [
-        Math.max(50, Math.min(point[0], 780 + dx - width)),
-        Math.max(150, Math.min(point[1], 625))
-      ]
-      at = clamp(at)
-      for (let attempt = 0; attempt < 24; attempt++) {
-        const box: [number, number, number, number] = [
-          at[0] - 2,
-          at[1] - size - 2,
-          at[0] + width + 2,
-          at[1] + 3
-        ]
-        if (
-          !occupied.some(
-            b =>
-              box[0] < b[2] && box[2] > b[0] && box[1] < b[3] && box[3] > b[1]
-          )
-        )
-          break
-        at = clamp([
-          p[0],
-          p[1] +
-            (attempt % 2 === 0 ? -1 : 1) *
-              Math.ceil((attempt + 1) / 2) *
-              (size + 5)
-        ])
-      }
-      if (layer !== 'WELD' && Math.hypot(at[0] - p[0], at[1] - p[1]) > size + 5)
-        line(p, [at[0], at[1] - size / 2], layer, owner)
+    boxes.push([p[0] - 1, p[1] - size - 1, p[0] + textWidth(value, size) + 1, p[1] + 2])
+    d.primitives.push({ type: 'text', p, text: value, size, layer, owner })
+    return p
+  }
+  /** Centres a short note on a point. On a sheet, keeps it inside the model viewport. */
+  const note = (center: Point, value: string, size: number, layer: string, owner?: string) => {
+    const width = textWidth(value, size)
+    let left = center[0] - width / 2,
+      baseline = center[1] + size * 0.32
+    if (!model) {
+      const [x0, , x1] = d.area
+      left = Math.max(x0, Math.min(left, x1 - width))
+      baseline = Math.max(150, Math.min(baseline, 625))
     }
-    occupied.push([at[0] - 2, at[1] - size - 2, at[0] + width + 2, at[1] + 3])
-    d.primitives.push({ type: 'text', p: at, text: value, size, layer, owner })
-    return at
+    return text([left, baseline], value, size, layer, owner)
+  }
+  const free = (center: Point, value: string, size: number) => {
+    const width = textWidth(value, size)
+    let left = center[0] - width / 2,
+      baseline = center[1] + size * 0.32
+    if (!model) {
+      const [x0, , x1] = d.area
+      left = Math.max(x0, Math.min(left, x1 - width))
+      baseline = Math.max(150, Math.min(baseline, 625))
+    }
+    return !overlaps([left - 1, baseline - size - 1, left + width + 1, baseline + 2])
   }
   const circle = (p: Point, r: number, layer = 'SYMBOL', owner?: string) => {
     d.primitives.push({ type: 'circle', p, r, layer, owner })
-    if (owner) occupied.push([p[0] - r - 3, p[1] - r - 3, p[0] + r + 3, p[1] + r + 3])
+    if (owner) boxes.push([p[0] - r - 2, p[1] - r - 2, p[0] + r + 2, p[1] + r + 2])
   }
   const rect = (x: number, y: number, w: number, h: number) => {
     line([x, y], [x + w, y], 'BORDER')
@@ -182,22 +192,24 @@ export function createDrawing(
     line([x + w, y + h], [x, y + h], 'BORDER')
     line([x, y + h], [x, y], 'BORDER')
   }
-  rect(20, 20, W - 40, 810)
-  text(
-    [40, 48],
-    doc.title.length > 55 ? doc.title.slice(0, 54) + '…' : doc.title,
-    22
-  )
-  text(
-    [40, 72],
-    `${doc.drawing}  |  ${spool || 'All spools'}  |  Revision ${doc.revision}`,
-    13
-  )
-  text(
-    [40, 94],
-    `${doc.customer}${doc.project ? '  /  ' + doc.project : ''}`,
-    12
-  )
+  if (!model) {
+    rect(20, 20, W - 40, 810)
+    text(
+      [40, 48],
+      doc.title.length > 55 ? doc.title.slice(0, 54) + '…' : doc.title,
+      22
+    )
+    text(
+      [40, 72],
+      `${doc.drawing}  |  ${spool || 'All spools'}  |  Revision ${doc.revision}`,
+      13
+    )
+    text(
+      [40, 94],
+      `${doc.customer}${doc.project ? '  /  ' + doc.project : ''}`,
+      12
+    )
+  }
   const allBom = bom(doc)
   const partMap = new Map<string, number>()
   for (const n of nodes) {
@@ -206,44 +218,104 @@ export function createDrawing(
     if (!edge) continue
     partMap.set(n.id, allBom.find(r => r.memberIds?.includes(n.id))?.item ?? 0)
   }
-  for (const r of runs) {
+  const move = (p: Point, n: Point, s: number): Point => [p[0] + n[0] * s, p[1] + n[1] * s]
+  const pipes = runs.filter(r => {
+    if (r.connector) {
+      const a = positions.get(r.from),
+        b = positions.get(r.to)
+      if (a && b) line(a, b, 'SYMBOL', r.id)
+      return false
+    }
+    return positions.has(r.from) && positions.has(r.to)
+  })
+  const signature = (r: (typeof pipes)[number]) => r.nps + '\0' + r.specId
+  const parent = new Map(pipes.map(r => [r.id, r.id]))
+  const find = (id: string): string => {
+    let x = id
+    while (parent.get(x) !== x) x = parent.get(x)!
+    return x
+  }
+  const atNode = new Map<string, typeof pipes>()
+  for (const r of pipes)
+    for (const end of [r.from, r.to]) atNode.set(end, [...(atNode.get(end) ?? []), r])
+  for (const list of atNode.values())
+    for (let i = 0; i < list.length; i++)
+      for (let j = i + 1; j < list.length; j++)
+        if (signature(list[i]) === signature(list[j])) {
+          const pa = find(list[i].id),
+            pb = find(list[j].id)
+          if (pa !== pb) parent.set(pa, pb)
+        }
+  const spanOf = (r: (typeof pipes)[number]) => {
     const a = positions.get(r.from)!,
-      b = positions.get(r.to)!,
-      dx = b[0] - a[0],
+      b = positions.get(r.to)!
+    return Math.hypot(b[0] - a[0], b[1] - a[1])
+  }
+  const callout = new Set<string>()
+  const groups = new Map<string, typeof pipes>()
+  for (const r of pipes) {
+    const g = find(r.id)
+    groups.set(g, [...(groups.get(g) ?? []), r])
+  }
+  for (const list of groups.values())
+    callout.add(list.reduce((a, b) => (spanOf(b) > spanOf(a) ? b : a)).id)
+  const dimNormal = new Map<string, Point>()
+  const geometry = pipes.map(r => {
+    const a = positions.get(r.from)!,
+      b = positions.get(r.to)!
+    const dx = b[0] - a[0],
       dy = b[1] - a[1],
       len = Math.hypot(dx, dy) || 1
-    const result = runResult(doc, r)
-    line(a, b, r.connector ? 'SYMBOL' : 'PIPE', r.id)
-    if (r.connector) continue
-    const offset: Point = [(-dy / len) * 32, (dx / len) * 32]
+    const dir: Point = [dx / len, dy / len],
+      up: Point = [-dir[1], dir[0]],
+      down: Point = [dir[1], -dir[0]]
+    const normal = up[1] + up[0] * 0.02 <= down[1] + down[0] * 0.02 ? up : down
     const mid: Point = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]
-    const da: Point = [a[0] + offset[0], a[1] + offset[1]],
-      db: Point = [b[0] + offset[0], b[1] + offset[1]]
-    line(a, [da[0] + offset[0] * 0.15, da[1] + offset[1] * 0.15], 'DIM', r.id)
-    line(b, [db[0] + offset[0] * 0.15, db[1] + offset[1] * 0.15], 'DIM', r.id)
-    line(da, db, 'DIM', r.id)
-    for (const p of [da, db])
-      line([p[0] - 3, p[1] - 5], [p[0] + 3, p[1] + 5], 'DIM', r.id)
-    const label =
-      doc.dimensionMode === 'overall'
-        ? formatLength(result.overall, doc.units)
-        : doc.dimensionMode === 'cut'
-          ? `CUT ${formatLength(result.cut, doc.units)}`
-          : `${formatLength(result.overall, doc.units)} / CUT ${formatLength(result.cut, doc.units)}`
-    text(
-      [mid[0] + offset[0] - 35, mid[1] + offset[1] - 5],
-      label,
-      11,
-      'DIM',
-      r.id
+    return { r, a, b, dir, normal, mid, len }
+  })
+  const blocked = (mid: Point, normal: Point, dir: Point, self: string) =>
+    geometry.some(o => {
+      if (o.r.id === self) return false
+      const vx = o.mid[0] - mid[0],
+        vy = o.mid[1] - mid[1]
+      const side = vx * normal[0] + vy * normal[1],
+        along = vx * dir[0] + vy * dir[1]
+      return side > 3 && side < 34 && Math.abs(along) < o.len / 2 + 40
+    })
+  for (const g of geometry) {
+    const flip: Point = [-g.normal[0], -g.normal[1]]
+    if (blocked(g.mid, g.normal, g.dir, g.r.id) && !blocked(g.mid, flip, g.dir, g.r.id))
+      g.normal = flip
+    dimNormal.set(g.r.id, g.normal)
+    line(g.a, g.b, 'PIPE', g.r.id)
+    const copy = dimensionCopy(
+      runResult(doc, g.r).overall,
+      runResult(doc, g.r).cut,
+      doc.units,
+      doc.dimensionMode
     )
-    text(
-      [mid[0] - 20, mid[1] - 10],
-      `${r.nps}" · ${r.specId}`,
-      11,
-      'TEXT',
-      r.id
-    )
+    const primary = 10.5,
+      off = 16,
+      width = textWidth(copy.primary, primary)
+    if (g.len > width + 22) {
+      const gap = width / 2 + 5,
+        centre = move(g.mid, g.normal, off)
+      line(move(g.a, g.normal, off), move(centre, g.dir, -gap), 'DIM', g.r.id)
+      line(move(centre, g.dir, gap), move(g.b, g.normal, off), 'DIM', g.r.id)
+      line(move(g.a, g.normal, 4), move(g.a, g.normal, off + 3), 'DIM', g.r.id)
+      line(move(g.b, g.normal, 4), move(g.b, g.normal, off + 3), 'DIM', g.r.id)
+      note(centre, copy.primary, primary, 'DIM', g.r.id)
+      if (copy.secondary) note([centre[0], centre[1] + 12], copy.secondary, 8, 'DIM', g.r.id)
+    } else {
+      const at = move(g.mid, g.normal, off)
+      note(at, copy.primary, primary, 'DIM', g.r.id)
+      if (copy.secondary) note([at[0], at[1] + 12], copy.secondary, 8, 'DIM', g.r.id)
+    }
+    if (callout.has(g.r.id)) {
+      const value = `${g.r.nps}″ ${g.r.specId}`,
+        spots = [move(g.mid, g.normal, -14), move(g.a, g.normal, -14), move(g.b, g.normal, -14)]
+      note(spots.find(s => free(s, value, 9)) ?? spots[0], value, 9, 'TEXT', g.r.id)
+    }
   }
   function symbol(n: PipeNode, p: Point) {
     const edges = connected(doc, n.id),
@@ -271,8 +343,6 @@ export function createDrawing(
         else if ('c' in stroke) circle(at(stroke.c[0], stroke.c[1]), stroke.c[2], 'SYMBOL', n.id)
         else text(at(stroke.at[0], stroke.at[1]), stroke.t, stroke.size ?? 9, 'SYMBOL', n.id)
       }
-    } else if (n.kind === 'weld') {
-      circle(p, n.field ? 5 : 3, 'WELD', n.id)
     } else if (n.kind === 'elbow90' || n.kind === 'elbow45') {
       circle(p, 6, 'SYMBOL', n.id)
     } else if (n.kind === 'tee' || n.kind === 'olet') {
@@ -286,34 +356,47 @@ export function createDrawing(
       )
     } else if (n.kind === 'bolt') {
       text([p[0] - 5, p[1] + 4], 'B', 10, 'SYMBOL', n.id)
-    } else circle(p, 3, 'SYMBOL', n.id)
-    const part = partMap.get(n.id)
-    if (part) {
-      const offset = n.labelOffset ?? [24, -24]
-      const dest: Point = [p[0] + offset[0], p[1] + offset[1]]
-      line(p, dest, 'BOM', n.id)
-      circle(dest, 10, 'BOM', n.id)
-      text([dest[0] - 4, dest[1] + 4], String(part), 10, 'BOM', n.id)
-    }
+    } else if (n.kind !== 'weld') circle(p, 3, 'SYMBOL', n.id)
   }
   for (const n of nodes) symbol(n, positions.get(n.id)!)
   for (const w of welds(doc).filter(w => runs.some(r => r.id === w.runId))) {
-    const p0 = project(w.position)
-    const p: Point = [
-      (p0[0] - fit.centre[0]) * scale + cx,
-      (p0[1] - fit.centre[1]) * scale + 360
-    ]
-    circle(p, 3, 'WELD', w.nodeId)
-    const label = text(
-      [p[0] + 7, p[1] + 15],
-      `${w.tag}${w.field ? ' FW' : ''}`,
-      9,
-      'WELD',
-      w.nodeId
-    )
-    if (Math.hypot(label[0] - p[0], label[1] - p[1]) > 20)
-      line(p, [label[0], label[1] - 4.5], 'WELD', w.nodeId)
+    const p = d.project(w.position)
+    const host = dimNormal.get(w.runId) ?? ([0, -1] as Point)
+    const away: Point = [-host[0], -host[1]],
+      tangent: Point = [-away[1], away[0]]
+    circle(p, w.field ? 4.2 : 2.6, 'WELD', w.nodeId)
+    if (w.field) circle(p, 6.2, 'WELD', w.nodeId)
+    const spots: Point[] = []
+    for (const slide of [0, 12, -12, 24, -24])
+      for (const side of [1, -1]) spots.push(move(move(p, away, 16 * side), tangent, slide))
+    note(spots.find(s => free(s, w.tag, 8.5)) ?? spots[0], w.tag, 8.5, 'WELD', w.nodeId)
   }
+  for (const n of nodes) {
+    const part = partMap.get(n.id)
+    if (!part) continue
+    const p = positions.get(n.id)!
+    const host =
+      connected(doc, n.id).map(e => dimNormal.get(e.id)).find(Boolean) ??
+      ([0, -1] as Point)
+    const value = String(part)
+    const custom = n.labelOffset && (n.labelOffset[0] !== 24 || n.labelOffset[1] !== -24)
+    const dest = custom
+      ? ([p[0] + n.labelOffset![0], p[1] + n.labelOffset![1]] as Point)
+      : ([0, 0.55, -0.55, 1.15, -1.15, 2.2, Math.PI, 2.6]
+          .map(angle => {
+            const c = Math.cos(angle),
+              s = Math.sin(angle)
+            return move(p, [host[0] * c - host[1] * s, host[0] * s + host[1] * c], 30)
+          })
+          .find(s => !overlaps([s[0] - 11, s[1] - 11, s[0] + 11, s[1] + 11])) ?? move(p, host, 30))
+    const vx = dest[0] - p[0],
+      vy = dest[1] - p[1],
+      mag = Math.hypot(vx, vy) || 1
+    line(p, [dest[0] - (vx / mag) * 8, dest[1] - (vy / mag) * 8], 'BOM', n.id)
+    circle(dest, 8, 'BOM', n.id)
+    note(dest, value, 9, 'BOM', n.id)
+  }
+  if (!model) {
   const north = project([0, 1, 0]),
     northLength = Math.hypot(...north)
   if (northLength > 0.001) {
@@ -383,6 +466,7 @@ export function createDrawing(
     `ROOT GAP: ${[...new Set(doc.specs.map(s => s.rootGap))].join('/')} mm`,
     10
   )
+  }
   // Break drafting lines around annotation text so every export remains legible,
   // including legacy DWG versions without MTEXT background masks.
   const clearances = d.primitives
@@ -390,7 +474,7 @@ export function createDrawing(
       (p): p is Extract<Primitive, { type: 'text' }> =>
         p.type === 'text' &&
         !!p.owner &&
-        ['DIM', 'TEXT', 'WELD'].includes(p.layer)
+        ['DIM', 'TEXT', 'WELD', 'BOM'].includes(p.layer)
     )
     .map(p => [
       p.p[0] - 2,
@@ -438,12 +522,12 @@ export function drawingSvg(
   grid?: { settings: GridSettings; anchor: Vec3 }
 ): string {
   const shape = (p: Primitive) => {
-    const attrs = `data-owner="${escape(p.owner ?? '')}" class="${p.owner === selected ? 'selected' : ''}"`
+    const attrs = `data-owner="${escape(p.owner ?? '')}" class="${p.layer.toLowerCase()}${p.owner === selected ? ' selected' : ''}"`
     if (p.type === 'line')
-      return `<line ${attrs} x1="${p.a[0]}" y1="${p.a[1]}" x2="${p.b[0]}" y2="${p.b[1]}" stroke-width="${p.layer === 'PIPE' ? 3 : p.layer === 'SYMBOL' ? 2 : 0.8}"/>`
+      return `<line ${attrs} x1="${p.a[0]}" y1="${p.a[1]}" x2="${p.b[0]}" y2="${p.b[1]}" stroke-width="${p.layer === 'PIPE' ? 2.2 : p.layer === 'SYMBOL' ? 1.6 : 0.75}"/>`
     if (p.type === 'circle')
       return `<circle ${attrs} cx="${p.p[0]}" cy="${p.p[1]}" r="${p.r}" fill="white"/>`
-    return `<text ${attrs} x="${p.p[0]}" y="${p.p[1]}" font-size="${p.size}" stroke="none">${escape(p.text)}</text>`
+    return `<text ${attrs} x="${p.p[0]}" y="${p.p[1]}" font-size="${p.size}">${escape(p.text)}</text>`
   }
   const hits = interactive
     ? [...d.positions]
@@ -453,5 +537,5 @@ export function drawingSvg(
         )
         .join('')
     : ''
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${d.width} ${d.height}" role="img" aria-label="Piping isometric drawing" style="background:white;color:#17212c"><style>text{fill:#17212c;font-family:Arial,sans-serif}line,circle{stroke:#17212c}.selected{stroke:#087fbe;fill:#087fbe}.node-hit{cursor:pointer;stroke:none!important}.iso-grid-line{stroke:#c6dbea;stroke-width:0.6}.iso-grid-line.major{stroke:#a5c8df;stroke-width:0.85}.iso-grid-caption{fill:#4f7289}.grid-cursor{stroke:#087fbe;fill:#087fbe;pointer-events:none}text{user-select:none}</style>${interactive && grid ? gridSvg(d, grid.anchor, grid.settings) : ''}${d.primitives.map(shape).join('')}${hits}${interactive ? '<g data-grid-cursor pointer-events="none"></g>' : ''}</svg>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${d.width} ${d.height}" role="img" aria-label="Piping isometric drawing" style="background:white;color:#17212c"><style>text{font-family:Arial,sans-serif;fill:#17212c;paint-order:stroke fill;stroke:#fff;stroke-width:3px;stroke-linejoin:round}text.dim{fill:#31404c}text.text{fill:#6d7a86}text.weld{fill:#0c6880;font-weight:600}text.bom{fill:#1c2b38;font-weight:600}text.symbol{stroke:none}line,circle{stroke:#17212c}line.pipe{stroke:#1c2b38}line.dim{stroke:#8ea4b4}line.weld,circle.weld{stroke:#0c6880}line.bom,circle.bom{stroke:#607180}.selected{stroke:#087fbe}text.selected{fill:#087fbe}.node-hit{cursor:pointer;stroke:none!important}.iso-grid-line{stroke:#c6dbea;stroke-width:0.6}.iso-grid-line.major{stroke:#a5c8df;stroke-width:0.85}.iso-grid-caption{fill:#4f7289}.grid-cursor{stroke:#087fbe;fill:#087fbe;pointer-events:none}text{user-select:none}</style>${interactive && grid ? gridSvg(d, grid.anchor, grid.settings) : ''}${d.primitives.map(shape).join('')}${hits}${interactive ? '<g data-grid-cursor pointer-events="none"></g>' : ''}</svg>`
 }

@@ -381,7 +381,10 @@ export function Home({
                   <li>
                     Press <kbd>Esc</kbd> to finish the run; <b>New spool</b> starts the next one.
                   </li>
-                  <li>Select a pipe to insert valves, flanges, supports and other components from the specification.</li>
+                  <li>
+                    Choose a component in Insert, then click the pipe. Or select the pipe first and the component
+                    lands on it. Elbows appear when the run changes direction.
+                  </li>
                 </ol>
               </section>
               <section>

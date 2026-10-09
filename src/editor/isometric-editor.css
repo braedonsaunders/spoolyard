@@ -302,19 +302,101 @@
   fill: #263646;
   font-family: Arial, sans-serif;
   user-select: none;
+  paint-order: stroke fill;
+  stroke: #fff;
+  stroke-width: 3.5px;
+  stroke-linejoin: round;
 }
 .model-space .iso-primitive {
   stroke: var(--iso-ink);
 }
 .model-space .iso-text {
   fill: var(--iso-ink);
+  stroke: var(--iso-canvas);
+}
+.iso-text.iso-layer-dim {
+  fill: #31404c;
+}
+.iso-text.iso-layer-text {
+  fill: #6d7a86;
+}
+.iso-text.iso-layer-weld {
+  fill: #0c6880;
+  font-weight: 650;
+}
+.iso-text.iso-layer-bom {
+  fill: #1c2b38;
+  font-weight: 650;
+}
+.iso-primitive.iso-layer-dim {
+  stroke: #8ea4b4;
+}
+.iso-primitive.iso-layer-weld {
+  stroke: #0c6880;
+}
+.iso-primitive.iso-layer-bom {
+  stroke: #607180;
+}
+.iso-text.selected {
+  fill: #008dbc;
 }
 .iso-primitive.selected {
   stroke: #008dbc;
   stroke-width: 3px;
 }
-.iso-text.selected {
-  fill: #008dbc;
+.iso-sheet.placing {
+  cursor: copy;
+}
+.iso-place-hint {
+  position: absolute;
+  top: 52px;
+  left: 50%;
+  z-index: 3;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 6px 14px;
+  border-radius: 999px;
+  background: #0c6880;
+  color: white;
+  font-size: 12px;
+  white-space: nowrap;
+  box-shadow: 0 8px 20px #10203033;
+}
+.iso-place-hint button {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #ffffff24;
+  color: white;
+}
+.iso-components {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  width: 228px;
+  min-height: 0;
+  border-right: 1px solid rgb(var(--ch-border));
+  background: rgb(var(--ch-surface));
+}
+.iso-components-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 10px 4px;
+}
+.iso-components-head strong {
+  font-size: 12px;
+}
+.iso-components-head > small {
+  font-size: 10.5px;
+  line-height: 1.45;
+  opacity: 0.62;
+}
+.iso-components .iso-palette {
+  min-height: 0;
+  overflow: auto;
+  padding: 0 8px 12px;
 }
 .iso-node-hit {
   cursor: pointer;
@@ -851,6 +933,13 @@
   gap: 9px;
   padding: 5px 6px;
 }
+.iso-editor .iso-palette-group > button:hover {
+  background: rgb(var(--ch-border) / 0.4);
+}
+.iso-editor .iso-palette-group > button.armed {
+  background: color-mix(in srgb, #0b8eae 16%, transparent);
+  box-shadow: inset 0 0 0 1px #0b8eae;
+}
 .iso-palette-group > button > span {
   display: flex;
   flex-direction: column;
@@ -1184,6 +1273,18 @@
   font-style: normal;
   font-size: 9.5px;
   color: #0b93ae;
+}
+.iso-library-insert {
+  margin-top: 2px;
+  padding: 4px 8px;
+  border-radius: 5px;
+  background: #0c6880;
+  color: white;
+  font-size: 11px;
+}
+.iso-library-note {
+  font-size: 10px;
+  opacity: 0.45;
 }
 
 /* Compact ribbon when the editor shares the page with a file tree. */

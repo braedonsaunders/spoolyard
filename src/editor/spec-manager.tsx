@@ -56,11 +56,11 @@ export function SpecManager({
   const [picker, setPicker] = useState(false);
   const spec = doc.specs.find((s) => s.id === specId) ?? doc.specs[0];
   useEffect(() => {
-    if (adding && !library)
+    if (!library)
       loadSpecIndex()
         .then(setLibrary)
         .catch((e) => onError(e.message));
-  }, [adding, library, onError]);
+  }, [library, onError]);
 
   const groups = useMemo(() => {
     const byCode = new Map<string, CatalogItem[]>();
@@ -164,24 +164,6 @@ export function SpecManager({
             <button onClick={importSpecs}>
               <Upload size={13} /> Import JSON…
             </button>
-            <span>Standard library</span>
-            {!library ? (
-              <p>
-                <Loader2 size={12} className="animate-spin" /> Loading…
-              </p>
-            ) : (
-              library.map((l) => (
-                <button key={l.slug} disabled={!!loading} onClick={() => void addLibrary(l.slug)} title={l.service}>
-                  {loading === l.slug ? <Loader2 size={13} className="animate-spin" /> : <BookOpen size={13} />}
-                  <span>
-                    <b>{l.id}</b> {l.material} · {l.rating}
-                    <small>
-                      {l.service} · {l.rowCount} rows
-                    </small>
-                  </span>
-                </button>
-              ))
-            )}
           </div>
         )}
         {doc.specs.map((s) => (
@@ -201,6 +183,31 @@ export function SpecManager({
             </small>
           </button>
         ))}
+        <div className="iso-specs-library">
+          <span>Standard library</span>
+          {!library ? (
+            <p>
+              <Loader2 size={12} className="animate-spin" /> Loading…
+            </p>
+          ) : (
+            library
+              .filter((l) => !doc.specs.some((s) => s.id === l.id))
+              .map((l) => (
+                <button key={l.slug} disabled={!!loading} onClick={() => void addLibrary(l.slug)} title={l.service}>
+                  {loading === l.slug ? <Loader2 size={13} className="animate-spin" /> : <BookOpen size={13} />}
+                  <span>
+                    <b>{l.id}</b> {l.material} · {l.rating}
+                    <small>
+                      {l.service} · {l.rowCount} rows · add to drawing
+                    </small>
+                  </span>
+                </button>
+              ))
+          )}
+          {library && library.every((l) => doc.specs.some((s) => s.id === l.id)) && (
+            <p>Every standard specification is in this drawing.</p>
+          )}
+        </div>
         <div className="iso-specs-footer">
           <button
             onClick={() =>

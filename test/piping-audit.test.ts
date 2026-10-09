@@ -234,6 +234,35 @@ test('pipe material schedules use the size-specific schedule and grade', () => {
   assert.match(bom(doc)[0].description, /XS/);
 });
 
+test('dimensions sit beside the pipe and a size is called out once per run', () => {
+  const doc = newIso();
+  let start: string | null = null;
+  for (let i = 0; i < 4; i++) start = appendRun(doc, start, [800, 0, 0], 'CS40', 2, 'SP', '').id;
+  const drawing = createDrawing(doc);
+  const callouts = drawing.primitives.filter(
+    (p): p is Extract<typeof p, { type: 'text' }> => p.type === 'text' && p.layer === 'TEXT' && !!p.owner,
+  );
+  assert.equal(callouts.length, 1);
+  assert.equal(callouts[0].text, '2″ CS40');
+  const dims = drawing.primitives.filter(
+    (p): p is Extract<typeof p, { type: 'text' }> => p.type === 'text' && p.layer === 'DIM',
+  );
+  assert.ok(dims.length >= 4);
+  for (const label of dims) {
+    assert.equal(label.text.includes(' / '), false);
+    assert.equal(label.text.includes(' mm'), false);
+    const run = doc.runs.find(r => r.id === label.owner)!;
+    const a = drawing.positions.get(run.from)!, b = drawing.positions.get(run.to)!;
+    const dx = b[0] - a[0], dy = b[1] - a[1], l2 = dx * dx + dy * dy || 1;
+    const t = Math.max(0, Math.min(1, ((label.p[0] - a[0]) * dx + (label.p[1] - a[1]) * dy) / l2));
+    const distance = Math.hypot(label.p[0] - (a[0] + t * dx), label.p[1] - (a[1] + t * dy));
+    assert.ok(distance < 48, label.text + ' drifted ' + distance);
+  }
+  const model = createDrawing(doc, '', 'iso', undefined, { model: true });
+  assert.equal(model.primitives.some(p => p.layer === 'BORDER'), false);
+  assert.ok(model.primitives.some(p => p.type === 'text' && p.layer === 'DIM' && p.text === '800'));
+});
+
 test('annotation collision adjustments keep dimension labels within the model viewport', () => {
   const doc = newIso();
   let start: string | null = null;

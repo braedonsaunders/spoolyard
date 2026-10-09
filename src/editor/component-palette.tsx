@@ -16,10 +16,13 @@ export function ComponentPalette({
   spec,
   nps,
   onInsert,
+  armedKey = "",
 }: {
   spec: PipeSpec;
   nps: number;
   onInsert: (type: ComponentType, row?: CatalogItem) => void;
+  /** Catalogue id or component code of the fitting waiting for a pipe click. */
+  armedKey?: string;
 }) {
   const [query, setQuery] = useState("");
   const [all, setAll] = useState(false);
@@ -60,7 +63,12 @@ export function ComponentPalette({
             const rows = rowsByCode.get(t.code) ?? [];
             return rows.length > 1 ? (
               rows.map((row) => (
-                <button key={row.id} title={row.description} onClick={() => onInsert(t, row)}>
+                <button
+                  key={row.id}
+                  title={row.description}
+                  className={cn(armedKey === row.id && "armed")}
+                  onClick={() => onInsert(t, row)}
+                >
                   <ComponentGlyph code={t.code} size={22} />
                   <span>
                     {t.label}
@@ -75,7 +83,7 @@ export function ComponentPalette({
             ) : (
               <button
                 key={t.code}
-                className={cn(!rows.length && t.kind !== "annotation" && "outside")}
+                className={cn(!rows.length && t.kind !== "annotation" && "outside", armedKey === t.code && "armed")}
                 title={rows[0]?.description ?? t.description}
                 onClick={() => onInsert(t, rows[0])}
               >
@@ -101,7 +109,13 @@ export function ComponentPalette({
 }
 
 /** The full component library: every type the catalogue knows, with its symbol and spec coverage. */
-export function ComponentLibrary({ specs }: { specs: PipeSpec[] }) {
+export function ComponentLibrary({
+  specs,
+  onInsert,
+}: {
+  specs: PipeSpec[];
+  onInsert?: (type: ComponentType) => void;
+}) {
   const [query, setQuery] = useState("");
   const coverage = useMemo(() => {
     const map = new Map<string, Set<string>>();
@@ -145,6 +159,13 @@ export function ComponentLibrary({ specs }: { specs: PipeSpec[] }) {
                     {[t.endPrep, t.reducing ? "reducing" : "", t.ports ? t.ports + "-port" : ""].filter(Boolean).join(" · ")}
                   </small>
                   {coverage.get(t.code) && <em>In {[...coverage.get(t.code)!].join(", ")}</em>}
+                  {insertable(t) ? (
+                    <button type="button" className="iso-library-insert" onClick={() => onInsert?.(t)}>
+                      Insert
+                    </button>
+                  ) : (
+                    <small className="iso-library-note">Placed by routing</small>
+                  )}
                 </div>
               ))}
             </div>

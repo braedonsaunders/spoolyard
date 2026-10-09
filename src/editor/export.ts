@@ -96,14 +96,33 @@ export async function exportPdf(doc: IsoDocument): Promise<Blob> {
             borderWidth: 0.8 * scale,
             borderColor: rgb(0.05, 0.1, 0.15),
           });
-        else
+        else {
+          const ink =
+            p.layer === "DIM"
+              ? rgb(0.19, 0.25, 0.31)
+              : p.layer === "TEXT" && p.owner
+                ? rgb(0.42, 0.47, 0.52)
+                : p.layer === "WELD"
+                  ? rgb(0.05, 0.38, 0.47)
+                  : rgb(0.05, 0.1, 0.15);
+          if (p.owner && ["DIM", "TEXT", "WELD", "BOM"].includes(p.layer)) {
+            const w = p.text.length * p.size * 0.62;
+            page.drawRectangle({
+              x: ox + (p.p[0] - 1.5) * scale,
+              y: height - oy - (p.p[1] + 2) * scale,
+              width: (w + 3) * scale,
+              height: (p.size + 4) * scale,
+              color: rgb(1, 1, 1),
+            });
+          }
           page.drawText(p.text, {
             x: ox + p.p[0] * scale,
             y: height - oy - p.p[1] * scale,
             size: p.size * scale,
             font,
-            color: rgb(0.05, 0.1, 0.15),
+            color: ink,
           });
+        }
       }
       if (issues.length)
         page.drawText("DRAFT - FABRICATION DATA INCOMPLETE", {

@@ -61,20 +61,21 @@ import {
   validateIso,
   welds,
   type IsoDocument,
+  type CatalogItem,
   type Kind,
   type EndPrep,
   type Vec3,
 } from "../core/model";
-import { createDrawing, isoProject, sheetWidth, type Drawing, type Point, type SheetFit } from "../core/drawing";
+import { createDrawing, sheetWidth, type Drawing, type Point, type SheetFit } from "../core/drawing";
 import { defaultGrid, gridSvg, pickGridPoint, pickOrthoPoint } from "../core/grid";
 import { importPcf, exportPcf } from "../core/pcf";
 import { download } from "./download";
 import { exportDwg } from "./dwg";
 import { isometricDxf, readIsometric } from "../core/document";
 import { usePipingSave } from "./use-piping-save";
-import { COMPONENT_TYPES } from "../core/components";
+import { COMPONENT_TYPES, type ComponentType } from "../core/components";
 import { SpecManager, rowComponent } from "./spec-manager";
-import { defaultNps, newIsoWithDefaultSpec } from "./library";
+import { defaultNps, loadLibrarySpec, loadSpecIndex, newIsoWithDefaultSpec, type LibrarySpecSummary } from "./library";
 import { SpoolyardMark } from "./mark";
 import { ComponentLibrary, ComponentPalette } from "./component-palette";
 import { ComponentGlyph } from "./component-glyph";
@@ -170,31 +171,6 @@ function Tool({
   );
 }
 
-function worldDrawing(source: Drawing, doc: IsoDocument): Drawing {
-  const origin = source.project([0, 0, 0]),
-    unit = source.project([1, 0, 0]),
-    raw = isoProject([1, 0, 0], doc.north);
-  const ratio = 0.3 / (Math.hypot(unit[0] - origin[0], unit[1] - origin[1]) / Math.hypot(...raw));
-  const map = (p: Point): Point => [(p[0] - origin[0]) * ratio + 550, (p[1] - origin[1]) * ratio + 425];
-  return {
-    ...source,
-    project: (p) => {
-      const q = isoProject(p, doc.north);
-      return [q[0] * 0.3 + 550, q[1] * 0.3 + 425];
-    },
-    positions: new Map([...source.positions].map(([key, p]) => [key, map(p)])),
-    primitives: source.primitives
-      .filter((p) => p.owner || ["PIPE", "SYMBOL", "WELD"].includes(p.layer))
-      .map((p) =>
-        p.type === "line"
-          ? { ...p, a: map(p.a), b: map(p.b) }
-          : p.type === "circle"
-            ? { ...p, p: map(p.p), r: p.r * ratio }
-            : { ...p, p: map(p.p), size: Math.max(10, p.size * ratio) },
-      ),
-  };
-}
-
 export function IsometricEditor({
   fileUrl,
   source,
@@ -224,6 +200,9 @@ export function IsometricEditor({
   const [filter, setFilter] = useState(""),
     [kind, setKind] = useState<Kind>("valve"),
     [fraction, setFraction] = useState(50);
+  const [library, setLibrary] = useState<LibrarySpecSummary[] | null>(null),
+    [specBusy, setSpecBusy] = useState(""),
+    [armed, setArmed] = useState<{ type: ComponentType; row?: CatalogItem } | null>(null);
   const [zoom, setZoom] = useState(1),
     [pan, setPan] = useState<Point>([0, 0]),
     [cursor, setCursor] = useState<Vec3 | null>(null);
@@ -346,6 +325,10 @@ export function IsometricEditor({
         e.preventDefault();
         history(true);
       } else if (e.key === "Escape") {
+        if (armed) {
+          setArmed(null);
+          return;
+        }
         // First Esc finishes the run in progress; the next click starts a new one. A second Esc leaves the Pipe tool.
         if (tool === "pipe" && start) setStart("");
         else setTool("select");
@@ -360,6 +343,17 @@ export function IsometricEditor({
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
   });
+  useEffect(() => {
+    loadSpecIndex()
+      .then(setLibrary)
+      .catch(() => setLibrary([]));
+  }, []);
+  useEffect(() => {
+    if (ready && !doc.specs.some((s) => s.id === spec) && doc.specs[0]) {
+      setSpec(doc.specs[0].id);
+      setNps(defaultNps(doc.specs[0]));
+    }
+  }, [doc, spec, ready]);
   // Paper follows the chosen sheet size so the editor matches the exported PDF exactly.
   const W = surface === "paper" ? sheetWidth(doc) : 1100,
     dx = W - 1100;
@@ -380,7 +374,7 @@ export function IsometricEditor({
   const heldFit = useRef<SheetFit | null>(null);
   const holding = surface === "paper" && tool === "pipe" && routing;
   const drawing = useMemo(() => {
-    if (surface === "grid") return worldDrawing(createDrawing(doc, filter, "iso"), doc);
+    if (surface === "grid") return createDrawing(doc, filter, "iso", undefined, { model: true });
     if (!holding) {
       heldFit.current = null;
       return createDrawing(doc, filter, view);
@@ -477,6 +471,11 @@ export function IsometricEditor({
       ),
     );
   };
+  useEffect(() => {
+    if (surface === "grid") fit();
+    // Frame the spool when model space opens. Later edits keep the view the user left.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [surface]);
   const add = (delta: Vec3) =>
     commit((d) => {
       let from = d.nodes.some((n) => n.id === start) ? start : null;
@@ -505,11 +504,98 @@ export function IsometricEditor({
     const p = new DOMPoint(event.clientX, event.clientY).matrixTransform(matrix.inverse());
     return [p.x, p.y];
   };
+  const insertFitting = (runId: string, type: ComponentType, row?: CatalogItem) => {
+    const before = latest.current;
+    commit((d) => {
+      const run = d.runs.find((r) => r.id === runId);
+      if (!run || run.connector) throw new Error("Select a pipe to insert this component.");
+      const t = fraction / 100;
+      if (!(t > 0 && t < 1)) throw new Error("Position must be between the pipe ends.");
+      const specRows = getSpec(d, run.specId).fittings;
+      const match =
+        (row && specRows.some((f) => f.id === row.id) ? row : undefined) ??
+        specRows.find(
+          (f) =>
+            rowComponent(f)?.code === type.code &&
+            f.nps === run.nps &&
+            (row?.smallerNps == null || f.smallerNps === row.smallerNps),
+        ) ??
+        specRows.find((f) => rowComponent(f)?.code === type.code && f.nps === run.nps);
+      const fittingKind = type.kind as Kind;
+      const node = ["support", "bolt", "annotation"].includes(fittingKind)
+        ? attachComponent(d, runId, fittingKind, t)
+        : insertComponent(d, runId, fittingKind, t);
+      applyComponent(d, node, type.code, match);
+      if (fittingKind === "reducer" && match?.smallerNps) {
+        const next = d.runs.find((r) => r.from === node.id);
+        if (next) {
+          next.nps = match.smallerNps;
+          setAutoFitting(d, next.to);
+        }
+      }
+      setSelection(node.id);
+    });
+    if (latest.current !== before) setArmed(null);
+  };
+  const chooseComponent = (type: ComponentType, row?: CatalogItem) => {
+    const run = doc.runs.find((r) => r.id === selection && !r.connector);
+    if (run) insertFitting(run.id, type, row);
+    else {
+      const key = row?.id ?? type.code;
+      setArmed((current) => (current && (current.row?.id ?? current.type.code) === key ? null : { type, row }));
+      setTool("select");
+      setTab("draw");
+    }
+  };
+  const chooseSpec = async (value: string, runId = "") => {
+    const use = (d: IsoDocument, id: string) => {
+      const chosen = getSpec(d, id);
+      let size = defaultNps(chosen);
+      if (runId) {
+        const run = d.runs.find((r) => r.id === runId);
+        if (run) {
+          run.specId = id;
+          if (!chosen.sizes.some((s) => s.nps === run.nps)) run.nps = defaultNps(chosen);
+          size = run.nps;
+        }
+      }
+      setSpec(id);
+      setNps(size);
+    };
+    if (!value.startsWith("library:")) {
+      if (runId)
+        commit((d) => {
+          use(d, value);
+        });
+      else use(latest.current, value);
+      return;
+    }
+    const slug = value.slice("library:".length);
+    setSpecBusy(slug);
+    try {
+      const next = await loadLibrarySpec(slug, latest.current);
+      commit((d) => {
+        d.specs.push(next);
+        use(d, next.id);
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSpecBusy("");
+    }
+  };
   const place = (event: PointerEvent) => {
     if (!ready || drag.current) return;
     const target = event.target as Element,
       owner = target.closest("[data-owner]")?.getAttribute("data-owner"),
       node = target.closest("[data-node]")?.getAttribute("data-node");
+    if (armed && tool === "select" && owner && !node) {
+      const run = doc.runs.find((r) => r.id === owner && !r.connector);
+      if (run) {
+        insertFitting(owner, armed.type, armed.row);
+        return;
+      }
+    }
     if (node) {
       if (tool === 'pipe' && routing && node !== start) {
         add(sub(getNode(doc, node).position, anchor));
@@ -750,16 +836,25 @@ export function IsometricEditor({
                 <select
                   aria-label="Pipe specification"
                   value={spec}
-                  onChange={(e) => {
-                    setSpec(e.target.value);
-                    setNps(defaultNps(getSpec(doc, e.target.value)));
-                  }}
+                  disabled={!!specBusy}
+                  onChange={(e) => void chooseSpec(e.target.value)}
                 >
                   {doc.specs.map((s) => (
                     <option value={s.id} key={s.id}>
                       {s.name}
                     </option>
                   ))}
+                  {(library ?? []).some((l) => !doc.specs.some((s) => s.id === l.id)) && (
+                    <optgroup label="Add from standard library">
+                      {(library ?? [])
+                        .filter((l) => !doc.specs.some((s) => s.id === l.id))
+                        .map((l) => (
+                          <option value={"library:" + l.slug} key={l.slug}>
+                            {specBusy === l.slug ? "Adding " + l.id + "…" : l.id + " · " + l.service}
+                          </option>
+                        ))}
+                    </optgroup>
+                  )}
                 </select>
               </Field>
               <Field label="NPS">
@@ -859,6 +954,67 @@ export function IsometricEditor({
         </div>
       )}
       <div className="iso-main">
+        {tab === "draw" && (
+          <aside className="iso-components" aria-label="Insert component">
+            <div className="iso-components-head">
+              <strong>Insert</strong>
+              <small>
+                {armed
+                  ? "Click a pipe to place " + armed.type.label + ". Esc cancels."
+                  : selectedRun && !selectedRun.connector
+                    ? "Choosing a component places it on the selected pipe."
+                    : "Choose a component, then click the pipe it goes on."}
+              </small>
+              {selectedRun && !selectedRun.connector && (
+                <>
+                  <Field label="Position along pipe (%)">
+                    <input
+                      type="number"
+                      min="1"
+                      max="99"
+                      aria-label="Position along pipe"
+                      value={fraction}
+                      onChange={(e) => setFraction(Number(e.target.value))}
+                    />
+                  </Field>
+                  <Field label="Distance from pipe start">
+                    <input
+                      aria-label="Component distance from pipe start"
+                      key={selection + "-" + fraction}
+                      defaultValue={
+                        doc.units === "mm"
+                          ? String(round(runResult(doc, selectedRun).overall * fraction / 100, 3))
+                          : formatLength(runResult(doc, selectedRun).overall * fraction / 100, doc.units)
+                      }
+                      onBlur={(e) => {
+                        try {
+                          const distance = parseLength(e.target.value, doc.units),
+                            overall = runResult(doc, selectedRun).overall;
+                          if (distance <= 0 || distance >= overall)
+                            throw new Error("Position must be between the pipe ends.");
+                          setFraction((100 * distance) / overall);
+                        } catch (error) {
+                          setError(error instanceof Error ? error.message : String(error));
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") e.currentTarget.blur();
+                      }}
+                    />
+                  </Field>
+                </>
+              )}
+            </div>
+            {doc.specs[0] && (
+              <ComponentPalette
+                spec={doc.specs.find((s) => s.id === (selectedRun?.specId ?? spec)) ?? doc.specs[0]}
+                nps={selectedRun?.nps ?? nps}
+                armedKey={armed ? (armed.row?.id ?? armed.type.code) : ""}
+                onInsert={chooseComponent}
+              />
+            )}
+          </aside>
+        )}
         {["draw", "sheet"].includes(tab) && (
           <>
             <div
@@ -884,8 +1040,6 @@ export function IsometricEditor({
                     className={cn(surface === "grid" && "active")}
                     onClick={() => {
                       setSurface("grid");
-                      setPan([0, 0]);
-                      setZoom(1);
                       setView("iso");
                     }}
                   >
@@ -911,6 +1065,14 @@ export function IsometricEditor({
                   ))}
                 </select>
               </div>
+              {armed && tab === "draw" && (
+                <div className="iso-place-hint" role="status">
+                  Click a pipe to insert {armed.type.label}
+                  <button type="button" onClick={() => setArmed(null)}>
+                    Cancel
+                  </button>
+                </div>
+              )}
               {!ready ? (
                 <div className="iso-empty">
                   <Loader2 className="animate-spin" />
@@ -924,6 +1086,7 @@ export function IsometricEditor({
                     surface === "grid" && "model-space",
                     tool === "pipe" && "routing",
                     tool === "pan" && "panning",
+                    armed && tool === "select" && "placing",
                   )}
                   viewBox={[
                     W / 2 - W / 2 / zoom + pan[0],
@@ -1069,16 +1232,32 @@ export function IsometricEditor({
                     )
                     .map((p, i) =>
                       p.type === "line" ? (
-                        <line
-                          key={i}
-                          data-owner={p.owner}
-                          x1={p.a[0]}
-                          y1={p.a[1]}
-                          x2={p.b[0]}
-                          y2={p.b[1]}
-                          className={cn("iso-primitive", p.owner === selection && "selected")}
-                          strokeWidth={p.layer === "PIPE" ? 3 : p.layer === "SYMBOL" ? 2 : 0.8}
-                        />
+                        <g key={i}>
+                          <line
+                            data-owner={p.owner}
+                            x1={p.a[0]}
+                            y1={p.a[1]}
+                            x2={p.b[0]}
+                            y2={p.b[1]}
+                            className={cn(
+                              "iso-primitive",
+                              "iso-layer-" + p.layer.toLowerCase(),
+                              p.owner === selection && "selected",
+                            )}
+                            strokeWidth={p.layer === "PIPE" ? 2.2 : p.layer === "SYMBOL" ? 1.6 : 0.75}
+                          />
+                          {p.layer === "PIPE" && p.owner && (
+                            <line
+                              data-owner={p.owner}
+                              x1={p.a[0]}
+                              y1={p.a[1]}
+                              x2={p.b[0]}
+                              y2={p.b[1]}
+                              stroke="transparent"
+                              strokeWidth={14}
+                            />
+                          )}
+                        </g>
                       ) : p.type === "circle" ? (
                         <circle
                           key={i}
@@ -1086,7 +1265,11 @@ export function IsometricEditor({
                           cx={p.p[0]}
                           cy={p.p[1]}
                           r={p.r}
-                          className={cn("iso-primitive", p.owner === selection && "selected")}
+                          className={cn(
+                            "iso-primitive",
+                            "iso-layer-" + p.layer.toLowerCase(),
+                            p.owner === selection && "selected",
+                          )}
                           fill={surface === "paper" ? "white" : "var(--iso-canvas)"}
                         />
                       ) : (
@@ -1096,7 +1279,11 @@ export function IsometricEditor({
                           x={p.p[0]}
                           y={p.p[1]}
                           fontSize={p.size}
-                          className={cn("iso-text", p.owner === selection && "selected")}
+                          className={cn(
+                            "iso-text",
+                            "iso-layer-" + p.layer.toLowerCase(),
+                            p.owner === selection && "selected",
+                          )}
                         >
                           {p.text}
                         </text>
@@ -1357,17 +1544,25 @@ export function IsometricEditor({
                       <Field label="Pipe specification">
                         <select
                           value={selectedRun.specId}
-                          onChange={(e) =>
-                            commit((d) => {
-                              d.runs.find((r) => r.id === selection)!.specId = e.target.value;
-                            })
-                          }
+                          disabled={!!specBusy}
+                          onChange={(e) => void chooseSpec(e.target.value, selection)}
                         >
                           {doc.specs.map((s) => (
                             <option key={s.id} value={s.id}>
                               {s.name}
                             </option>
                           ))}
+                          {(library ?? []).some((l) => !doc.specs.some((s) => s.id === l.id)) && (
+                            <optgroup label="Add from standard library">
+                              {(library ?? [])
+                                .filter((l) => !doc.specs.some((s) => s.id === l.id))
+                                .map((l) => (
+                                  <option value={"library:" + l.slug} key={l.slug}>
+                                    {l.id + " · " + l.service}
+                                  </option>
+                                ))}
+                            </optgroup>
+                          )}
                         </select>
                       </Field>
                       <Field label="Pipe NPS">
@@ -1477,29 +1672,11 @@ export function IsometricEditor({
                         />
                       </Field>
                       <div className="iso-inspector-section">
-                        <strong>Insert on this pipe</strong>
-                        <Field label="Position along pipe (%)">
-                          <input
-                            type="number"
-                            min="1"
-                            max="99"
-                            value={fraction}
-                            onChange={(e) => setFraction(Number(e.target.value))}
-                          />
-                        </Field>
-                        <Field label="Distance from pipe start">
-                          <input aria-label="Component distance from pipe start"
-                            key={selection + '-' + fraction}
-                            defaultValue={doc.units === 'mm' ? String(round(runResult(doc, selectedRun).overall * fraction / 100, 3)) : formatLength(runResult(doc, selectedRun).overall * fraction / 100, doc.units)}
-                            onBlur={e => {
-                              try {
-                                const distance = parseLength(e.target.value, doc.units), overall = runResult(doc, selectedRun).overall;
-                                if (distance <= 0 || distance >= overall) throw new Error('Position must be between the pipe ends.');
-                                setFraction(100 * distance / overall);
-                              } catch (error) { setError(error instanceof Error ? error.message : String(error)); }
-                            }}
-                            onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }} />
-                        </Field>
+                        <strong>On this pipe</strong>
+                        <p className="iso-help">
+                          Choose a component in Insert to place it here. Elbows are added when the run changes
+                          direction. Tees are added with Branch.
+                        </p>
                         {!selectedRun.connector && <button className="iso-primary" onClick={() => commit(d => {
                           const junction = insertComponent(d, selection, 'tee', fraction / 100);
                           setStart(junction.id);
@@ -1511,25 +1688,6 @@ export function IsometricEditor({
                           setTool('pipe');
                           setView('iso');
                         })}>Branch from this pipe</button>}
-                        <ComponentPalette
-                          spec={getSpec(doc, selectedRun.specId)}
-                          nps={selectedRun.nps}
-                          onInsert={(type, row) =>
-                            commit((d) => {
-                              const kind = type.kind as Kind;
-                              const node = ["support", "bolt", "annotation"].includes(kind)
-                                ? attachComponent(d, selection, kind, fraction / 100)
-                                : insertComponent(d, selection, kind, fraction / 100);
-                              applyComponent(d, node, type.code, row);
-                              if (kind === 'reducer' && row?.smallerNps) {
-                                const next = d.runs.find(r => r.from === node.id)!;
-                                next.nps = row.smallerNps;
-                                setAutoFitting(d, next.to);
-                              }
-                              setSelection(node.id);
-                            })
-                          }
-                        />
                       </div>
                     </>
                   )}
@@ -1872,7 +2030,7 @@ export function IsometricEditor({
             </table>
           </div>
         )}
-        {tab === "catalogue" && <ComponentLibrary specs={doc.specs} />}
+        {tab === "catalogue" && <ComponentLibrary specs={doc.specs} onInsert={chooseComponent} />}
         {tab === "specs" && (
           <SpecManager
             doc={doc}
