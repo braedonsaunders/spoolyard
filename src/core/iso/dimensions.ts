@@ -90,7 +90,9 @@ export function drawDimensions(ctx: IsoContext) {
     const ext = best.ext
     tiers.forEach((tier, t) => {
       const off = SIZE.tier + t * SIZE.tierStep
-      for (const s of tier) dimension(s.a, s.b, s.mm, ext, off, runBetween(leg, s), ownerOf(leg, s))
+      // Neighbouring pieces of a chain are no place for a short dimension's text.
+      const spans = tier.map(s => [s.a.page, s.b.page] as [Point, Point])
+      for (const s of tier) dimension(s.a, s.b, s.mm, ext, off, runBetween(leg, s), ownerOf(leg, s), spans.filter(([a]) => a !== s.a.page))
     })
   }
   /** The pipe a dimension measures node to node, so its length can be edited in place. */
@@ -106,7 +108,7 @@ export function drawDimensions(ctx: IsoContext) {
     return textPoly(add2(lerp2(a, b, 0.5), scale2(uprightOf(t), 2)), draftLength(mm, units, 24), SIZE.text, t.rotation, t.oblique, 'middle', 1)
   }
   /** One dimension: extension lines from both points, a dimension line with arrowheads, and iso-plane text. */
-  function dimension(pa: Station, pb: Station, mm: number, ext: Point, offset: number, editable?: PipeRun, owner?: string) {
+  function dimension(pa: Station, pb: Station, mm: number, ext: Point, offset: number, editable?: PipeRun, owner?: string, others: Array<[Point, Point]> = []) {
     const a = add2(pa.page, scale2(ext, offset)), b = add2(pb.page, scale2(ext, offset))
     const along = unit2(sub2(b, a)), span = Math.hypot(...sub2(b, a))
     const value = draftLength(mm, units, 24), t = planeText(along, ext), up = uprightOf(t)
@@ -118,10 +120,19 @@ export function drawDimensions(ctx: IsoContext) {
     const spots: Point[] = short || span < width + 6
       ? [add2(add2(mid, scale2(along, reach)), scale2(up, 2)), add2(add2(mid, scale2(along, -reach)), scale2(up, 2)), add2(mid, scale2(up, 2)), add2(mid, scale2(up, -SIZE.text - 2))]
       : [add2(mid, scale2(up, 2)), add2(mid, scale2(up, -SIZE.text - 2)), add2(add2(mid, scale2(along, reach)), scale2(up, 2)), add2(add2(mid, scale2(along, -reach)), scale2(up, 2))]
-    const at = spots.reduce((best, p, i) => {
-      const c = ctx.place.cost(textPoly(p, value, SIZE.text, t.rotation, t.oblique, 'middle', 1)) + i * 4
-      return c < best.c ? { p, c } : best
-    }, { p: spots[0], c: Infinity }).p
+    // When every spot by the line is taken, the text stands clear with a leader back to the line.
+    const away = unit2(sub2(mid, lerp2(pa.page, pb.page, 0.5)))
+    for (const k of [1, 2, 3]) for (const side of [0, 1, -1])
+      spots.push(add2(add2(mid, scale2(away, (SIZE.text + 6) * k + 4)), scale2(along, side * (width / 2 + 6))))
+    const within = (p: Point) => others.some(([x, y]) => {
+      const u = sub2(y, x), l = Math.hypot(...u) || 1, s = dot2(sub2(p, x), u) / l
+      return s > 0 && s < l && Math.abs(dot2(sub2(p, x), [u[1] / l, -u[0] / l])) < offset + SIZE.text * 2
+    })
+    const choice = spots.reduce((best, p, i) => {
+      const c = ctx.place.cost(textPoly(p, value, SIZE.text, t.rotation, t.oblique, 'middle', 1)) + i * 4 + (within(p) ? 40 : 0)
+      return c < best.c ? { p, c, i } : best
+    }, { p: spots[0], c: Infinity, i: 0 })
+    const at = choice.p
     for (const [from, to] of [[pa.page, a], [pb.page, b]] as Array<[Point, Point]>)
       line(add2(from, scale2(ext, SIZE.extGap)), add2(to, scale2(ext, SIZE.extOver)), 'DIM', owner)
     if (short) {
@@ -132,8 +143,9 @@ export function drawDimensions(ctx: IsoContext) {
       line(a, b, 'DIM', owner)
       arrow(a, scale2(along, -1), 'DIM', owner); arrow(b, along, 'DIM', owner)
     }
+    if (choice.i >= 4) line(mid, add2(at, scale2(away, -SIZE.text * 0.6)), 'LEADER', owner)
     // A label moved beyond the end of a short dimension is joined to it.
-    const offLine = Math.abs(dot2(sub2(at, mid), along)) > span / 2 + 2
+    const offLine = choice.i < 4 && Math.abs(dot2(sub2(at, mid), along)) > span / 2 + 2
     if (offLine) {
       const end = dot2(sub2(at, mid), along) > 0 ? b : a, toward = dot2(sub2(at, mid), along) > 0 ? along : scale2(along, -1)
       line(end, add2(end, scale2(toward, Math.max(0, Math.abs(dot2(sub2(at, mid), along)) - span / 2 - width / 2 - 1))), 'DIM', owner)

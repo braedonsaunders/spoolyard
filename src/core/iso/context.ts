@@ -16,7 +16,7 @@ export const SIZE = {
   flange: 12,
   flangeThickness: 3.2,
   valve: 16,
-  valveWidth: 11,
+  valveWidth: 14,
   tier: 26,
   tierStep: 22,
   extGap: 3,

@@ -77,7 +77,32 @@ export class Placement {
   /** Overlap cost for ranking candidate positions: text collisions are worst, crossing thin lines is mild. */
   cost(poly: Poly, excuse?: (o: Occupant) => boolean): number {
     let cost = this.inside(poly) ? 0 : 1000
-    for (const o of this.hits(poly, excuse)) cost += o.kind === 'text' || o.kind === 'symbol' || o.kind === 'tag' ? 100 : o.kind === 'pipe' ? 60 : 12
+    // Thin dimension and leader lines are broken around text afterwards, so crossing one costs little.
+    for (const o of this.hits(poly, excuse)) cost += o.kind === 'text' || o.kind === 'symbol' || o.kind === 'tag' ? 100 : o.kind === 'pipe' ? 60 : 3
     return cost
   }
+}
+
+/** The parts of segment a–b outside a convex polygon (Cyrus–Beck). */
+export function clipOutside(a: Point, b: Point, poly: Poly): Array<[Point, Point]> {
+  const d = sub2(b, a)
+  let enter = 0, leave = 1
+  // Orientation decides which side of each edge is inside.
+  let area = 0
+  for (let i = 0; i < poly.length; i++) { const p = poly[i], q = poly[(i + 1) % poly.length]; area += p[0] * q[1] - q[0] * p[1] }
+  const sign = area >= 0 ? 1 : -1
+  for (let i = 0; i < poly.length; i++) {
+    const p = poly[i], q = poly[(i + 1) % poly.length], e = sub2(q, p)
+    const n: Point = [e[1] * sign, -e[0] * sign]
+    const num = (p[0] - a[0]) * n[0] + (p[1] - a[1]) * n[1], den = d[0] * n[0] + d[1] * n[1]
+    if (Math.abs(den) < 1e-12) { if (num < 0) return [[a, b]]; continue }
+    const t = num / den
+    if (den < 0) enter = Math.max(enter, t)
+    else leave = Math.min(leave, t)
+    if (enter >= leave) return [[a, b]]
+  }
+  const at = (t: number): Point => [a[0] + d[0] * t, a[1] + d[1] * t], out: Array<[Point, Point]> = []
+  if (enter > 1e-6) out.push([a, at(enter)])
+  if (leave < 1 - 1e-6) out.push([at(leave), b])
+  return out
 }

@@ -6,7 +6,7 @@ import { SIZE, type IsoContext, type RunGeometry } from './context'
 import { drawDimensions } from './dimensions'
 import { drawAnnotations } from './annotations'
 import { layoutSheet, viewProject, type View } from './layout'
-import { Placement, type Rect } from './placement'
+import { clipOutside, Placement, textPoly, type Rect } from './placement'
 import { unit2, unit3 } from './plane'
 import { drawPipes } from './symbols'
 
@@ -69,7 +69,15 @@ export function renderIso(
   drawPipes(ctx)
   drawDimensions(ctx)
   drawAnnotations(ctx)
-  const primitives = [...(sheet?.primitives ?? []), ...ctx.out]
+  // Thin drafting lines break around lettering, as drafted, so a dimension or leader never strikes through text.
+  const lettering = ctx.out.flatMap(p => p.type === 'text' && p.layer !== 'SYMBOL' ? [textPoly(p.p, p.text, p.size, p.rotation, p.oblique, p.anchor, 1.2)] : [])
+  const drawn = ctx.out.flatMap(p => {
+    if (p.type !== 'line' || !['DIM', 'LEADER', 'HATCH'].includes(p.layer)) return [p]
+    let pieces: Array<[Point, Point]> = [[p.a, p.b]]
+    for (const box of lettering) pieces = pieces.flatMap(([a, b]) => clipOutside(a, b, box))
+    return pieces.map(([a, b]) => ({ ...p, a, b }))
+  })
+  const primitives = [...(sheet?.primitives ?? []), ...drawn]
   primitives.sort((a, b) => Number(a.type === 'text') - Number(b.type === 'text'))
   return {
     width,
