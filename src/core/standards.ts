@@ -234,8 +234,9 @@ const ENGAGE = [
 ]
 const engagement = (nps: number) => at(ENGAGE, nps)?.[1]
 const FLANGE_CLASSES = [150, 300, 600, 900, 1500]
+/** Flange class for a rating; a rating without a class ('', 'Project specified') means Class 150, an unsupported class (400, 2500) none. */
 const flangeClass = (rating: string | number | undefined) => {
-  const c = rating == null || rating === '' ? 150 : ratingClass(rating)
+  const c = ratingClass(rating) ?? (typeof rating === 'number' ? undefined : 150)
   return c && FLANGE_CLASSES.includes(c) ? c : undefined
 }
 const B165_SOURCE = 'ASME B16.5 (traditional thicknesses; dimensions from the gasket face, raised face included)'
@@ -275,15 +276,16 @@ const butterfly = (nps: number, cls: number) => at(BFLY[cls], nps)?.[1]
  * + 0.06 in), the RF pair lengths are the published B16.5 table.
  * - 'lj-pair': two lap-joint flanges and two stub-end laps (default STD wall laps, 1/8 in gasket; pass the actual lap
  *   wall and gasket thickness in mm), rounded to the nearest 1/4 in like B16.5.
- * - 'lug-valve-side': lug bolts for ONE side of a lug butterfly valve: the B16.5 pair computation less 1/2 in, limited to
- *   half the lug body plus 1/4 in projection so opposite bolts never meet, rounded up to 1/4 in.
+ * - 'lug-valve-side': lug bolts for ONE side of a lug butterfly valve: the B16.5 pair computation less 1/2 in, capped at
+ *   one flange, gasket and nut plus half the lug body and 1/4 in projection, rounded up to 1/4 in. Reproduces the
+ *   production reference (Class 150: NPS 2 = 2-3/4 in, NPS 3 = 3-1/4 in).
  * - 'wafer-valve': through studs spanning both flanges, gaskets and the valve body, rounded up to 1/4 in.
  */
 export function bolting(nps: number, rating: string | number | undefined, face: 'RF' | 'FF', makeup: BoltMakeup, opts: { lap?: number; gasket?: number } = {}): Bolting | undefined {
   const cls = flangeClass(rating), r = cls ? at(B165[cls], nps) : undefined
   if (!cls || !r) return undefined
   const [, c, , , , , count, d, stud] = r.slice(1), low = cls <= 300
-  if (face === 'FF' && !low) return undefined
+  if (face === 'FF' && !low && makeup !== 'lj-pair') return undefined
   const diameter = mm(d), t = nps <= 18 ? 0.12 : 0.19, n = 0.06, g = 0.12, tf = c + (low ? 0 : 0.25)
   if (makeup === 'flange-pair') return { count, diameter, length: mm(stud), kind: 'stud' }
   if (makeup === 'lj-pair') {
@@ -392,7 +394,7 @@ const B1610: Record<number, number[][]> = {
     [4, 12, 14, 14, 12, 12, 12, 0, 12, 14],
     [5, 15, 15.75, 15.75, 0, 0, 15, 0, 15, 15.75],
     [6, 15.88, 17.5, 17.5, 15.88, 15.88, 15.88, 16.75, 15.88, 17.5],
-    [8, 16.5, 22, 21, 19.75, 16.5, 16.5, 19.75, 16.5, 22],
+    [8, 16.5, 22, 21, 16.5, 16.5, 16.5, 19.75, 16.5, 22],
     [10, 18, 24.5, 24.5, 22.38, 18, 18, 23.5, 18, 24.5],
     [12, 19.75, 28, 28, 25.5, 19.75, 19.75, 28, 19.75, 28],
     [14, 30, 0, 33, 30, 0, 0, 0, 30, 0],
@@ -411,7 +413,7 @@ const VALVE: Record<string, [number[], string]> = {
   'GATE-FL': [[1], 'GATE VALVE, FLANGED'],
   'GLOBE-FL': [[2], 'GLOBE VALVE, FLANGED'],
   'CHECK-FL': [[3], 'SWING CHECK VALVE, FLANGED'],
-  'BALL-FL': [[5, 4], 'BALL VALVE, FLANGED'],
+  'BALL-FL': [[4, 5], 'BALL VALVE, FLANGED'],
   'BALL-FL-LONG': [[4], 'BALL VALVE, FLANGED, LONG PATTERN'],
   'BALL-FL-SHORT': [[5], 'BALL VALVE, FLANGED, SHORT PATTERN'],
   'PLUG-FL': [[7, 6], 'PLUG VALVE, FLANGED'],
@@ -464,6 +466,7 @@ const FLANGE_NAMES: Record<string, string> = { WN: 'WELD NECK', SO: 'SLIP-ON', S
 /**
  * Standard dimensions (mm) for a component code at a size and class; undefined where the standard does not define the size.
  * `schedule` (optional) selects the pipe wall for slip-on set-back and stub-end lap thickness (default STD; 10S for MSS SP-43 stub ends).
+ * A rating without a pressure class ('Project specified') is read as Class 150 for flanged items and Class 3000 for forged fittings.
  * Lap-joint flanges (FLG-RFLJ / FLG-FFLJ) have takeout 0: the stub end carries the length to the lap face.
  */
 export function standardRow(code: string, nps: number, rating?: string | number, smallerNps?: number, schedule?: string): StandardRow | undefined {
@@ -484,7 +487,7 @@ export function standardRow(code: string, nps: number, rating?: string | number,
       })
     if (!f.soLength) return undefined
     if (type === 'SO') {
-      const wall = pipeWall(nps, schedule ?? 'STD')
+      const wall = pipeWall(nps, schedule ?? 'STD') ?? pipeWall(nps)
       return wall == null ? undefined : row('flange', nps, wall, name, `${B165_SOURCE}; slip-on: pipe end set back from the face by one pipe wall`, { ...base, lengthThroughHub: f.soLength })
     }
     if (type === 'SW')
@@ -493,7 +496,7 @@ export function standardRow(code: string, nps: number, rating?: string | number,
     return !f.threaded || e == null ? undefined : row('flange', nps, f.soLength - mm(e), name, `${B165_SOURCE}; threaded: effective takeout = hub length less NPT make-up engagement`, { ...base, lengthThroughHub: f.soLength, threadEngagement: mm(e) })
   }
   if (VALVE[c]) {
-    const vc = cls == null && rating == null ? 150 : cls, v = vc ? at(B1610[vc], nps) : undefined
+    const vc = flangeClass(rating), v = vc ? at(B1610[vc], nps) : undefined
     const len = v && VALVE[c][0].map(i => v[i]).find(x => x > 0)
     if (!len) return undefined
     const f2f = mm(len)
@@ -516,16 +519,16 @@ export function standardRow(code: string, nps: number, rating?: string | number,
   }
   if (c === 'BOLT-RF' || c === 'BOLT-FF') {
     const bolt = bolting(nps, rating, c === 'BOLT-FF' ? 'FF' : 'RF', 'flange-pair')
-    return bolt && row('bolt', nps, 0, `STUD BOLTS ${bolt.count} x ${bolt.diameter} x ${bolt.length} MM`, 'ASME B16.5 stud bolts for one flange pair', { boltCount: bolt.count, boltDiameter: bolt.diameter, boltLength: bolt.length })
+    return bolt && row('bolt', nps, 0, `STUD BOLT C/W 2 HEAVY HEX NUTS, CLASS ${flangeClass(rating)}`, 'ASME B16.5 stud bolts for one flange pair', { boltCount: bolt.count, boltDiameter: bolt.diameter, boltLength: bolt.length })
   }
   if (b) {
-    const [, lr, sr, lr45, tee, cap, red, stubLong, stubShort, lapOd] = b
+    const [, lr, sr, lr45, tee, cap, red] = b
     switch (c) {
       case 'W-LR90EL': return row('elbow90', nps, mm(lr), 'ELBOW 90 LR BW', `${B169} long radius; takeout = centre-to-end A`)
       case 'W-SR90EL': return sr ? row('elbow90', nps, mm(sr), 'ELBOW 90 SR BW', `${B169} short radius; takeout = centre-to-end A`) : undefined
       case 'W-3D90EL': return nps >= 0.75 ? row('elbow90', nps, mmx(3 * nps), 'ELBOW 90 3D BW', `${B169} 3D elbow (R = 3 x NPS); takeout = centre-to-end`) : undefined
       case 'W-45ELL': return row('elbow45', nps, mm(lr45), 'ELBOW 45 LR BW', `${B169} long radius; takeout = centre-to-end B`)
-      case 'W-3D45ELL': return nps >= 0.75 ? row('elbow45', nps, mmx(3 * nps * Math.tan(Math.PI / 8)), 'ELBOW 45 3D BW', `${B169} 3D elbow; takeout = R tan 22.5° (calculated)`) : undefined
+      case 'W-3D45ELL': return nps >= 0.75 ? row('elbow45', nps, mm(1.25 * nps), 'ELBOW 45 3D BW', `${B169} 3D 45° elbow B (R tan 22.5° rounded, 1.25 x NPS)`) : undefined
       case 'LR180R': return row('elbow90', nps, mm(lr), `RETURN 180 LR BW, CENTRE-TO-CENTRE ${mm(2 * lr)} MM`, `${B169} long-radius return; takeout = bend radius (model as two 90° halves)`)
       case 'SR180R': return sr ? row('elbow90', nps, mm(sr), `RETURN 180 SR BW, CENTRE-TO-CENTRE ${mm(2 * sr)} MM`, `${B169} short-radius return; takeout = bend radius (model as two 90° halves)`) : undefined
       case 'REDELL': return reducing(nps, small) ? row('elbow90', nps, mm(lr), 'ELBOW 90 LR REDUCING BW', `${B169} reducing elbow; centre-to-end = large-end LR elbow`, sized) : undefined
@@ -547,13 +550,13 @@ export function standardRow(code: string, nps: number, rating?: string | number,
       case 'W-CAP': return row('cap', nps, mm(cap), 'CAP BW', `${B169} cap height E; node at the outer end, takeout = E`)
       case 'STUB-END':
       case 'STUB-END-SHORT': {
-        const short = c === 'STUB-END-SHORT', lap = pipeWall(nps, schedule ?? (short ? '10S' : 'STD'))
-        return row('flange', nps, mm(short ? stubShort : stubLong), `STUB END, ${short ? 'MSS SP-43 SHORT' : 'B16.9 LONG'} PATTERN, LAP OD ${mm(lapOd)} MM`,
-          `${short ? 'MSS SP-43 short pattern (type A)' : 'ASME B16.9 long pattern'} length F; takeout = F from the lap face; lap thickness = ${schedule ?? (short ? 'Sch 10S' : 'STD')} wall`, { thickness: lap })
+        const st = stubEnd(nps, c === 'STUB-END-SHORT', schedule)!
+        return row('flange', nps, st.length, `STUB END, ${st.short ? 'MSS SP-43 SHORT' : 'B16.9 LONG'} PATTERN, LAP OD ${st.lapOd} MM`,
+          `${st.short ? 'MSS SP-43 short pattern (type A)' : 'ASME B16.9 long pattern'} length F; takeout = F from the lap face; lap thickness = ${schedule ?? (st.short ? 'Sch 10S' : 'STD')} pipe wall`, { thickness: st.lapThickness })
       }
     }
   }
-  if (/^[CE]-SW(A)?GE?$/.test(c) || c === 'C-SWG' || c === 'E-SWG') {
+  if (/^[CE]-SW(AGE|G)$/.test(c)) {
     const l = at(SWAGE, nps)?.[1]
     return l && small != null && small < nps && isNps(small) ? row('reducer', nps, mm(l) / 2, c.startsWith('C') ? 'SWAGE CONC' : 'SWAGE ECC', 'MSS SP-95 swage length; takeout = half length', { ...sized, faceToFace: mm(l) }) : undefined
   }
@@ -597,7 +600,7 @@ export function standardRow(code: string, nps: number, rating?: string | number,
     }
     case 'F-CPLGSW':
     case 'H-CPLGSW':
-      return s && fc !== 2000 && (fc === 3000 || s[2])
+      return s && (fc === 3000 || s[2])
         ? row(c === 'F-CPLGSW' ? 'valve' : 'olet', nps, swCouplingGap(nps) / 2, `${c === 'F-CPLGSW' ? 'FULL' : 'HALF'} COUPLING SW ${label}`, `${swSource}; coupling: takeout = half the laying length E between socket bottoms${c === 'H-CPLGSW' ? ', measured from the header outside' : ''}`, { socketDepth: j })
         : undefined
     case 'F-CPLGSC':
@@ -614,6 +617,12 @@ export function standardRow(code: string, nps: number, rating?: string | number,
     }
   }
   return undefined
+}
+/** Stub end (mm): length F (B16.9 long or MSS SP-43 short pattern), lap OD G and lap thickness (pipe wall, Sch 10S for MSS SP-43 / STD for B16.9 unless `schedule`). */
+export function stubEnd(nps: number, short: boolean, schedule?: string): { length: number; lapOd: number; lapThickness: number; short: boolean } | undefined {
+  const b = at(BW, nps)
+  const lapThickness = pipeWall(nps, schedule ?? (short ? '10S' : 'STD')) ?? pipeWall(nps, short ? '10S' : 'STD')
+  return b && lapThickness != null ? { length: mm(short ? b[8] : b[7]), lapOd: mm(b[9]), lapThickness, short } : undefined
 }
 /** Gasket thickness (mm): ASME B16.20 spiral-wound (compressed) or ASME B16.21 non-metallic sheet. */
 export function gasketThickness(type: 'spiral-wound' | 'sheet-1/16' | 'sheet-1/8'): number {
