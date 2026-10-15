@@ -6,10 +6,12 @@ import { COMPONENT_CATEGORIES, COMPONENT_TYPES, type ComponentType } from "../co
 import type { CatalogItem, PipeSpec } from "../core/model";
 import { ComponentGlyph } from "./component-glyph";
 import { rowComponent } from "./spec-manager";
+import { standardRow } from "../core/standards";
+import { specRating } from "../core/joints";
 
 /** Bends and branches are created by routing; the palette inserts everything that sits on a straight pipe. */
-export const insertable = (t: ComponentType) => !["pipe", "elbow90", "elbow45", "tee"].includes(t.kind) &&
-  (t.ports === 2 || ['support', 'bolt', 'annotation'].includes(t.kind));
+export const insertable = (t: ComponentType) => !["pipe", "elbow90", "elbow45", "tee", "gasket", "bolt"].includes(t.kind) &&
+  (t.ports === 2 || t.ports === 1 || ['support', 'annotation'].includes(t.kind));
 
 /** Every catalogue component, with the selected specification's rows for this size first. */
 export function ComponentPalette({
@@ -36,13 +38,15 @@ export function ComponentPalette({
     return map;
   }, [spec, nps]);
   const q = query.trim().toLowerCase();
+  // Standard ASME components are always available at their standard dimensions.
+  const standard = useMemo(() => new Set(COMPONENT_TYPES.filter(t => standardRow(t.code, nps, specRating(spec))).map(t => t.code)), [spec, nps]);
   const groups = COMPONENT_CATEGORIES.map((c) => ({
     category: c,
     types: COMPONENT_TYPES.filter(
       (t) =>
         t.category === c.id &&
         insertable(t) &&
-        (all || rowsByCode.has(t.code) || t.kind === "annotation") &&
+        (all || rowsByCode.has(t.code) || standard.has(t.code) || t.kind === "annotation" || t.kind === "support") &&
         (!q || t.label.toLowerCase().includes(q) || t.code.toLowerCase().includes(q)),
     ),
   })).filter((g) => g.types.length);
@@ -83,7 +87,7 @@ export function ComponentPalette({
             ) : (
               <button
                 key={t.code}
-                className={cn(!rows.length && t.kind !== "annotation" && "outside", armedKey === t.code && "armed")}
+                className={cn(!rows.length && !standard.has(t.code) && !["annotation", "support"].includes(t.kind) && "outside", armedKey === t.code && "armed")}
                 title={rows[0]?.description ?? t.description}
                 onClick={() => onInsert(t, rows[0])}
               >
@@ -95,7 +99,9 @@ export function ComponentPalette({
                       ? [rows[0].rating, rows[0].schedule, rows[0].description].filter(Boolean).join(" · ")
                       : t.kind === "annotation"
                         ? "Drawing symbol"
-                        : "Not in specification · enter takeout"}
+                        : standard.has(t.code)
+                          ? "ASME standard dimensions"
+                          : t.kind === "support" ? "Pipe support" : "Not in specification · enter takeout"}
                   </small>
                 </span>
               </button>

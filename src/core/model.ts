@@ -1,5 +1,6 @@
 import type { GridSettings } from './grid'
 import { COMPONENT_TYPES } from './components'
+import { defaultCode, flangedAllowance, flangedJoints, nodeItem, pipeEndPrep } from './joints'
 /** Spoolyard piping semantics (file schema id "bidwright-piping" is kept for compatibility). Coordinates and fabrication lengths are millimetres. */
 export type Vec3 = [number, number, number]
 export type Kind =
@@ -42,6 +43,9 @@ export interface CatalogItem {
   takeoutMissing?: boolean
   /** Verbatim drawing BOM text; otherwise composed from description, material, schedule and rating. */
   bomDescription?: string
+  centreToEnd?: number
+  socketDepth?: number
+  threadEngagement?: number
   faceToFace?: number
   flangeThickness?: number
   lengthThroughHub?: number
@@ -59,6 +63,8 @@ export interface PipeSize {
   description?: string
   material?: string
   shopField?: 'S' | 'F'
+  /** Verbatim drawing BOM text for this pipe size. */
+  bomDescription?: string
 }
 export interface PipeSpec {
   id: string
@@ -413,7 +419,7 @@ export function newIso(): IsoDocument {
     notes: '',
     units: 'mm',
     north: 0,
-    dimensionMode: 'both',
+    dimensionMode: 'overall',
     specs: [defaultSpec()],
     nodes: [],
     runs: [],
@@ -502,11 +508,16 @@ export function takeout(
 ): number | undefined {
   if (['end', 'weld', 'support', 'annotation'].includes(node.kind)) return 0
   if (node.portTakeouts?.[runId] != null) return node.portTakeouts[runId]
-  const item = fitting(doc, node)
-  if (node.branchEdgeId === runId)
-    return node.branchTakeout ?? (item?.takeoutMissing ? undefined : item?.branchTakeout)
-  // A specification row without a known dimension must be measured, never read as zero.
-  return node.takeout ?? (item?.takeoutMissing ? undefined : item?.takeout)
+  // A specification row without a known dimension falls back to the ASME standard, never to zero.
+  const item = nodeItem(doc, node), run = doc.runs.find(r => r.id === runId)
+  const own = node.branchEdgeId === runId
+    ? node.branchTakeout ?? (item?.takeoutMissing ? undefined : item?.branchTakeout)
+    : node.takeout ?? (item?.takeoutMissing ? undefined : item?.takeout)
+  return own == null || !run ? own : own + flangedAllowance(doc, node, run)
+}
+/** End preparation of the pipe itself: a flanged port is resolved to its mating flange's weld or thread. */
+export function pipePrepAt(doc: IsoDocument, run: PipeRun, index: number): EndPrep {
+  return pipeEndPrep(doc, run, index, prepAt(run, index))
 }
 export function prepAt(run: PipeRun, index: number): EndPrep {
   return (index === 0 ? run.fromPrep : run.toPrep) ?? run.endPrep
@@ -522,7 +533,7 @@ export function runResult(doc: IsoDocument, run: PipeRun): RunResult {
     takeout(doc, b, run.id) ?? NaN
   ]
   const gaps: [number, number] = [a, b].map((n, i) =>
-    !run.connector && prepAt(run, i) === 'BW' &&
+    !run.connector && pipePrepAt(doc, run, i) === 'BW' &&
     n.kind !== 'end' &&
     n.kind !== 'support' &&
     n.kind !== 'annotation' &&
@@ -598,7 +609,10 @@ export function setAutoFitting(doc: IsoDocument, nodeId: string): void {
       ? spec.fittings.find(f => f.component === code && f.nps === header.nps && (!smallerNps || f.smallerNps === smallerNps || smallerNps === header.nps && !f.smallerNps))
       : preferredFitting(spec, kind, header.nps, prepAtNode(header, nodeId), smallerNps)
     node.catalogId = item?.id
-    if (item?.component) node.component = item.component
+    // Without a specification row the standard component still carries its ASME dimensions.
+    const fallback = item?.component ?? code ??
+      defaultCode(kind, prepAtNode(header, nodeId), kind === 'tee' && smallerNps != null && smallerNps !== header.nps ? 'reducing' : '')
+    if (fallback) node.component = fallback
     else delete node.component
   }
   if (edges.length <= 1) {
@@ -623,17 +637,18 @@ export function setAutoFitting(doc: IsoDocument, nodeId: string): void {
     }
   } else if (edges.length === 3) {
     changeKind('tee')
+    // The run is the straight pair; the remaining pipe is the branch, whatever order the pipes were drawn in.
     const branchIndex = vectors.findIndex((_, i) => {
       const main = [0, 1, 2].filter(j => j !== i)
-      return cosine(main[0], main[1]) < -0.999999
+      return cosine(main[0], main[1]) < -0.9998
     })
     const branch = edges[branchIndex]
     node.branchEdgeId = branch?.id
-    if (!branch) { delete node.catalogId; return }
+    if (!branch) { delete node.catalogId; delete node.component; return }
     const header = edges.find(r => r !== branch)!
     const branchAngle = Math.acos(Math.max(-1, Math.min(1, Math.abs(cosine(branchIndex, edges.indexOf(header)))))) * 180 / Math.PI
     const prefix = prepAtNode(header, nodeId) === 'SW' ? 'SW' : prepAtNode(header, nodeId) === 'THD' ? 'SC' : 'W'
-    const lateral = Math.abs(branchAngle - 45) < 0.1
+    const lateral = Math.abs(branchAngle - 45) < 1
     choose('tee', header, branch.nps, lateral ? `${prefix}-${branch.nps === header.nps ? 'LAT' : 'RLAT'}` : undefined)
   } else if (edges.length === 4) {
     changeKind('tee')
@@ -764,21 +779,15 @@ export function applyComponent(doc: IsoDocument, node: PipeNode, code: string, r
   node.kind = type.kind
   node.component = code
   node.catalogId = row?.id
-  node.description = row ? undefined : type.label
+  delete node.description
   delete node.takeout
   delete node.branchTakeout
   delete node.portTakeouts
   delete node.bendAngle
-  const edges = connected(doc, node.id)
-  for (const [index, run] of edges.entries()) {
-    const prep = node.kind === 'flange' && index > 0 ? 'FL' : type.endPrep
-    if (prep) run[run.from === node.id ? 'fromPrep' : 'toPrep'] = prep
-    // Flange nodes locate the mating face: its length is consumed on the pipe side only.
-    if (node.kind === 'flange' && index > 0) {
-      node.portTakeouts ??= {}
-      node.portTakeouts[run.id] = 0
-    }
-  }
+  // A flange between two pipes is a bolted pair; on a pipe end it mates with equipment. Either way each
+  // pipe is prepared for its own flange, and the gasket and mate come from the flanged joint.
+  for (const run of connected(doc, node.id))
+    if (type.endPrep) run[run.from === node.id ? 'fromPrep' : 'toPrep'] = type.endPrep
 }
 
 /** Change an overall length while translating the downstream route, preserving its bends and lengths. */
@@ -836,16 +845,16 @@ export function welds(doc: IsoDocument): Weld[] {
   const out: Weld[] = []
   for (const r of doc.runs) {
     for (const [index, key] of [r.from, r.to].entries()) {
-      const n = getNode(doc, key)
+      const n = getNode(doc, key), prep = pipePrepAt(doc, r, index)
       if (
         n.kind === 'end' ||
         n.kind === 'support' ||
         n.kind === 'annotation' ||
         n.kind === 'gasket' ||
         n.kind === 'bolt' ||
-        prepAt(r, index) === 'PLAIN' ||
-        prepAt(r, index) === 'FL' ||
-        prepAt(r, index) === 'THD'
+        prep === 'PLAIN' ||
+        prep === 'FL' ||
+        prep === 'THD'
       )
         continue
       // A zero-length butt joint represented as a WELD node gets one weld, not two.
@@ -883,82 +892,88 @@ export function welds(doc: IsoDocument): Weld[] {
         nodeId: n.id,
         nps: r.nps,
         field: jointEnds.some(end => end.field) || ((index === 0 ? r.fromField : r.toField) ?? !!n.field),
-        prep: prepAt(r, index),
+        prep,
         position
       })
     }
   }
   return out
 }
+/** Plain-language name of a node for fabrication checks, e.g. "flanged ball valve HV-101". */
+function itemName(doc: IsoDocument, n: PipeNode): string {
+  const type = COMPONENT_TYPES.find(t => t.code === (n.component ?? fitting(doc, n)?.component))
+  const name = n.bendAngle ? `${round(n.bendAngle)}° bend` : type?.label ?? ({ end: 'pipe end', weld: 'butt weld', elbow90: '90° elbow', elbow45: '45° elbow' } as Record<string, string>)[n.kind] ?? n.kind
+  return name.charAt(0).toLowerCase() + name.slice(1) + (n.tag ? ' ' + n.tag : '')
+}
 export function validateIso(doc: IsoDocument): string[] {
   const issues: string[] = []
   const seen = new Set<string>()
+  const where = (n: PipeNode) => {
+    const edge = connected(doc, n.id)[0] ?? doc.runs.find(r => r.id === n.associatedRunId)
+    return edge?.spool ? edge.spool + ': ' : ''
+  }
   for (const n of doc.nodes) {
-    if (seen.has(n.id)) issues.push('Duplicate connection ID.')
+    if (seen.has(n.id)) issues.push('Two connection points share one ID. Re-open the file from a saved copy.')
     seen.add(n.id)
     if (n.position.some(v => !Number.isFinite(v)))
-      issues.push('Invalid connection coordinate.')
+      issues.push(`${where(n)}a connection point has no valid position.`)
   }
   for (const r of doc.runs) {
     try {
       const result = runResult(doc, r),
         spec = getSpec(doc, r.specId)
       if (!spec.sizes.some(s => s.nps === r.nps))
-        issues.push(`${r.spool}: NPS ${r.nps} is missing from ${spec.name}.`)
+        issues.push(`${r.spool}: ${r.nps}″ pipe is not in specification ${spec.name}. Choose a specification with this size.`)
       if (!Number.isFinite(result.cut)) {
         for (const node of [getNode(doc, r.from), getNode(doc, r.to)]) {
           if (takeout(doc, node, r.id) != null) continue
-          const label = node.description || COMPONENT_TYPES.find(t => t.code === node.component)?.label || fitting(doc, node)?.description || node.kind
-          issues.push(`${r.spool}: Enter fitting takeouts for ${label}${node.tag ? ' (' + node.tag + ')' : ''}, NPS ${r.nps}″. Pipe cut length is pending.`)
+          issues.push(`${r.spool}: the ${itemName(doc, node)} (${r.nps}″) has no standard size. Enter its centre-to-end length so the pipe cut can be calculated.`)
         }
       }
       else if (!r.connector && result.cut <= 0)
         issues.push(
-          `${r.spool}: Pipe cut length is ${formatLength(result.cut, doc.units)}; check measurements and takeouts.`
+          `${r.spool}: a ${r.nps}″ pipe is ${formatLength(result.cut, doc.units)} after fitting allowances, so the fittings at its ends overlap. Move them apart or lengthen the pipe.`
         )
-      if (!r.spool.trim()) issues.push('Every pipe needs a spool number.')
+      if (!r.spool.trim()) issues.push('A pipe has no spool number. Select it and enter one.')
     } catch (e) {
-      issues.push(String(e))
+      issues.push(e instanceof Error ? e.message : String(e))
     }
   }
   for (const n of doc.nodes) {
     const degree = connected(doc, n.id).length
-    const item = fitting(doc, n)
+    const item = fitting(doc, n), resolved = nodeItem(doc, n)
     const component = COMPONENT_TYPES.find(t => t.code === (n.component ?? item?.component))
     const ports = component?.ports ?? (n.kind === 'tee' ? 3 : ['valve', 'reducer', 'elbow90', 'elbow45', 'weld'].includes(n.kind) ? 2 : n.kind === 'cap' ? 1 : undefined)
-    if (n.catalogId && !item) issues.push('A selected catalogue fitting is missing from the specification.')
-    if (ports && degree !== ports && !(n.kind === 'flange' && degree === 1) && !n.associatedRunId)
-      issues.push(`${component?.label ?? n.kind} needs ${ports} connected pipe${ports === 1 ? '' : 's'}.`)
-    if (n.kind === 'end' && degree > 1)
-      issues.push('An open end cannot join multiple pipes; select a fitting.')
-    if (
-      (n.kind === 'valve' ||
-        n.kind === 'reducer' ||
-        n.kind.startsWith('elbow')) &&
-      degree !== (ports ?? 2)
-    )
-      issues.push(`${n.kind} needs two connected pipes.`)
+    const name = itemName(doc, n), at = where(n)
+    if (n.catalogId && !item) issues.push(`${at}the ${name} refers to a specification row that no longer exists. Choose the component again.`)
     if (n.kind === 'tee' && degree === 3 && !n.branchEdgeId)
-      issues.push('Select the branch pipe for each tee.')
+      issues.push(`${at}three pipes meet without a straight run through the junction. A tee needs two pipes in line with the branch square to them (45° for a lateral).`)
+    else if (n.kind === 'tee' && degree === 2)
+      issues.push(`${at}the ${name} has no branch pipe. Draw the branch from it, or choose a different component.`)
+    else if (ports && degree !== ports && !(n.kind === 'flange' && degree === 1) && !n.associatedRunId)
+      issues.push(`${at}the ${name} needs ${ports} connected pipe${ports === 1 ? '' : 's'} but has ${degree}.`)
+    if (n.kind === 'end' && degree > 1)
+      issues.push(`${at}pipes meet at a point with no fitting. Select the point and choose a fitting.`)
     const edges = connected(doc, n.id)
-    if (item && !/effective|engagement|insertion/i.test(item.source) && edges.some(r => ['SW', 'THD'].includes(prepAtNode(r, n.id)) && n.takeout == null && n.portTakeouts?.[r.id] == null))
-      issues.push(`${item.description}: enter an effective takeout including socket or thread engagement.`)
+    if (resolved && resolved.socketDepth == null && resolved.threadEngagement == null && !/effective|engagement|insertion/i.test(resolved.source) &&
+      edges.some(r => ['SW', 'THD'].includes(prepAtNode(r, n.id)) && n.takeout == null && n.portTakeouts?.[r.id] == null))
+      issues.push(`${at}the ${name} has no socket depth or thread engagement. Enter the length the pipe stops short of its centre.`)
     if (item && edges.length) {
       const sizes = [...new Set(edges.map(r => r.nps))].sort((a, b) => b - a)
       const expected = [...new Set([item.nps, item.smallerNps ?? item.nps])].sort((a, b) => b - a)
       if (sizes.length !== expected.length || sizes.some((size, i) => size !== expected[i]))
-        issues.push(`${item.description}: fitting sizes do not match the connected pipes.`)
+        issues.push(`${at}the ${name} is ${expected.join('″ × ')}″ but the pipes are ${sizes.join('″ and ')}″. Choose the matching size.`)
       if (edges.some(r => !getSpec(doc, r.specId).fittings.some(f => f.id === item.id)))
-        issues.push(`${item.description}: fitting is outside the connected pipe specification.`)
+        issues.push(`${at}the ${name} is not in the pipe's specification. Choose it from the pipe's specification.`)
     } else if (['elbow90', 'elbow45', 'weld'].includes(n.kind) && new Set(edges.map(r => r.nps)).size > 1)
-      issues.push(`${n.kind}: different pipe sizes require a reducing fitting.`)
+      issues.push(`${at}pipes of different sizes are joined without a reducer. Insert a reducer or reducing fitting.`)
     if (n.kind === 'weld' && degree === 2) {
       const tags = edges.map(r => r.from === n.id ? r.fromTag : r.toTag).filter(Boolean)
-      if (new Set(tags).size > 1) issues.push('A shared weld has conflicting tags on its two pipe ends.')
+      if (new Set(tags).size > 1) issues.push(`${at}one butt weld has two different weld numbers. Keep one.`)
       if (prepAtNode(edges[0], n.id) !== prepAtNode(edges[1], n.id))
-        issues.push('A shared weld has conflicting end preparations.')
+        issues.push(`${at}the two pipe ends at one butt weld have different end preparations.`)
       if ((edges[0].rootGap ?? getSpec(doc, edges[0].specId).rootGap) !== (edges[1].rootGap ?? getSpec(doc, edges[1].specId).rootGap))
-        issues.push('A shared weld has conflicting root gaps.')
+        issues.push(`${at}the two pipe ends at one butt weld have different root gaps.`)
     }
     const angleBetween = (a: PipeRun, b: PipeRun) => {
       const vector = (r: PipeRun) =>
@@ -967,33 +982,21 @@ export function validateIso(doc: IsoDocument): string[] {
         v = vector(b),
         denominator = length(u) * length(v)
       return denominator
-        ? (Math.acos(
-            Math.max(
-              -1,
-              Math.min(
-                1,
-                u.reduce((sum, value, i) => sum + value * v[i], 0) / denominator
-              )
-            )
-          ) *
-            180) /
-            Math.PI
+        ? Math.acos(Math.max(-1, Math.min(1, u.reduce((sum, value, i) => sum + value * v[i], 0) / denominator))) * 180 / Math.PI
         : NaN
     }
     if ((n.kind === 'elbow90' || n.kind === 'elbow45') && degree === 2) {
       const bend = 180 - angleBetween(edges[0], edges[1]),
         expected = n.bendAngle ?? (n.kind === 'elbow90' ? 90 : 45)
       if (!Number.isFinite(bend) || Math.abs(bend - expected) > 1)
-        issues.push(
-          `${n.kind}: connected directions must form a ${expected} degree bend.`
-        )
+        issues.push(`${at}the ${name} turns ${Number.isFinite(bend) ? round(bend) + '°' : 'an unknown angle'} but is a ${expected}° fitting. Choose a fitting for this angle.`)
     }
     if (
       ['valve', 'reducer', 'weld', 'flange', 'gasket'].includes(n.kind) &&
       degree === 2 &&
       Math.abs(angleBetween(edges[0], edges[1]) - 180) > 1
     )
-      issues.push(`${n.kind}: the two pipe connections must be in line.`)
+      issues.push(`${at}the ${name} sits at a change of direction. In-line components must be on a straight pipe.`)
     if (n.kind === 'tee' && degree === 3 && n.branchEdgeId) {
       const main = edges.filter(r => r.id !== n.branchEdgeId),
         branch = edges.find(r => r.id === n.branchEdgeId)
@@ -1003,28 +1006,29 @@ export function validateIso(doc: IsoDocument): string[] {
         Math.abs(angleBetween(main[0], main[1]) - 180) > 1 ||
         Math.abs(Math.min(angleBetween(main[0], branch), angleBetween(main[1], branch)) - expected) > 1
       )
-        issues.push(
-          `Tee: main pipes must be in line and the branch at ${expected} degrees.`
-        )
+        issues.push(`${at}the ${name} branch must leave the run at ${expected}°.`)
       if (branch && item && (branch.nps !== (item.smallerNps ?? item.nps) || main.some(r => r.nps !== item.nps)))
-        issues.push('Tee: header and branch sizes do not match the fitting ports.')
+        issues.push(`${at}the ${name} sizes do not match its run and branch pipes. Choose the matching size.`)
     }
     if (n.kind === 'tee' && degree === 4) {
       const opposite = edges.slice(1).find(r => Math.abs(angleBetween(edges[0], r) - 180) < 1)
       const other = edges.filter(r => r !== edges[0] && r !== opposite)
       if (!opposite || other.length !== 2 || Math.abs(angleBetween(other[0], other[1]) - 180) > 1 || Math.abs(angleBetween(edges[0], other[0]) - 90) > 1)
-        issues.push('Cross: connections must form two perpendicular straight headers.')
+        issues.push(`${at}the cross needs two straight runs crossing square.`)
     }
     if (
       n.kind === 'reducer' &&
       degree === 2 &&
       connected(doc, n.id)[0].nps === connected(doc, n.id)[1].nps
     )
-      issues.push('Reducer connections must use different pipe sizes.')
+      issues.push(`${at}the ${name} joins two pipes of the same size. Change one pipe size or remove the reducer.`)
   }
+  for (const joint of flangedJoints(doc))
+    if (joint.boltsUnknown)
+      issues.push(`${joint.spool}: no standard bolting for a ${joint.nps}″ class ${joint.rating} flanged joint. Add a bolt row for this size to the specification.`)
   const tags = welds(doc).map(w => w.tag)
   if (new Set(tags).size !== tags.length)
-    issues.push('Weld tags must be unique.')
+    issues.push('Two welds share a weld number. Renumber one of them.')
   return [...new Set(issues)]
 }
 export function bom(
@@ -1097,19 +1101,23 @@ export function bom(
   for (const n of doc.nodes.filter(
     n => n.kind !== 'end' && n.kind !== 'weld' && n.kind !== 'annotation'
   )) {
-    const edge =
-      connected(doc, n.id)[0] ?? doc.runs.find(r => r.id === n.associatedRunId)
+    const edges = connected(doc, n.id), edge = edges[0] ?? doc.runs.find(r => r.id === n.associatedRunId)
     if (!edge) continue
     const s = getSpec(doc, edge.specId),
-      f = fitting(doc, n),
-      qty = n.quantity ?? 1
+      f = nodeItem(doc, n),
+      code = n.component ?? f?.component,
+      // A flange between two pipes is a bolted pair of flanges.
+      pipes = edges.filter(r => !r.connector),
+      pair = n.kind === 'flange' && pipes.length === 2 && COMPONENT_TYPES.find(t => t.code === code)?.endPrep !== 'FL' &&
+        pipes.every(r => (r.from === n.id ? r.fromPrep : r.toPrep) !== 'FL'),
+      qty = n.quantity ?? (pair ? 2 : 1)
     const kg = n.weightKg ?? f?.weightKg,
       area = n.areaM2 ?? f?.areaM2
     addRow(
       {
-        description: n.description ?? f?.description ?? n.kind,
+        description: n.description ?? f?.description ?? COMPONENT_TYPES.find(t => t.code === code)?.label ?? n.kind,
         spec: s.id,
-        nps: f?.nps ?? Math.max(...connected(doc, n.id).map(r => r.nps), edge.nps),
+        nps: f?.nps ?? Math.max(...edges.map(r => r.nps), edge.nps),
         qty,
         unit: 'ea',
         weightKg: kg == null ? null : kg * qty,
@@ -1121,7 +1129,7 @@ export function bom(
         line: edge.line
       },
       JSON.stringify([
-        n.catalogId ?? '',
+        n.catalogId ?? f?.id ?? '',
         n.takeout ?? f?.takeout,
         n.branchTakeout ?? f?.branchTakeout,
         kg,
@@ -1134,6 +1142,34 @@ export function bom(
       ]),
       n.id
     )
+  }
+  // Flanged joints supply the mating flanges, stub ends, gaskets and bolting that are not drawn as nodes.
+  const supplied = (item: CatalogItem | undefined, fallback: string, qty: number, joint: ReturnType<typeof flangedJoints>[number], description?: string, perUnitKg?: number | null) =>
+    addRow({
+      description: description ?? item?.description ?? fallback,
+      spec: joint.specId,
+      nps: joint.nps,
+      qty,
+      unit: 'ea',
+      weightKg: perUnitKg != null ? perUnitKg * qty : item?.weightKg != null ? item.weightKg * qty : null,
+      areaM2: null,
+      cost: (item?.unitCost ?? 0) * qty,
+      hours: (item?.laborHours ?? 0) * qty,
+      heat: '',
+      spool: joint.spool,
+      line: joint.line
+    }, JSON.stringify([item?.id ?? fallback, description ?? '']), joint.id)
+  for (const joint of flangedJoints(doc)) {
+    for (const flange of joint.flanges.filter(f => f.implicit)) supplied(flange.item, flange.code, 1, joint)
+    for (const stub of joint.stubEnds) supplied(stub, 'STUB END', 1, joint)
+    if (joint.gasket) supplied(joint.gasket.item, 'GASKET', 1, joint)
+    if (joint.bolts) {
+      const b = joint.bolts, row = b.item
+      const size = `${formatLength(b.diameter, 'imperial')} × ${formatLength(b.length, 'imperial')}`
+      supplied(row, 'STUD BOLTS', b.count, joint,
+        `${b.kind === 'lug' ? 'LUG BOLTS' : row?.description ?? 'STUD BOLTS C/W 2 NUTS'} · ${size}`,
+        row?.weightKg != null ? row.weightKg / (row.boltCount ?? b.count) : null)
+    }
   }
   return [...map.values()]
 }
@@ -1441,6 +1477,7 @@ export function parseIsoJson(raw: string): IsoDocument {
       if (
         ![z.nps, z.od, z.wall, z.kgM].every(positive) ||
         z.wall * 2 >= z.od ||
+        (z.bomDescription != null && !isString(z.bomDescription)) ||
         sizes.has(z.nps)
       )
         throw new Error('Invalid or duplicate pipe size.')

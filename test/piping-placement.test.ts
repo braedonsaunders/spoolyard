@@ -72,3 +72,22 @@ test('branch junctions and elbows are not slid as inline fittings', () => {
   assert.equal(componentTrack(doc, end.id), null);
   assert.throws(() => moveComponentAlongPipe(doc, end.id, 100), /cannot slide/);
 });
+
+test('positions are measured along the whole straight, not between neighbouring fittings', async () => {
+  const { legPosition, legPoint } = await import('../src/core/component-position.ts');
+  const doc = fixture(), type = COMPONENT_TYPES.find(t => t.code === 'BALL-FL')!;
+  const first = placeComponentOnPipe(doc, doc.runs[0].id, type, 0.25);
+  const second = placeComponentOnPipe(doc, doc.runs.find(r => r.from === first.id)!.id, type, 2 / 3);
+  const track = componentTrack(doc, second.id)!;
+  assert.equal(track.length, 10000);
+  assert.equal(track.distance, 7500);
+  assert.equal(track.min, 2500);
+  assert.equal(track.max, 10000);
+  // A click two thirds along the piece after the first valve is 75 % of the straight.
+  const run = doc.runs.find(r => r.to === second.id)!;
+  assert.ok(Math.abs(legPosition(doc, run.id, 0.5)!.percent - 50) < 1e-9);
+  assert.deepEqual(legPoint(doc, run.id, 5000), { runId: run.id, fraction: 0.5 });
+  assert.throws(() => moveComponentAlongPipe(doc, second.id, 2000), /neighbouring fittings/);
+  moveComponentAlongPipe(doc, second.id, 9000);
+  assert.deepEqual(second.position, [9000, 0, 0]);
+});

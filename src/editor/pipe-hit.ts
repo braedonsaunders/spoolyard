@@ -1,7 +1,8 @@
 import type { Drawing, Point } from '../core/drawing';
 import type { IsoDocument } from '../core/model';
 
-export interface PipeHit { runId: string; fraction: number; distance: number }
+/** `end` is set when the point is on a pipe end, where flanges, blinds and caps attach. */
+export interface PipeHit { runId: string; fraction: number; distance: number; end?: 0 | 1 }
 
 /** Hit the full measured centreline in screen pixels, including gaps behind dimension labels. */
 export function pipeAtPoint(
@@ -26,7 +27,9 @@ export function pipeAtPoint(
     if (distance > tolerance) continue;
     if (!closest || distance < closest.distance - 0.01 ||
       Math.abs(distance - closest.distance) < 0.01 && run.id === preferred) {
-      closest = { runId: run.id, fraction, distance };
+      const near = Math.hypot(point[0] - a[0], point[1] - a[1]) <= tolerance ? 0
+        : Math.hypot(point[0] - b[0], point[1] - b[1]) <= tolerance ? 1 : undefined;
+      closest = { runId: run.id, fraction, distance, ...(near == null ? {} : { end: near }) };
     }
   }
   return closest;

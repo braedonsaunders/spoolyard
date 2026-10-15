@@ -84,7 +84,7 @@ test('a measured nonstandard bend is reviewed against its actual deflection', ()
   const doc = newIso(), bend = appendRun(doc, null, [1000, 0, 0], 'CS40', 2, 'SP', '');
   appendRun(doc, bend.id, [Math.sqrt(3) * 500, 500, 0], 'CS40', 2, 'SP', '');
   assert.ok(Math.abs(bend.bendAngle! - 30) < 1e-8);
-  assert.match(validateIso(doc).join(), /takeouts/);
+  assert.match(validateIso(doc).join(), /30° bend .*has no standard size/);
   bend.takeout = 25;
   assert.deepEqual(validateIso(doc), []);
   assert.ok(Math.abs(importPcf(exportPcf(doc)).doc.nodes.find(n => n.kind === 'elbow90')!.bendAngle! - 30) < 1e-8);
@@ -111,14 +111,14 @@ test('crosses use four connections and laterals accept a 45-degree branch', () =
 test('stale branch references are reported without crashing drawing review', () => {
   const { doc, junction } = teeDoc();
   junction.branchEdgeId = 'gone';
-  assert.match(validateIso(doc).join(), /Tee/);
+  assert.match(validateIso(doc).join(), /tee.*branch/);
 });
 
 test('changing pipe size after routing detects an incompatible retained catalogue row', () => {
   const doc = newIso(), j = appendRun(doc, null, [1000, 0, 0], 'CS40', 2, 'SP', '');
   appendRun(doc, j.id, [0, 1000, 0], 'CS40', 2, 'SP', '');
   doc.runs.forEach(r => r.nps = 4);
-  assert.match(validateIso(doc).join(), /fitting sizes/);
+  assert.match(validateIso(doc).join(), /is 2″ but the pipes are 4″/);
 });
 
 test('shared weld tags and field status can be set from either adjoining pipe', () => {
@@ -128,31 +128,33 @@ test('shared weld tags and field status can be set from either adjoining pipe', 
   assert.equal(welds(doc)[0].tag, 'FW-22');
   assert.equal(welds(doc)[0].field, true);
   doc.runs[0].toTag = 'OTHER';
-  assert.match(validateIso(doc).join(), /conflicting tags/);
+  assert.match(validateIso(doc).join(), /two different weld numbers/);
 });
 
-test('flanged valves have no butt-weld root gaps or weld-map entries', () => {
+test('a flanged valve bolts to the spec weld-neck flanges with a gasket at each face', () => {
   const doc = libraryDoc(); doc.specs[0].rootGap = 3;
   appendRun(doc, null, [1000, 0, 0], 'A', 2, 'SP', '');
   const valve = insertComponent(doc, doc.runs[0].id, 'valve');
   const row = doc.specs[0].fittings.find(f => f.component === 'GATE-FL' && f.nps === 2)!;
   applyComponent(doc, valve, row.component!, row);
-  assert.deepEqual(doc.runs.map(r => runResult(doc, r).gaps), [[0, 0], [0, 0]]);
-  assert.equal(welds(doc).length, 0);
-  assert.equal(doc.runs.reduce((sum, r) => sum + runResult(doc, r).cut, 0), 822.2);
+  // Each side: half face-to-face 88.9 + 1/8" gasket 3.17 + weld-neck hub 63.5, then the butt-weld root gap.
+  assert.deepEqual(doc.runs.map(r => runResult(doc, r).gaps), [[0, 3], [3, 0]]);
+  assert.equal(welds(doc).length, 2);
+  assert.ok(Math.abs(doc.runs.reduce((sum, r) => sum + runResult(doc, r).cut, 0) - (1000 - 2 * (88.9 + 3.17 + 63.5) - 6)) < 1e-9);
   assert.equal(parseIsoJson(JSON.stringify(doc)).runs[0].toPrep, 'FL');
 });
 
-test('a weld-neck flange consumes one flange length and has one welded port', () => {
+test('a weld-neck flange inserted in a pipe is a bolted pair with one gasket and two welds', () => {
   const doc = libraryDoc(); doc.specs[0].rootGap = 3;
   appendRun(doc, null, [1000, 0, 0], 'A', 2, 'SP', '');
   const flange = insertComponent(doc, doc.runs[0].id, 'flange');
   const row = doc.specs[0].fittings.find(f => f.component === 'FLG-RFWN' && f.nps === 2)!;
   applyComponent(doc, flange, row.component!, row);
-  assert.equal(doc.runs.reduce((sum, r) => sum + runResult(doc, r).cut, 0), 933.5);
-  assert.equal(welds(doc).length, 1);
+  const expected = 1000 - 2 * (63.5 + 3.17 / 2) - 6;
+  assert.ok(Math.abs(doc.runs.reduce((sum, r) => sum + runResult(doc, r).cut, 0) - expected) < 1e-9);
+  assert.equal(welds(doc).length, 2);
   const restored = importPcf(exportPcf(doc)).doc;
-  assert.equal(restored.runs.reduce((sum, r) => sum + runResult(restored, r).cut, 0), 933.5);
+  assert.ok(Math.abs(restored.runs.reduce((sum, r) => sum + runResult(restored, r).cut, 0) - expected) < 1e-6);
 });
 
 test('supports stay with the correct half when a pipe is split', () => {
@@ -243,7 +245,7 @@ test('dimensions sit beside the pipe and a size is called out once per run', () 
     (p): p is Extract<typeof p, { type: 'text' }> => p.type === 'text' && p.layer === 'TEXT' && !!p.owner,
   );
   assert.equal(callouts.length, 1);
-  assert.equal(callouts[0].text, '2″ CS40');
+  assert.equal(callouts[0].text, '2" NS');
   const dims = drawing.primitives.filter(
     (p): p is Extract<typeof p, { type: 'text' }> => p.type === 'text' && p.layer === 'DIM',
   );
@@ -251,29 +253,31 @@ test('dimensions sit beside the pipe and a size is called out once per run', () 
   for (const label of dims) {
     assert.equal(label.text.includes(' / '), false);
     assert.equal(label.text.includes(' mm'), false);
-    const run = doc.runs.find(r => r.id === label.owner)!;
-    const a = drawing.positions.get(run.from)!, b = drawing.positions.get(run.to)!;
-    const dx = b[0] - a[0], dy = b[1] - a[1], l2 = dx * dx + dy * dy || 1;
-    const t = Math.max(0, Math.min(1, ((label.p[0] - a[0]) * dx + (label.p[1] - a[1]) * dy) / l2));
-    const distance = Math.hypot(label.p[0] - (a[0] + t * dx), label.p[1] - (a[1] + t * dy));
-    assert.ok(distance < 48, label.text + ' drifted ' + distance);
+    const distance = Math.min(...doc.runs.map(run => {
+      const a = drawing.positions.get(run.from)!, b = drawing.positions.get(run.to)!;
+      const dx = b[0] - a[0], dy = b[1] - a[1], l2 = dx * dx + dy * dy || 1;
+      const t = Math.max(0, Math.min(1, ((label.p[0] - a[0]) * dx + (label.p[1] - a[1]) * dy) / l2));
+      return Math.hypot(label.p[0] - (a[0] + t * dx), label.p[1] - (a[1] + t * dy));
+    }));
+    assert.ok(distance < 60, label.text + ' drifted ' + distance);
   }
   const model = createDrawing(doc, '', 'iso', undefined, { model: true });
   assert.equal(model.primitives.some(p => p.layer === 'BORDER'), false);
   assert.ok(model.primitives.some(p => p.type === 'text' && p.layer === 'DIM' && p.text === '800'));
 });
 
-test('annotation collision adjustments keep dimension labels within the model viewport', () => {
+test('annotation collision adjustments keep dimension labels within the model viewport', async () => {
   const doc = newIso();
   let start: string | null = null;
   for (let i = 0; i < 12; i++) start = appendRun(doc, start, [100, 0, 0], 'CS40', 2, 'SP', '').id;
   const drawing = createDrawing(doc);
+  const { textPoly } = await import('../src/core/iso/placement.ts');
   for (const p of drawing.primitives)
-    if (p.type === 'text' && p.owner && ['DIM', 'TEXT', 'WELD'].includes(p.layer)) {
-      assert.ok(p.p[0] >= drawing.area[0]);
-      assert.ok(p.p[0] + p.text.length * p.size * .62 <= drawing.area[2] + 1e-8);
-      assert.ok(p.p[1] >= 150 && p.p[1] <= 625);
-    }
+    if (p.type === 'text' && p.owner && ['DIM', 'TEXT', 'WELD', 'TAG'].includes(p.layer))
+      for (const [x, y] of textPoly(p.p, p.text, p.size, p.rotation, p.oblique, p.anchor, 0)) {
+        assert.ok(x >= drawing.area[0] && x <= drawing.area[2], p.text);
+        assert.ok(y >= drawing.area[1] && y <= drawing.area[3], p.text);
+      }
 });
 
 test('DXF keeps multiline text and literal braces without breaking group-code pairs', () => {

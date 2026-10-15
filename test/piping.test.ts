@@ -7,7 +7,7 @@ test('physical centreline measurements subtract fitting takeouts and each root g
 test('rolling offset travel uses all three physical axes',()=>{const d=newIso();appendRun(d,null,[300,400,1200],'CS40',2,'SP','');assert.equal(runResult(d,d.runs[0]).cut,1300);});
 test('inline valves consume their face-to-face and two gaps',()=>{const d=newIso();appendRun(d,null,[1000,0,0],'CS40',2,'SP','');const n=insertComponent(d,d.runs[0].id,'valve');n.takeout=100;assert.equal(d.runs.reduce((s,r)=>s+runResult(d,r).cut,0),794);});
 test('straight butt joint is one weld and one total root gap',()=>{const d=newIso();const a=appendRun(d,null,[1000,0,0],'CS40',2,'SP','');appendRun(d,a.id,[1000,0,0],'CS40',2,'SP','');assert.equal(a.kind,'weld');assert.equal(welds(d).length,1);assert.equal(d.runs.reduce((s,r)=>s+runResult(d,r).cut,0),1997);});
-test('missing fitting dimensions and negative cuts cannot pass fabrication checks',()=>{const d=newIso();appendRun(d,null,[100,0,0],'CS40',2,'SP','');const n=insertComponent(d,d.runs[0].id,'valve');assert.match(validateIso(d).join(),/takeouts/);n.takeout=200;assert.match(validateIso(d).join(),/cut length/);});
+test('missing fitting dimensions and negative cuts cannot pass fabrication checks',()=>{const d=newIso();appendRun(d,null,[100,0,0],'CS40',2,'SP','');const n=insertComponent(d,d.runs[0].id,'valve');assert.match(validateIso(d).join(),/has no standard size/);n.takeout=200;assert.match(validateIso(d).join(),/fittings at its ends overlap/);});
 test('metric and fractional imperial input round trip accurately',()=>{assert.equal(parseLength("2' 3 1/2\"",'imperial'),698.5);assert.ok(Math.abs(parseLength('3/8"','imperial')-9.525)<1e-9);assert.equal(parseLength('1000 mm','imperial'),1000);assert.equal(formatLength(698.5,'imperial'), '2′ 3 1/2″');assert.throws(()=>parseLength('2/0"','imperial'));});
 test('BOM does not merge heat lots or specs and missing fitting mass stays explicit',()=>{const d=newIso();const a=appendRun(d,null,[1000,0,0],'CS40',2,'SP','');appendRun(d,a.id,[0,1000,0],'CS40',2,'SP','');d.runs[0].heat='A';d.runs[1].heat='B';assert.equal(bom(d).filter(r=>r.unit==='m').length,2);assert.ok(bom(d).find(r=>r.unit==='ea')!.weightKg!>0);const v=insertComponent(d,d.runs[0].id,'valve');v.takeout=50;assert.equal(bom(d).find(r=>r.description==='valve')?.weightKg,null);});
 test('untrusted JSON validates references and finite coordinates',()=>{const d=newIso();appendRun(d,null,[1000,0,0],'CS40',2,'SP','');assert.equal(parseIsoJson(JSON.stringify(d)).runs.length,1);d.runs[0].to='missing';assert.throws(()=>parseIsoJson(JSON.stringify(d)),/Missing connection/);});
@@ -65,7 +65,7 @@ test('standard tee routing identifies its branch and uses manufacturer takeouts'
 });
 test('PCF with no material specification cannot silently inherit carbon-steel pipe weights',()=>{
  const {doc}=importPcf('UNITS-BORE INCH\nUNITS-CO-ORDS MM\nPIPE\n    END-POINT 0 0 0 2 BW\n    END-POINT 1000 0 0 2 BW\n');
- assert.match(validateIso(doc).join(),/missing/);assert.equal(bom(doc)[0].weightKg,null);assert.equal(runResult(doc,doc.runs[0]).cut,1000);
+ assert.match(validateIso(doc).join(),/not in specification/);assert.equal(bom(doc)[0].weightKg,null);assert.equal(runResult(doc,doc.runs[0]).cut,1000);
 });
 test('own PCF round trip preserves specs, independent root gaps and line identifiers',()=>{
  const d=newIso();appendRun(d,null,[1000,0,0],'CS40',2,'SP','LINE-A');
@@ -96,7 +96,7 @@ test('different measured fitting dimensions remain distinct BOM items with corre
 
 test('moved fitting geometry cannot silently produce a valid cut sheet',()=>{
  const d=newIso();const bend=appendRun(d,null,[1000,0,0],'CS40',2,'SP','');const end=appendRun(d,bend.id,[0,1000,0],'CS40',2,'SP','');
- end.position=[2000,1000,0];assert.match(validateIso(d).join(),/90 degree/);
+ end.position=[2000,1000,0];assert.match(validateIso(d).join(),/is a 90° fitting/);
 });
 test('socket weld position has no butt-weld root-gap displacement',()=>{
  const d=newIso();appendRun(d,null,[1000,0,0],'CS40',2,'SP','');const n=insertComponent(d,d.runs[0].id,'valve');n.takeout=100;
@@ -116,13 +116,13 @@ test('one isometric block is a real length, and feet or inches stay valid in eit
   assert.equal(parseLength('1 ft', 'mm'), parseLength('12"', 'imperial'));
   assert.equal(formatLength(defaultBlockSpacing('imperial'), 'imperial'), '1′ 0″');
   const d = newIso();
-  d.units = 'imperial';
+  d.units = 'imperial'; d.style = { layout: 'scale', weldNumbers: true, lettering: 'sans' };
   d.grid = { ...defaultGrid(), spacing: defaultBlockSpacing('imperial') };
   appendRun(d, null, [defaultBlockSpacing('imperial'), 0, 0], 'CS40', 2, 'SP', '');
   const drawing = createDrawing(d);
   const overall = drawing.primitives.find(p => p.type === 'text' && p.role === 'overall');
   assert.ok(overall && overall.type === 'text');
-  if (overall && overall.type === 'text') assert.equal(overall.text, '1′ 0″');
+  if (overall && overall.type === 'text') assert.equal(overall.text, '12"');
   const grid = gridLines(drawing, [0, 0, 0], d.grid!, 'imperial');
   assert.match(grid!.caption, /1 block = 1′ 0″/);
   assert.match(cutCsv(d), /1′ 0″/);

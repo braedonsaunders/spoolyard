@@ -47,6 +47,7 @@ function flange(code: string): SymbolStroke[] {
   if (/WN$/.test(code)) return [L(0, -12, 0, 12), L(4, -12, 4, 12), ...poly(4, -6, 12, -3), ...poly(4, 6, 12, 3)]
   if (/SO$/.test(code)) return [L(0, -12, 0, 12), L(4, -12, 4, 12), L(-4, -6, -4, 6)]
   if (/LJ|LAP/.test(code)) return [L(0, -12, 0, 12), L(4, -12, 4, 12), L(-3, -9, -3, 9)]
+  if (/^STUB-END/.test(code)) return [L(0, -9, 0, 9), L(0, -5, 12, -5), L(0, 5, 12, 5)]
   if (/SW$/.test(code)) return [L(0, -12, 0, 12), L(4, -12, 4, 12), L(10, -5, 10, 5)]
   if (/SC$/.test(code)) return [L(0, -12, 0, 12), L(4, -12, 4, 12), ...poly(6, -5, 9, -3, 6, -1, 9, 1, 6, 3)]
   if (/^ORFC|ORIFICE/.test(code)) return [L(-3, -12, -3, 12), L(3, -12, 3, 12), L(0, -15, 0, 15), T('O', -3, -16, 8)]

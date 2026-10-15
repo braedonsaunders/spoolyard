@@ -10,6 +10,7 @@ import { defaultGrid, GRID_ORIGIN, gridLines, type GridPlane } from '../src/core
 const spec = JSON.parse(readFileSync(new URL('../public/library/specs/a.json', import.meta.url), 'utf8')) as PipeSpec;
 function fixture() {
   const doc = newIso(); doc.specs = [clone(spec)];
+  doc.style = { layout: 'scale', weldNumbers: true, lettering: 'sans' };
   appendRun(doc, null, [10000, 0, 0], spec.id, 2, 'SP-001', '', 'FL');
   return doc;
 }
@@ -35,14 +36,16 @@ test('sliding a fitting leaves the graph paper and outer connections unchanged o
 
 test('unknown catalogue dimensions explain pending BOM cuts and resolve with a measured takeout', () => {
   const doc = fixture();
-  const node = placeComponentOnPipe(doc, doc.runs[0].id, COMPONENT_TYPES.find(t => t.code === 'BFLY')!, .317);
+  // A rotary valve has no ASME face-to-face, so its length must be measured.
+  const node = placeComponentOnPipe(doc, doc.runs[0].id, COMPONENT_TYPES.find(t => t.code === 'ROTR-FL')!, .317);
   assert.ok(!Number.isFinite(bom(doc).find(r => r.unit === 'm')!.qty));
-  assert.match(validateIso(doc).join('\n'), /Butterfly valve.*Pipe cut length is pending/);
+  assert.match(validateIso(doc).join('\n'), /rotary valve, flanged \(2″\) has no standard size/);
   const text = createDrawing(doc).primitives.filter(p => p.type === 'text').map(p => p.text).join('\n');
-  assert.match(text, /TBD\*/); assert.match(text, /Pipe cut lengths need review/); assert.doesNotMatch(text, /MISSING m/);
+  assert.match(text, /CUT TO \(PENDING\)/); assert.doesNotMatch(text, /MISSING/);
   node.takeout = 60;
-  assert.ok(Math.abs(bom(doc).find(r => r.unit === 'm')!.qty - 9.88) < 1e-9);
+  // The entered face distance plus a gasket and weld-neck flange on each side.
+  assert.ok(Math.abs(bom(doc).find(r => r.unit === 'm')!.qty - (10 - 2 * (60 + 3.17 + 63.5) / 1000)) < 1e-9);
   assert.ok(doc.runs.every(r => Number.isFinite(runResult(doc, r).cut)));
   assert.ok(!validateIso(doc).some(s => /takeouts/.test(s)));
-  assert.ok(!createDrawing(doc).primitives.some(p => p.type === 'text' && p.text === 'TBD*'));
+  assert.ok(!createDrawing(doc).primitives.some(p => p.type === 'text' && /PENDING|TBD/.test(p.text)));
 });

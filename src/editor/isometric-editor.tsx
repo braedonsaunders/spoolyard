@@ -86,7 +86,7 @@ import { SpoolyardMark } from "./mark";
 import { ComponentLibrary, ComponentPalette } from "./component-palette";
 import { ComponentGlyph } from "./component-glyph";
 import { pipeAtPoint, type PipeHit } from "./pipe-hit";
-import { componentTrack, moveComponentAlongPipe, placeComponentOnPipe, type ComponentTrack } from "../core/component-position";
+import { componentTrack, endCapable, legPoint, moveComponentAlongPipe, pipeLeg, placeComponentOnPipe, type ComponentTrack } from "../core/component-position";
 import "./isometric-editor.css";
 
 export type SaveStatus = "opening" | "saved" | "unsaved" | "saving" | "error";
@@ -810,7 +810,12 @@ export function IsometricEditor({
       node = target.closest("[data-node]")?.getAttribute("data-node");
     if (armed && tool === "insert") {
       const hit = insertionTarget(event);
-      if (hit) insertFitting(hit.runId, armed.type, armed.row, hit.fraction);
+      if (hit) {
+        // Flanges, blinds and caps dropped on an open pipe end become that end.
+        const run = doc.runs.find(r => r.id === hit.runId)!, endNode = hit.end == null ? undefined : getNode(doc, hit.end === 0 ? run.from : run.to);
+        const onEnd = endNode && endCapable(armed.type) && endNode.kind === "end" && connected(doc, endNode.id).length === 1;
+        insertFitting(hit.runId, armed.type, armed.row, onEnd ? hit.end! : hit.fraction);
+      }
       else setError("No pipe at that point. Click a straight pipe or its dimension label to place " + armed.type.label + ".");
       return;
     }
@@ -1271,34 +1276,38 @@ export function IsometricEditor({
               </small>
               {armed && selectedRun && !selectedRun.connector && (
                 <>
-                  <Field label="Position along pipe (%)">
+                  <Field label="Position along straight (%)">
                     <input
                       type="number"
                       min="1"
                       max="99"
                       aria-label="Position along pipe"
-                      value={fraction}
+                      value={round(fraction, 2)}
                       onChange={(e) => setFraction(Number(e.target.value))}
                     />
                   </Field>
-                  <button className="iso-primary" onClick={() => insertFitting(selectedRun.id, armed.type, armed.row)}>
+                  <button className="iso-primary" onClick={() => {
+                    const leg = pipeLeg(doc, selectedRun.id), target = leg && legPoint(doc, selectedRun.id, leg.length * fraction / 100);
+                    if (target) insertFitting(target.runId, armed.type, armed.row, target.fraction);
+                    else setError("Position must be between the ends of the straight pipe.");
+                  }}>
                     Place at this distance
                   </button>
-                  <Field label="Distance from pipe start">
+                  <Field label="Distance from start of straight">
                     <input
                       aria-label="Component distance from pipe start"
                       key={selection + "-" + fraction}
                       defaultValue={lengthInputValue(
-                        runResult(doc, selectedRun).overall * fraction / 100,
+                        (pipeLeg(doc, selectedRun.id)?.length ?? 0) * fraction / 100,
                         doc.units,
                       )}
                       onBlur={(e) => {
                         if (e.target.value === e.target.defaultValue) return;
                         try {
                           const distance = parseLength(e.target.value, doc.units),
-                            overall = runResult(doc, selectedRun).overall;
+                            overall = pipeLeg(doc, selectedRun.id)?.length ?? 0;
                           if (distance <= 0 || distance >= overall)
-                            throw new Error("Position must be between the pipe ends.");
+                            throw new Error("Position must be between the ends of the straight pipe.");
                           setFraction((100 * distance) / overall);
                         } catch (error) {
                           setError(error instanceof Error ? error.message : String(error));
@@ -1442,7 +1451,9 @@ export function IsometricEditor({
                           if (state.track) {
                             const a = drawing.project(state.track.from), b = drawing.project(state.track.to);
                             const dx = b[0] - a[0], dy = b[1] - a[1];
-                            const fraction = Math.max(0.0001, Math.min(0.9999,
+                            // Stay between the neighbouring fittings; the leg runs past them.
+                            const margin = 0.0001 * state.track.length;
+                            const fraction = Math.max((state.track.min + margin) / state.track.length, Math.min((state.track.max - margin) / state.track.length,
                               ((origin[0] + p[0] - state.point[0] - a[0]) * dx + (origin[1] + p[1] - state.point[1] - a[1]) * dy) / (dx * dx + dy * dy)));
                             state.destination = state.track.from.map((v, i) => v + (state.track!.to[i] - v) * fraction) as Vec3;
                           } else state.destination = pickGridPoint(
@@ -2088,7 +2099,8 @@ export function IsometricEditor({
                           direction. Tees are added with Branch.
                         </p>
                         {!selectedRun.connector && <button className="iso-primary" onClick={() => commit(d => {
-                          const junction = insertComponent(d, selection, 'tee', fraction / 100);
+                          const leg = pipeLeg(d, selection), target = leg && legPoint(d, selection, leg.length * fraction / 100);
+                          const junction = insertComponent(d, target?.runId ?? selection, 'tee', target?.fraction ?? 0.5);
                           setStart(junction.id);
                           setSelection(junction.id);
                           setSpool(selectedRun.spool);

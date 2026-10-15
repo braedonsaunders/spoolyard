@@ -629,6 +629,42 @@ export const COMPONENT_TYPES: ComponentType[] = [
     description: 'Long weld-neck FF flange.'
   },
   {
+    code: 'FLG-RFLJ',
+    label: 'Lap-joint flange with stub end, raised face',
+    category: 'flanges',
+    kind: 'flange',
+    endPrep: 'BW',
+    ports: 2,
+    description: 'ASME B16.5 lap-joint flange on a butt-weld stub end (MSS SP-43 type A).'
+  },
+  {
+    code: 'FLG-FFLJ',
+    label: 'Lap-joint flange with stub end, flat face',
+    category: 'flanges',
+    kind: 'flange',
+    endPrep: 'BW',
+    ports: 2,
+    description: 'ASME B16.5 lap-joint flange on a butt-weld stub end, flat face.'
+  },
+  {
+    code: 'STUB-END',
+    label: 'Stub end, long pattern',
+    category: 'flanges',
+    kind: 'flange',
+    endPrep: 'BW',
+    ports: 2,
+    description: 'ASME B16.9 long-pattern lap-joint stub end; its lap-joint flange is supplied with the joint.'
+  },
+  {
+    code: 'STUB-END-SHORT',
+    label: 'Stub end, short pattern',
+    category: 'flanges',
+    kind: 'flange',
+    endPrep: 'BW',
+    ports: 2,
+    description: 'MSS SP-43 short-pattern stub end; its lap-joint flange is supplied with the joint.'
+  },
+  {
     code: 'FLG-RFMSS',
     label: 'MSS weld-neck flange, raised face',
     category: 'flanges',
@@ -1058,7 +1094,25 @@ export const COMPONENT_TYPES: ComponentType[] = [
     kind: 'valve',
     endPrep: 'FL',
     ports: 2,
-    description: 'Wafer/lug/flanged butterfly valve (API 609).'
+    description: 'Lug butterfly valve (API 609 category A).'
+  },
+  {
+    code: 'BFLY-LUG',
+    label: 'Butterfly valve, lug type',
+    category: 'valves',
+    kind: 'valve',
+    endPrep: 'FL',
+    ports: 2,
+    description: 'API 609 category A lug butterfly valve; bolted from each side with lug bolts.'
+  },
+  {
+    code: 'BFLY-WAFER',
+    label: 'Butterfly valve, wafer type',
+    category: 'valves',
+    kind: 'valve',
+    endPrep: 'FL',
+    ports: 2,
+    description: 'API 609 category A wafer butterfly valve; clamped between flanges by through studs.'
   },
   {
     code: 'ROTR-FL',
