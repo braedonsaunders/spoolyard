@@ -4,8 +4,14 @@ import { boltSizeText, draftLength, purchaseLength, sizeText } from './format'
 import { connected, getNode, getSpec, runResult, type CatalogItem, type IsoDocument, type PipeNode, type PipeRun } from './model'
 
 export type MaterialCategory =
-  | 'pipe' | 'elbow90' | 'elbow45' | 'bend' | 'stub' | 'tee' | 'reducer' | 'cap' | 'small' | 'flange' | 'bolt' | 'gasket' | 'valve' | 'other'
-const ORDER: MaterialCategory[] = ['pipe', 'elbow90', 'elbow45', 'bend', 'stub', 'reducer', 'tee', 'cap', 'small', 'flange', 'bolt', 'gasket', 'valve', 'other']
+  | 'pipe' | 'cap' | 'nipple' | 'bend' | 'elbow90' | 'elbow45' | 'stub' | 'reducer' | 'tee' | 'olet' | 'regulator'
+  | 'reducing-coupling' | 'union' | 'flange' | 'bolt' | 'gasket' | 'valve' | 'other'
+/**
+ * Issued order: pipe; fittings by type (caps; nipples and full couplings; bends; elbows; stub ends; reducers; tees and
+ * laterals; olets; regulators; reducing couplings; unions); flanges, bolting, gaskets, valves; specialty items last.
+ */
+const ORDER: MaterialCategory[] = ['pipe', 'cap', 'nipple', 'bend', 'elbow90', 'elbow45', 'stub', 'reducer', 'tee', 'olet', 'regulator',
+  'reducing-coupling', 'union', 'flange', 'bolt', 'gasket', 'valve', 'other']
 /** 90° and 45° elbows share a place in the list and follow the order they appear along the line. */
 const rank = (c: MaterialCategory) => c === 'elbow45' ? ORDER.indexOf('elbow90') : ORDER.indexOf(c)
 const FLANGE_ORDER = [/SO$/, /WN$/, /LJ$/, /SW$/, /SC$/, /BL$/]
@@ -35,8 +41,13 @@ export function rowDescription(item: CatalogItem | undefined, fallback: string):
 }
 function categoryOf(kind: PipeNode['kind'], code = ''): MaterialCategory {
   if (/^STUB-END/.test(code)) return 'stub'
-  if (/CPLG|UNION|NIPPLE/.test(code) || kind === 'olet') return 'small'
+  if (/^R-CPLG/.test(code)) return 'reducing-coupling'
+  if (/UNION/.test(code)) return 'union'
+  if (/NIPPLE|^F-CPLG/.test(code)) return 'nipple'
+  if (/REGUL/.test(code)) return 'regulator'
+  if (/^TUBE$/.test(code)) return 'other'
   switch (kind) {
+    case 'olet': return 'olet'
     case 'elbow90': return /180|BEND/.test(code) ? 'bend' : 'elbow90'
     case 'elbow45': return 'elbow45'
     case 'tee': return 'tee'
@@ -159,13 +170,15 @@ export function sheetMaterials(doc: IsoDocument, spool = ''): MaterialRow[] {
       part(JSON.stringify(['bolt', b.kind, description, nd]), { category: 'bolt', nd, description, qty: 0, size: Math.round(b.diameter / 25.4 * 16) * 1e4 + b.length }, joint.id + '#bolts', b.count, joint.supplied.bolts)
     }
   }
-  const appear = (row: { memberIds: string[] }) => Math.min(...row.memberIds.map(id => appears.get(id) ?? Infinity))
+  // Joint parts (`<node>[:<pipe>]#part`) come where their node does.
+  const appear = (row: { memberIds: string[] }) => Math.min(1e9, ...row.memberIds.map(id => appears.get(id.split('#')[0].split(':')[0]) ?? 1e9))
+  // Within a type: size, then the order the items come along the line.
   const sorted = [...rows.values()].sort((a, b) =>
     rank(a.category) - rank(b.category) ||
     (a.category === 'pipe' ? a.size - b.size || a.first - b.first
-      : a.category === 'flange' ? a.flangeRank - b.flangeRank || a.size - b.size || a.description.localeCompare(b.description)
-        : a.category.startsWith('elbow') ? a.size - b.size || appear(a) - appear(b) || a.description.localeCompare(b.description)
-          : a.size - b.size || a.description.localeCompare(b.description)))
+      : a.category === 'flange' ? a.flangeRank - b.flangeRank || a.size - b.size || appear(a) - appear(b)
+        : a.category === 'bolt' ? a.size - b.size
+          : a.size - b.size || appear(a) - appear(b) || a.first - b.first))
   return sorted.map((row, index) => {
     const { size, flangeRank, first, pieces, ...rest } = row
     if (row.category !== 'pipe') return { ...rest, id: index + 1, qtyText: String(row.qty) }
