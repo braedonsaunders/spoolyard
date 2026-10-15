@@ -28,7 +28,7 @@ test('a flanged valve brings two mating flanges, two gaskets and two stud-bolt s
   const rows = bom(doc);
   assert.equal(rows.find(r => /GASKET/.test(r.description))!.qty, 2);
   assert.equal(rows.find(r => /STUD BOLTS/.test(r.description))!.qty, 8);
-  assert.match(rows.find(r => /STUD BOLTS/.test(r.description))!.description, /5\/8″ × 3 1\/4″/);
+  assert.match(rows.find(r => /STUD BOLTS/.test(r.description))!.description, /5\/8"X3 1\/4"/);
   assert.equal(rows.find(r => /FLANGE RF WN/.test(r.description))!.qty, 2);
   assert.equal(welds(doc).length, 2);
   assert.deepEqual(validateIso(doc), []);

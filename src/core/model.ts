@@ -1,6 +1,7 @@
 import type { GridSettings } from './grid'
 import { COMPONENT_TYPES } from './components'
 import { defaultCode, flangedAllowance, flangedJoints, nodeItem, pipeEndPrep } from './joints'
+import { boltSizeText } from './format'
 /** Spoolyard piping semantics (file schema id "bidwright-piping" is kept for compatibility). Coordinates and fabrication lengths are millimetres. */
 export type Vec3 = [number, number, number]
 export type Kind =
@@ -1168,9 +1169,9 @@ export function bom(
     if (joint.gasket) supplied(joint.gasket.item, 'GASKET', 1, joint)
     if (joint.bolts) {
       const b = joint.bolts, row = b.item
-      const size = `${formatLength(b.diameter, 'imperial')} × ${formatLength(b.length, 'imperial')}`
+      const size = boltSizeText(b.diameter, b.length)
       supplied(row, 'STUD BOLTS', b.count, joint,
-        `${b.kind === 'lug' ? 'LUG BOLTS' : row?.description ?? 'STUD BOLTS C/W 2 NUTS'} · ${size}`,
+        `${b.kind === 'lug' ? 'LUG BOLTS' : row?.description ?? 'STUD BOLTS C/W 2 NUTS'} ${size}`,
         row?.weightKg != null ? row.weightKg / (row.boltCount ?? b.count) : null)
     }
   }
@@ -1201,6 +1202,8 @@ export function lengthInputValue(mm: number, units: IsoDocument['units']): strin
 /** Small fabrication allowances must never round down to a displayed zero. */
 export function formatAllowance(mm: number, units: IsoDocument['units']): string {
   if (!Number.isFinite(mm)) return '—'
+  // Nearest 1/16″ reads like a tape measure; only an allowance that would show as zero keeps decimal inches.
+  if (units === 'imperial' && Math.round(Math.abs(mm) / 25.4 * 16) > 0) return formatLength(mm, units)
   return lengthInputValue(mm, units) + (units === 'mm' ? ' mm' : '')
 }
 
