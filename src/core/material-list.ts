@@ -53,7 +53,7 @@ function categoryOf(kind: PipeNode['kind'], code = ''): MaterialCategory {
  * Pipes in the order a fitter follows them: from an open end straight through tees to the far end, then the next
  * open end back to the network, and so on.
  */
-export function routeOrder(doc: IsoDocument, runs: PipeRun[]): PipeRun[] {
+export function routeOrder(doc: IsoDocument, runs: PipeRun[], startSize?: number): PipeRun[] {
   const pending = new Set(runs.map(r => r.id)), out: PipeRun[] = []
   const left = () => runs.filter(r => pending.has(r.id))
   const open = (id: string) => connected(doc, id).filter(r => runs.includes(r)).length === 1
@@ -64,7 +64,9 @@ export function routeOrder(doc: IsoDocument, runs: PipeRun[]): PipeRun[] {
   }
   while (pending.size) {
     const ends = left().flatMap(r => [r.from, r.to])
-    let at = ends.find(id => open(id) && getNode(doc, id).kind !== 'weld') ?? ends.find(id => out.some(r => r.from === id || r.to === id)) ?? ends[0]
+    const free = (id: string) => open(id) && getNode(doc, id).kind !== 'weld'
+    let at = (startSize != null && !out.length ? ends.find(id => free(id) && connected(doc, id).some(r => r.nps === startSize && runs.includes(r))) : undefined) ??
+      ends.find(free) ?? ends.find(id => out.some(r => r.from === id || r.to === id)) ?? ends[0]
     let heading: number[] | null = null
     for (;;) {
       const next = connected(doc, at).filter(r => pending.has(r.id))
@@ -96,9 +98,12 @@ export function sheetMaterials(doc: IsoDocument, spool = ''): MaterialRow[] {
     return created
   }
   // Fittings joined without pipe are walked through but are not pieces to cut.
-  const route = routeOrder(doc, doc.runs.filter(r => !spool || r.spool === spool)), appears = new Map<string, number>()
+  const spoolRuns = doc.runs.filter(r => !spool || r.spool === spool)
+  const route = routeOrder(doc, spoolRuns), appears = new Map<string, number>()
   route.forEach((r, i) => { for (const id of [r.from, r.to]) if (!appears.has(id)) appears.set(id, i) })
-  for (const run of route.filter(r => !r.connector)) {
+  // Pipe pieces are listed size by size, each size in order along the line from an open end of that size.
+  const sizes = [...new Set(spoolRuns.filter(r => !r.connector).map(r => r.nps))].sort((a, b) => a - b)
+  for (const run of sizes.flatMap(nps => routeOrder(doc, spoolRuns, nps).filter(r => !r.connector && r.nps === nps))) {
     const spec = getSpec(doc, run.specId), size = spec.sizes.find(s => s.nps === run.nps), cut = runResult(doc, run).cut
     const base = size?.bomDescription?.toUpperCase() ??
       compose(size?.description ?? 'PIPE', size?.material ?? spec.material, schedule(size?.schedule ?? spec.schedule))
