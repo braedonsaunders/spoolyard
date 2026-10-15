@@ -36,6 +36,7 @@ import {
   cutCsv,
   weldCsv,
   validateIso,
+  styleOf,
   round,
   welds,
   csv,
@@ -50,10 +51,10 @@ import { defaultGrid, GRID_ORIGIN, gridLines } from "../core/grid";
 
 const hex = (value: string) =>
   rgb(...([1, 3, 5].map((i) => parseInt(value.slice(i, i + 2), 16) / 255) as [number, number, number]));
-/** The SVG sheet's stylesheet colours. */
-const STROKE_INK: Record<string, Color> = { PIPE: hex("#1c2b38"), DIM: hex("#8ea4b4"), WELD: hex("#0c6880"), BOM: hex("#607180") },
-  TEXT_INK: Record<string, Color> = { DIM: hex("#31404c"), TEXT: hex("#6d7a86"), WELD: hex("#0c6880"), BOM: hex("#1c2b38") },
-  INK = hex("#17212c"),
+/** Issued sheets are black linework and lettering, like the SVG stylesheet. */
+const STROKE_INK: Record<string, Color> = {},
+  TEXT_INK: Record<string, Color> = {},
+  INK = hex("#111111"),
   WHITE = rgb(1, 1, 1);
 const images = new WeakMap<PDFDocument, Map<string, Promise<PDFImage | null>>>();
 /** PNG and JPEG data URLs (or fetchable URLs) embed once per document; anything else is left off the page. */
@@ -230,7 +231,8 @@ export async function exportPdf(doc: IsoDocument): Promise<Blob> {
         oy = (height - d.height * scale) / 2;
       page.drawRectangle({ x: 0, y: 0, width, height, color: rgb(1, 1, 1) });
       const settings = doc.grid ?? defaultGrid();
-      const grid = settings.visible
+      // Graph paper prints only on to-scale sheets; production isometrics are not to scale.
+      const grid = settings.visible && styleOf(doc).layout === "scale"
         ? gridLines(d, GRID_ORIGIN, settings, doc.units)
         : null;
       for (const l of grid?.lines ?? [])
@@ -366,10 +368,10 @@ export async function exportPdf(doc: IsoDocument): Promise<Blob> {
       issues.map((s) => [s]),
       [720],
     );
-  const total = pdf.getPageCount();
+  const total = pdf.getPageCount(), sheets = pages.length * views.length;
   pdf
     .getPages()
-    .forEach((page, index) =>
+    .forEach((page, index) => index >= sheets &&
       page.drawText(
         `${doc.drawing.slice(0, 60)} · Rev ${doc.revision.slice(0, 20)} · ${index + 1} / ${total}`,
         { x: 32, y: 10, size: 8, font, color: rgb(0.3, 0.35, 0.4) },
