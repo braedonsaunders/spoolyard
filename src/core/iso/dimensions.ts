@@ -160,18 +160,43 @@ export function drawDimensions(ctx: IsoContext) {
     const first = comps.find(i => i !== 2) ?? comps[0], axis3: Vec3 = [0, 0, 0]
     axis3[first] = Math.sign(d[first])
     const corner = add2(start.page, scale2(ctx.axis(axis3), Math.abs(d[first]) * k * Math.hypot(...ctx.axis(axis3))))
-    line(start.page, corner, 'DIM', leg.runs[0].id)
-    line(corner, end.page, 'DIM', leg.runs[0].id)
-    for (let i = 1; i <= 5; i++) {
-      const t = i / 6
-      line(lerp2(start.page, corner, t), lerp2(start.page, end.page, t), 'HATCH', leg.runs[0].id, 0.4)
+    const owner = leg.runs[0].id
+    line(start.page, corner, 'DIM', owner)
+    line(corner, end.page, 'DIM', owner)
+    // Hatching fills the acute corner between the pipe and its first leg; a square marks the right angle.
+    for (let i = 1; i <= 4; i++) {
+      const t = 0.06 + i * 0.075
+      line(lerp2(start.page, corner, t), lerp2(start.page, end.page, t), 'HATCH', owner, 0.4)
     }
+    const u1 = unit2(sub2(start.page, corner)), u2 = unit2(sub2(end.page, corner)), m = 6
+    poly([add2(corner, scale2(u1, m)), add2(add2(corner, scale2(u1, m)), scale2(u2, m)), add2(corner, scale2(u2, m))], 'DIM', owner)
     const plane = comps.includes(2) ? 'V' : 'H'
     const second = comps.find(i => i !== first)
     const angle = second == null ? 0 : Math.atan2(Math.abs(d[second]), Math.abs(d[first])) * 180 / Math.PI
-    const label = angleText(Math.round(angle), plane)
-    const at = add2(lerp2(start.page, lerp2(corner, end.page, 0.5), 0.35), scale2(along, 6))
-    emitters(ctx).text(at, label, SIZE.text, 'DIM', leg.runs[0].id, { anchor: 'middle' })
+    // Angle arc at the start, from the leg to the pipe, with the angle and plane beside it.
+    const a1 = Math.atan2(corner[1] - start.page[1], corner[0] - start.page[0]), a2 = Math.atan2(end.page[1] - start.page[1], end.page[0] - start.page[0])
+    let sweep = a2 - a1
+    if (sweep > Math.PI) sweep -= 2 * Math.PI
+    if (sweep < -Math.PI) sweep += 2 * Math.PI
+    const r = Math.min(34, Math.hypot(...sub2(corner, start.page)) * 0.45)
+    const arc = Array.from({ length: 9 }, (_, i) => add2(start.page, [Math.cos(a1 + sweep * i / 8) * r, Math.sin(a1 + sweep * i / 8) * r] as Point))
+    poly(arc, 'DIM', owner)
+    const mid = a1 + sweep / 2, label = angleText(Math.round(angle), plane)
+    const labelAt = add2(start.page, [Math.cos(mid) * (r + 4), Math.sin(mid) * (r + 4)] as Point)
+    const spots: Point[] = [labelAt, add2(labelAt, [measureText(label, SIZE.text) / 2 + 2, 0]), add2(labelAt, [-measureText(label, SIZE.text) / 2 - 2, 0]), add2(labelAt, [0, SIZE.text + 3])]
+    const at = spots.reduce((best, q, i) => {
+      const c = ctx.place.cost(textPoly(q, label, SIZE.text, 0, 0, 'middle', 1)) + i
+      return c < best.c ? { q, c } : best
+    }, { q: spots[0], c: Infinity }).q
+    emitters(ctx).text([at[0], at[1] + SIZE.text / 2], label, SIZE.text, 'DIM', owner, { anchor: 'middle' })
+    // The true length of the offset is dimensioned along the pipe, on the side away from the triangle.
+    const normal: Vec3 = [0, 0, 0]
+    normal[[0, 1, 2].find(i => !comps.includes(i)) ?? 2] = 1
+    const dir3 = unit3(d), across3: Vec3 = [normal[1] * dir3[2] - normal[2] * dir3[1], normal[2] * dir3[0] - normal[0] * dir3[2], normal[0] * dir3[1] - normal[1] * dir3[0]]
+    let ext = unit2(ctx.axis(across3))
+    if (Math.hypot(...ctx.axis(across3)) < 0.2) ext = [along[1], -along[0]]
+    if (dot2(ext, sub2(corner, lerp2(start.page, end.page, 0.5))) > 0) ext = scale2(ext, -1)
+    if (comps.length === 2) dimension(start, end, total, ext, SIZE.tier, leg.runs.length === 1 ? leg.runs[0] : undefined, owner)
     const legDim = (p: Point, q: Point, mm: number) => {
       const dir = unit2(sub2(q, p)), out = unit2(sub2(lerp2(p, q, 0.5), lerp2(start.page, end.page, 0.5)))
       const t = planeText(dir, out), up = uprightOf(t)
@@ -182,6 +207,5 @@ export function drawDimensions(ctx: IsoContext) {
     }
     legDim(start.page, corner, Math.abs(d[first]))
     if (second != null) legDim(corner, end.page, Math.hypot(...comps.filter(i => i !== first).map(i => d[i])))
-    void poly
   }
 }

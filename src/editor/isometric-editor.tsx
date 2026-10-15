@@ -1418,13 +1418,20 @@ export function IsometricEditor({
                         const origin = drawing.project(state.anchor);
                         try {
                           if (state.track) {
-                            const a = drawing.project(state.track.from), b = drawing.project(state.track.to);
+                            // Slide between the points the component cannot pass, as drawn: on a not-to-scale sheet the
+                            // pipe between them is drawn to its own length, so map the pointer within that span.
+                            const track = state.track, node = getNode(doc, state.id);
+                            const host = doc.runs.find(r => r.id === node.associatedRunId);
+                            const far = (runId: string) => { const r = doc.runs.find(x => x.id === runId)!; return r.from === state.id ? r.to : r.from; };
+                            const [lo, hi] = host ? [host.from, host.to] : [far(track.runIds[0]), far(track.runIds[1])];
+                            const u = sub(track.to, track.from).map(v => v / track.length) as Vec3;
+                            const station = (id: string) => sub(getNode(doc, id).position, track.from).reduce((sum, v, i) => sum + v * u[i], 0);
+                            const a = drawing.positions.get(lo)!, b = drawing.positions.get(hi)!, sa = station(lo), sb = station(hi);
                             const dx = b[0] - a[0], dy = b[1] - a[1];
-                            // Stay between the neighbouring fittings; the leg runs past them.
-                            const margin = 0.0001 * state.track.length;
-                            const fraction = Math.max((state.track.min + margin) / state.track.length, Math.min((state.track.max - margin) / state.track.length,
-                              ((origin[0] + p[0] - state.point[0] - a[0]) * dx + (origin[1] + p[1] - state.point[1] - a[1]) * dy) / (dx * dx + dy * dy)));
-                            state.destination = state.track.from.map((v, i) => v + (state.track!.to[i] - v) * fraction) as Vec3;
+                            const t = ((origin[0] + p[0] - state.point[0] - a[0]) * dx + (origin[1] + p[1] - state.point[1] - a[1]) * dy) / (dx * dx + dy * dy || 1);
+                            const margin = 0.0001 * track.length;
+                            const distance = Math.max(Math.max(track.min, Math.min(sa, sb)) + margin, Math.min(Math.min(track.max, Math.max(sa, sb)) - margin, sa + (sb - sa) * t));
+                            state.destination = track.from.map((v, i) => v + u[i] * distance) as Vec3;
                           } else state.destination = pickGridPoint(
                               drawing,
                               [origin[0] + p[0] - state.point[0], origin[1] + p[1] - state.point[1]],
