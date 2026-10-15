@@ -1,7 +1,7 @@
 import type { Point } from '../drawing'
 import { COMPONENT_TYPE_BY_CODE } from '../components'
-import { isBlind, isLapJoint, nodeCode } from '../joints'
-import { connected, getNode, welds, type PipeNode, type PipeRun, type Vec3 } from '../model'
+import { isBlind, isLapJoint, nodeCode, nodeItem } from '../joints'
+import { connected, getNode, welds, type IsoDocument, type PipeNode, type PipeRun, type Vec3 } from '../model'
 import { symbolStrokes } from '../symbols'
 import { SIZE, emitters, type IsoContext } from './context'
 import { add2, crossAxis, dot2, frame, isAxial, left2, len2, scale2, sub2, unit2 } from './plane'
@@ -18,6 +18,13 @@ export function acrossOf(ctx: IsoContext, along: Point, dir3: Vec3): Point {
   // Strokes are drawn upward from the pipe on the page.
   return across[1] > 0 ? scale2(across, -1) : across
 }
+/** A butterfly valve without an actuator is drawn as its disc on a stem; an actuated one as a bow-tie and dome. */
+export function discValve(doc: IsoDocument, node: PipeNode, code = nodeCode(doc, node) ?? ''): boolean {
+  if (!/^BFLY/.test(code)) return false
+  const item = nodeItem(doc, node)
+  return !/ACTUAT/i.test(`${node.description ?? ''} ${item?.bomDescription ?? ''} ${item?.description ?? ''}`)
+}
+const DISC = 5.5
 /** Half-length of each component's symbol along its pipe; pipes stop there. */
 export function symbolExtent(ctx: IsoContext, node: PipeNode): number {
   const code = nodeCode(ctx.doc, node) ?? ''
@@ -25,7 +32,7 @@ export function symbolExtent(ctx: IsoContext, node: PipeNode): number {
   if (node.kind === 'valve') {
     if (/NIPPLE/.test(code)) return 0
     if (/UNION|CPLG/.test(code)) return 5
-    return SIZE.valve + (flangedPort(code) ? SIZE.valveGap + SIZE.flangeThickness + 0.4 : 0)
+    return (discValve(ctx.doc, node, code) ? DISC : SIZE.valve) + (flangedPort(code) ? SIZE.valveGap + SIZE.flangeThickness + 0.4 : 0)
   }
   if (node.kind === 'reducer') return 9
   if (node.kind === 'flange' && isBlind(code)) return 2 + SIZE.flangeThickness * 2
@@ -145,9 +152,11 @@ export function drawPipes(ctx: IsoContext) {
       if (/UNION/.test(code)) for (const x of [-1.5, 1.5]) line(f(x, -4.5), f(x, 4.5), 'SYMBOL', owner)
       return
     }
-    // Every line valve is a bow-tie in its plane, butterfly valves with the disc's actuator dome.
-    const butterfly = /^BFLY/.test(code), h = SIZE.valve, w = SIZE.valveWidth
-    poly([f(-h, -w), f(h, w), f(h, -w), f(-h, w)], 'SYMBOL', owner, { closed: true })
+    // Every line valve is a bow-tie in its plane, actuated butterfly valves with the actuator's dome. A plain
+    // butterfly valve is its disc between the flanges, on a short stem toward its operator.
+    const butterfly = /^BFLY/.test(code), disc = discValve(ctx.doc, node, code), h = disc ? DISC : SIZE.valve, w = SIZE.valveWidth
+    if (disc) circle(at, DISC * 0.85, 'SYMBOL', owner, true)
+    else poly([f(-h, -w), f(h, w), f(h, -w), f(-h, w)], 'SYMBOL', owner, { closed: true })
     if (flangedPort(code)) {
       const F = SIZE.flange, t = SIZE.flangeThickness
       const g = h + SIZE.valveGap
@@ -158,6 +167,7 @@ export function drawPipes(ctx: IsoContext) {
     const stem = stemDir ? unit2(ctx.axis(stemDir)) : across
     const top = add2(at, scale2(stem, w + 9)), side = Math.abs(dot2(stem, along)) > 0.9 ? left2(stem) : along
     if (/^CHECK/.test(code)) { line(f(-h * 0.6, w * 0.6), f(h * 0.6, -w * 0.6), 'SYMBOL', owner); return }
+    if (disc) { line(add2(at, scale2(stem, DISC)), add2(at, scale2(stem, DISC + 9)), 'SYMBOL', owner); return }
     line(at, top, 'SYMBOL', owner)
     const ft = frame(top, side, stem)
     if (butterfly) poly([ft(-6, 0), ft(-5, 3), ft(-2.5, 5), ft(0, 5.6), ft(2.5, 5), ft(5, 3), ft(6, 0), ft(-6, 0)], 'SYMBOL', owner, { closed: true })
