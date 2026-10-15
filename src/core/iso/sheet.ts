@@ -49,6 +49,8 @@ const BOM_COLUMNS = [90, 135, 90, 493.5]
 const BOM_CAP = 13, BOM_ROW = 34, BOM_PITCH = 22, BOM_RAISE = 3, BOM_INSET = 6
 
 // Notes: lettering, baseline pitch and the label / text columns.
+/** The issued notes are lettered wide. */
+const NOTE_WIDTH = 1.27
 const NOTE_CAP = 9.75, NOTE_PITCH = 16.6, NOTE_HEADER_X = 1621.4, NOTE_LABEL_X = 1629.7, NOTE_TEXT_X = 1661.5,
   NOTE_RIGHT = 2445, NOTE_BASELINE = TB - 11.5
 
@@ -63,17 +65,23 @@ const NORTH_N: Point[] = [
 const up = (v: unknown) => String(v ?? '').trim().toUpperCase()
 
 /** Splits text into lines no wider than `width`, breaking words only when a single word is too wide. */
-export function wrapText(text: string, size: number, width: number): string[] {
+export function wrapText(text: string, size: number, width: number, factor = 1): string[] {
   const out: string[] = []
   for (const paragraph of text.split('\n')) {
     let line = ''
-    for (let word of paragraph.split(/\s+/).filter(Boolean)) {
+    // A spaced dash stays with the word before it ("BV -" then "CUT TO …").
+    const words = paragraph.split(/\s+/).filter(Boolean).reduce<string[]>((acc, w) => {
+      if (w === '-' && acc.length) acc[acc.length - 1] += ' -'
+      else acc.push(w)
+      return acc
+    }, [])
+    for (let word of words) {
       const next = line ? `${line} ${word}` : word
-      if (measureText(next, size) <= width) { line = next; continue }
+      if (measureText(next, size, factor) <= width) { line = next; continue }
       if (line) out.push(line)
-      while (word.length > 1 && measureText(word, size) > width) {
+      while (word.length > 1 && measureText(word, size, factor) > width) {
         let n = word.length - 1
-        while (n > 1 && measureText(word.slice(0, n), size) > width) n--
+        while (n > 1 && measureText(word.slice(0, n), size, factor) > width) n--
         out.push(word.slice(0, n))
         word = word.slice(n)
       }
@@ -114,12 +122,12 @@ export function drawSheet(input: {
   const line = (layer: string, x0: number, y0: number, x1: number, y1: number, weight: number) =>
     out.push({ type: 'line', a: [X(x0), Y(y0)], b: [X(x1), Y(y1)], layer, weight })
   /** Lettering at a baseline point; shrinks to `fit` dots of width when given. */
-  const text = (layer: string, value: string, x: number, y: number, size: number, anchor: 'start' | 'middle' = 'start', fit?: number) => {
+  const text = (layer: string, value: string, x: number, y: number, size: number, anchor: 'start' | 'middle' = 'start', fit?: number, factor = 1) => {
     if (!value) return
     const room = fit == null ? Infinity : fit * kx
-    const wide = measureText(value, size)
+    const wide = measureText(value, size, factor)
     const s = wide > room ? (size * room) / wide : size
-    out.push({ type: 'text', p: [X(x), Y(y)], text: value, size: s * st, layer, anchor })
+    out.push({ type: 'text', p: [X(x), Y(y)], text: value, size: s * st, layer, anchor, ...(factor !== 1 ? { width: factor } : {}) })
   }
   const rect = (r: SheetRect): SheetRect => [X(r[0]), Y(r[1]), X(r[2]), Y(r[3])]
   const exclusions: SheetRect[] = []
@@ -156,7 +164,7 @@ export function drawSheet(input: {
         const own = /^(\d+|[A-Z])[.)]\s+(.*)$/.exec(note)
         const label = own ? `${own[1]}.` : `${++count}.`
         if (own && /^\d+$/.test(own[1])) count = Number(own[1])
-        return { label, lines: wrapText(own ? own[2] : note, NOTE_CAP * scale, (NOTE_RIGHT - NOTE_TEXT_X) * kx) }
+        return { label, lines: wrapText(own ? own[2] : note, NOTE_CAP * scale, (NOTE_RIGHT - NOTE_TEXT_X) * kx, NOTE_WIDTH) }
       })
       const total = laid.reduce((sum, n) => sum + n.lines.length, 1)
       const room = (NOTE_BASELINE - TOP) / 2
@@ -171,7 +179,7 @@ export function drawSheet(input: {
     for (const note of laid) {
       y += pitch
       text('NOTES', note.label, NOTE_LABEL_X, y, cap)
-      note.lines.forEach((l, i) => text('NOTES', l, NOTE_TEXT_X, y + i * pitch, cap))
+      note.lines.forEach((l, i) => text('NOTES', l, NOTE_TEXT_X, y + i * pitch, cap, 'start', undefined, NOTE_WIDTH))
       y += (note.lines.length - 1) * pitch
     }
     exclusions.push(rect([NOTE_HEADER_X - GAP / 2, notesTop - GAP / 2, RIGHT - GAP / 2, TB - 4]))
@@ -184,9 +192,12 @@ export function drawSheet(input: {
     // A long list narrows the QTY and ND columns to their contents, as drafted, so descriptions wrap less.
     const fitted = (values: string[], header: string, least: number, most: number) =>
       Math.min(most, Math.max(least, ...[header, ...values].map(v => Math.max(...wrapText(up(v), BOM_CAP, Infinity).map(l => measureText(l, BOM_CAP))) / kx + 14)))
+    // A wide QTY or ND widens its column rather than wrapping.
     const columns = compact
       ? [BOM_COLUMNS[0], fitted(rows.map(r => r.qtyText), 'QTY', 78, BOM_COLUMNS[1]), fitted(rows.map(r => r.nd), 'ND', 73, BOM_COLUMNS[2])]
-      : BOM_COLUMNS.slice(0, 3)
+      : [BOM_COLUMNS[0], fitted(rows.map(r => r.qtyText), 'QTY', BOM_COLUMNS[1], BOM_COLUMNS[1] * 1.5),
+        // Words never split, so the ND column is as wide as its longest word ("1/2"X1/4""); bolt sizes still wrap.
+        fitted(rows.flatMap(r => r.nd.split(' ')), 'ND', BOM_COLUMNS[2], BOM_COLUMNS[2] * 1.8)]
     const cap = BOM_CAP * f
     const cell = (value: string, room: number): BomCell => {
       const lines = wrapText(value, cap, room * kx)
@@ -283,7 +294,7 @@ export function drawSheet(input: {
 
   title('REFERENCE DRAWINGS:', 91.2, 1321, 17)
   tb.referenceDrawings.slice(0, REFERENCE_ROWS.length - 1).forEach((ref, i) =>
-    title(up(ref), 91.2, REFERENCE_ROWS[i + 1] - 12.5, 17, 'start', 588.5 - 91.2 - 8))
+    title(ref.trim(), 91.2, REFERENCE_ROWS[i + 1] - 12.5, 17, 'start', 588.5 - 91.2 - 8))
 
   const people: Array<[string, string, number, number, number, number, number?]> = [
     ['DESIGNED BY', tb.designedBy, 588.5, 1326.5, 1363, 747.5],

@@ -56,7 +56,8 @@ export const COMPONENT_TYPES: ComponentType[] = [
     code: 'NIPPLE',
     label: 'Pipe nipple',
     category: 'pipe',
-    kind: 'pipe',
+    // A bought length of threaded pipe, placed like an in-line fitting and drawn as pipe.
+    kind: 'valve',
     endPrep: 'THD',
     ports: 2,
     description: 'Short pipe length between screwed/socket-weld fittings; length from the spec Pipe Nipple Length.'

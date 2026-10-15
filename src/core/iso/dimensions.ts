@@ -1,6 +1,7 @@
 import type { Point } from '../drawing'
 import { draftLength, angleText } from '../format'
-import { connected, distance, getNode, length, runResult, sub, type PipeNode, type PipeRun, type Vec3 } from '../model'
+import { connected, distance, getNode, length, runResult, sub, takeout, type PipeNode, type PipeRun, type Vec3 } from '../model'
+import { nodeCode } from '../joints'
 import { SIZE, emitters, type IsoContext } from './context'
 import { measureText } from '../stroke-font'
 import { segmentPoly, textPoly } from './placement'
@@ -12,15 +13,17 @@ interface Leg { runs: PipeRun[]; nodes: string[]; dir3: Vec3; dir: Point }
 /** Straight legs of the sheet: in-line pipes joined through valves, flanges, reducers and welds. */
 export function sheetLegs(ctx: IsoContext): Leg[] {
   const seen = new Set<string>(), legs: Leg[] = []
+  // A leg runs through in-line components, fittings joined without pipe, and the run of a tee.
   const straightThrough = (node: PipeNode, from: PipeRun) => {
-    if (node.kind === 'end' || node.kind === 'tee' || node.kind.startsWith('elbow')) return undefined
-    const edges = connected(ctx.doc, node.id).filter(r => r.id !== from.id && ctx.geometry.has(r.id) && !r.connector)
-    if (edges.length !== 1) return undefined
-    const a = ctx.geometry.get(from.id)!, b = ctx.geometry.get(edges[0].id)!
-    return Math.abs(Math.abs(a.dir3[0] * b.dir3[0] + a.dir3[1] * b.dir3[1] + a.dir3[2] * b.dir3[2]) - 1) < 1e-4 ? edges[0] : undefined
+    if (node.kind === 'end' || node.kind.startsWith('elbow')) return undefined
+    const a = ctx.geometry.get(from.id)!
+    return connected(ctx.doc, node.id).filter(r => r.id !== from.id && ctx.geometry.has(r.id)).find(r => {
+      const b = ctx.geometry.get(r.id)!
+      return Math.abs(Math.abs(a.dir3[0] * b.dir3[0] + a.dir3[1] * b.dir3[1] + a.dir3[2] * b.dir3[2]) - 1) < 1e-4
+    })
   }
   for (const g of ctx.geometry.values()) {
-    if (seen.has(g.run.id) || g.run.connector) continue
+    if (seen.has(g.run.id)) continue
     const runs = [g.run], nodes = [g.run.from, g.run.to]
     seen.add(g.run.id)
     for (let r: PipeRun | undefined = g.run, at = g.run.from; (r = straightThrough(getNode(ctx.doc, at), r!)) && !seen.has(r.id);) {
@@ -38,22 +41,48 @@ export function sheetLegs(ctx: IsoContext): Leg[] {
 
 /** Where a leg is measured: fitting work points, flanged faces of valves, flange joints and open ends. */
 function stations(ctx: IsoContext, leg: Leg): Station[] {
-  const out: Station[] = []
+  const out: Array<Station & { along: number }> = []
+  const origin = getNode(ctx.doc, leg.nodes[0]).position
+  const along = (p: Vec3) => (p[0] - origin[0]) * leg.dir3[0] + (p[1] - origin[1]) * leg.dir3[1] + (p[2] - origin[2]) * leg.dir3[2]
+  const at = (model: Vec3, page: Point, node?: string) => out.push({ model, page, node, along: along(model) })
   leg.nodes.forEach((id, i) => {
     const node = getNode(ctx.doc, id), page = ctx.pos.get(id)!
     const inner = i > 0 && i < leg.nodes.length - 1
     if (inner && node.kind === 'gasket') return
+    const code = nodeCode(ctx.doc, node) ?? ''
     const joints = ctx.joints.filter(j => j.nodeId === id && j.kind === 'component-port')
-    if (inner && joints.length === 2) {
-      // A flanged valve is dimensioned face to face.
-      const e = ctx.extent.get(id) ?? 0
-      for (const j of joints.sort((x, y) => dot2(sub2(ctx.project(x.position), page), leg.dir) - dot2(sub2(ctx.project(y.position), page), leg.dir)))
-        out.push({ model: j.position, page: add2(page, scale2(leg.dir, Math.sign(dot2(sub2(ctx.project(j.position), page), leg.dir)) * (e - 1))) })
+    const e = ctx.extent.get(id) ?? 0
+    if (inner && joints.length) {
+      // A flanged valve is dimensioned between its mating flange faces, across both gaskets.
+      for (const j of joints) {
+        const run = ctx.runs.find(r => r.id === j.runIds[0]), g = run && ctx.geometry.get(run.id)
+        if (!run || !g) continue
+        const out3 = sub(getNode(ctx.doc, run.from === id ? run.to : run.from).position, node.position), l = length(out3) || 1
+        const face: Vec3 = [0, 1, 2].map(k => j.position[k] + out3[k] / l * (j.gasket?.thickness ?? 0)) as Vec3
+        const dir = run.from === id ? g.dir : scale2(g.dir, -1)
+        at(face, add2(page, scale2(dir, Math.max(0, e - SIZE.flangeThickness - 0.4))))
+      }
       return
     }
-    out.push({ model: node.position, page, node: id })
+    if (inner && node.kind === 'reducer' && !/CPLG/.test(code)) {
+      // A reducer is dimensioned to both its ends.
+      for (const run of connected(ctx.doc, id).filter(r => ctx.geometry.has(r.id))) {
+        const g = ctx.geometry.get(run.id)!, t = takeout(ctx.doc, node, run.id) ?? 0
+        const out3 = sub(getNode(ctx.doc, run.from === id ? run.to : run.from).position, node.position), l = length(out3) || 1
+        const dir = run.from === id ? g.dir : scale2(g.dir, -1)
+        at([0, 1, 2].map(k => node.position[k] + out3[k] / l * t) as Vec3, add2(page, scale2(dir, e)))
+      }
+      return
+    }
+    at(node.position, page, id)
   })
-  return out
+  // Supports the drafter chose to locate are dimensioned from the fittings either side of them.
+  for (const support of ctx.nodes.filter(n => n.kind === 'support' && n.dimensioned && leg.runs.some(r => r.id === n.associatedRunId))) {
+    const page = ctx.pos.get(support.id)
+    if (page) at(support.position, page, support.id)
+  }
+  // Faces closer than a gasket (a flange pair at a break) are one station.
+  return out.sort((a, b) => a.along - b.along).filter((s, i, all) => !i || s.along - all[i - 1].along > 3.2)
 }
 
 export function drawDimensions(ctx: IsoContext) {
@@ -239,7 +268,6 @@ export function drawDimensions(ctx: IsoContext) {
       const dir = unit2(sub2(q, p)), away = sub2(lerp2(p, q, 0.5), centre)
       const out = dot2(unitAxis(standing), away) >= 0 ? unitAxis(standing) : scale2(unitAxis(standing), -1)
       const t = planeText(dir, out), up = uprightOf(t)
-      arrow(p, scale2(dir, -1), 'DIM', owner); arrow(q, dir, 'DIM', owner)
       // Leg text goes outside the triangle when its reading side faces in.
       const value = draftLength(mm, units, 24), base = lerp2(p, q, 0.5)
       const spots: Point[] = [add2(base, scale2(up, dot2(up, out) >= 0 ? 2 : -(SIZE.text + 2))), add2(base, scale2(up, dot2(up, out) >= 0 ? -(SIZE.text + 2) : 2))]

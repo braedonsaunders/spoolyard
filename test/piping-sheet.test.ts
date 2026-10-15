@@ -162,7 +162,7 @@ test('title block prints the document, sheet and latest revision values', () => 
   d.sheets = { S1: { drawingNumber: 'ISO-77-1', lineNumber: 'L-200' } };
   const t = texts(frame(d).primitives, 'TITLE');
   const has = (s: string) => assert.ok(t.some(x => x.text === s), s);
-  ['REFERENCE DRAWINGS:', 'P-001 REV.B', 'P-002', 'DESIGNED BY', 'A.B.', 'DATE (YY-MM-DD)', 'CHECKED BY', 'PROJECT LEADER', 'DISCIPLINE LEADER',
+  ['REFERENCE DRAWINGS:', 'P-001 Rev.B', 'P-002', 'DESIGNED BY', 'A.B.', 'DATE (YY-MM-DD)', 'CHECKED BY', 'PROJECT LEADER', 'DISCIPLINE LEADER',
     'APPROVED BY', 'I.J.', 'CONDITION', 'PRESS(PSIG)', 'TEMP(°F)', 'DESIGN', 'OPERATING', 'TEST', '225', 'INSUL. THK.', 'INSUL. CLAD.', 'TRACING',
     'PIPE SPEC:', 'CS150', 'SPEC REV:', 'DESIGN CODE:', 'ASME B31.3', 'REF. AREA', 'PRODUCT:', 'W', 'LINE No.', 'L-200', 'DRAWING No.',
     'ISO-77-1', 'PROJ. No.', 'PRJ-100', 'REV.', 'ISSUED FOR CONSTRUCTION', 'ISSUED FOR REVIEW', 'DESIGNED', 'YY-MM-DD'].forEach(has);

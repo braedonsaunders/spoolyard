@@ -34,7 +34,7 @@ export type Primitive =
   | { type: 'image'; p: Point; width: number; height: number; href: string; layer: string; owner?: string }
 /** Default stroke widths in sheet units. */
 export const LAYER_WEIGHT: Record<string, number> = {
-  BORDER: 2, TITLE: 0.8, BOM: 0.8, NOTES: 0.8, PIPE: 2.6, WELD: 1, SYMBOL: 1.2, DIM: 0.6, LEADER: 0.6, TAG: 0.8, TEXT: 0.8, HATCH: 0.5, GRID: 0.6
+  BORDER: 2, TITLE: 0.8, BOM: 0.8, NOTES: 0.8, PIPE: 1.7, WELD: 1, SYMBOL: 1.2, DIM: 0.6, LEADER: 0.6, TAG: 0.8, TEXT: 0.8, HATCH: 0.5, GRID: 0.6
 }
 export const weightOf = (p: Primitive) => ('weight' in p && p.weight) || LAYER_WEIGHT[p.layer] || 0.8
 export interface Drawing {

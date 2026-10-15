@@ -44,6 +44,8 @@ export interface CatalogItem {
   takeoutMissing?: boolean
   /** Verbatim drawing BOM text; otherwise composed from description, material, schedule and rating. */
   bomDescription?: string
+  /** A lateral's run end on the side its branch leans toward. */
+  longSideTakeout?: number
   centreToEnd?: number
   socketDepth?: number
   threadEngagement?: number
@@ -120,6 +122,8 @@ export interface PipeNode {
   operator?: string
   /** Sheet label for supports and annotations, e.g. "U-BOLT", "HANGER", "CLOSED". */
   calloutText?: string
+  /** Dimension this support's location along its pipe. */
+  dimensioned?: boolean
   /** Mating flange makeup per flanged port, keyed by pipe id. */
   portFlanges?: Record<string, PortFlange>
   /** What a pipe-end flange joint to equipment supplies. */
@@ -513,8 +517,18 @@ export function takeout(
   const item = nodeItem(doc, node), run = doc.runs.find(r => r.id === runId)
   const own = node.branchEdgeId === runId
     ? node.branchTakeout ?? (item?.takeoutMissing ? undefined : item?.branchTakeout)
-    : node.takeout ?? (item?.takeoutMissing ? undefined : item?.takeout)
+    : node.takeout ?? (item?.takeoutMissing ? undefined : lateralLongSide(doc, node, runId, item) ?? item?.takeout)
   return own == null || !run ? own : own + flangedAllowance(doc, node, run)
+}
+/** A lateral's run is longer on the side its branch leans toward. */
+function lateralLongSide(doc: IsoDocument, node: PipeNode, runId: string, item?: CatalogItem): number | undefined {
+  if (item?.longSideTakeout == null || !node.branchEdgeId) return undefined
+  const away = (id: string) => {
+    const r = doc.runs.find(x => x.id === id)
+    return r ? sub(getNode(doc, r.from === node.id ? r.to : r.from).position, node.position) : undefined
+  }
+  const branch = away(node.branchEdgeId), header = away(runId)
+  return branch && header && branch.reduce((sum, v, i) => sum + v * header[i], 0) > 0 ? item.longSideTakeout : undefined
 }
 /** End preparation of the pipe itself: a flanged port is resolved to its mating flange's weld or thread. */
 export function pipePrepAt(doc: IsoDocument, run: PipeRun, index: number): EndPrep {
@@ -960,8 +974,9 @@ export function validateIso(doc: IsoDocument): string[] {
       edges.some(r => ['SW', 'THD'].includes(prepAtNode(r, n.id)) && n.takeout == null && n.portTakeouts?.[r.id] == null))
       issues.push(`${at}the ${name} has no socket depth or thread engagement. Enter the length the pipe stops short of its centre.`)
     if (item && edges.length) {
+      // An olet sits on its header; only its branch pipe connects to it.
       const sizes = [...new Set(edges.map(r => r.nps))].sort((a, b) => b - a)
-      const expected = [...new Set([item.nps, item.smallerNps ?? item.nps])].sort((a, b) => b - a)
+      const expected = n.kind === 'olet' ? [item.smallerNps ?? item.nps] : [...new Set([item.nps, item.smallerNps ?? item.nps])].sort((a, b) => b - a)
       if (sizes.length !== expected.length || sizes.some((size, i) => size !== expected[i]))
         issues.push(`${at}the ${name} is ${expected.join('″ × ')}″ but the pipes are ${sizes.join('″ and ')}″. Choose the matching size.`)
       if (edges.some(r => !getSpec(doc, r.specId).fittings.some(f => f.id === item.id)))
@@ -1387,6 +1402,7 @@ export function parseIsoJson(raw: string): IsoDocument {
       (n.continuation != null && (!isPlain(n.continuation) || !isString(n.continuation.text, 600) ||
         (n.continuation.coordinates != null && typeof n.continuation.coordinates !== 'boolean'))) ||
       (n.elevationCallout != null && typeof n.elevationCallout !== 'boolean') ||
+      (n.dimensioned != null && typeof n.dimensioned !== 'boolean') ||
       (n.tiePoint != null && (!isPlain(n.tiePoint) || !isString(n.tiePoint.id, 40) ||
         (n.tiePoint.label != null && !isString(n.tiePoint.label, 120)))) ||
       (n.operator != null && !isString(n.operator, 120)) ||
@@ -1512,6 +1528,7 @@ export function parseIsoJson(raw: string): IsoDocument {
           'unitCost',
           'laborHours',
           'faceToFace',
+          'longSideTakeout',
           'flangeThickness',
           'lengthThroughHub',
           'thickness',

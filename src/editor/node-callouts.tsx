@@ -102,6 +102,12 @@ export function NodeCallouts({ doc, nodeId, commit }: { doc: IsoDocument; nodeId
           <Text label="Valve tag" value={node.tag} placeholder="e.g. HV-101" onCommit={(tag) => edit((n) => { n.tag = tag.trim() || undefined; })} />
         </>
       )}
+      {node.kind === "support" && (
+        <label className="iso-check">
+          <input type="checkbox" checked={!!node.dimensioned} onChange={(e) => edit((n) => { n.dimensioned = e.target.checked || undefined; })} />
+          Dimension its location
+        </label>
+      )}
       {(node.kind === "support" || node.kind === "annotation") && (
         <Text label="Label" value={node.calloutText} placeholder={type?.label.toUpperCase()}
           onCommit={(text) => edit((n) => { n.calloutText = text.trim() || undefined; })} />

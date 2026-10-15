@@ -4,14 +4,16 @@ import { isBlind, isLapJoint, nodeCode } from '../joints'
 import { connected, getNode, welds, type PipeNode, type PipeRun, type Vec3 } from '../model'
 import { symbolStrokes } from '../symbols'
 import { SIZE, emitters, type IsoContext } from './context'
-import { add2, crossAxis, dot2, frame, left2, len2, scale2, sub2, unit2 } from './plane'
+import { add2, crossAxis, dot2, frame, isAxial, left2, len2, scale2, sub2, unit2 } from './plane'
 
 const flangedPort = (code?: string) => !!code && COMPONENT_TYPE_BY_CODE[code]?.endPrep === 'FL'
 const OPERATORS: Record<string, Vec3> = { UP: [0, 0, 1], DOWN: [0, 0, -1], NORTH: [0, 1, 0], SOUTH: [0, -1, 0], EAST: [1, 0, 0], WEST: [-1, 0, 0] }
 
 /** Page direction across a pipe in its isometric plane, never parallel to the pipe on the page. */
 export function acrossOf(ctx: IsoContext, along: Point, dir3: Vec3): Point {
-  const across = ctx.axis(crossAxis(dir3))
+  // A skewed pipe in plan is crossed in the horizontal plane, square to the pipe.
+  const flat = Math.abs(dir3[2]) < 0.05 && !isAxial(dir3)
+  const across = flat ? ctx.axis([-dir3[1], dir3[0], 0]) : ctx.axis(crossAxis(dir3))
   if (len2(across) < 0.2 || Math.abs(dot2(unit2(across), along)) > 0.97) return left2(along)
   // Strokes are drawn upward from the pipe on the page.
   return across[1] > 0 ? scale2(across, -1) : across
@@ -21,6 +23,7 @@ export function symbolExtent(ctx: IsoContext, node: PipeNode): number {
   const code = nodeCode(ctx.doc, node) ?? ''
   if (node.associatedRunId) return 0
   if (node.kind === 'valve') {
+    if (/NIPPLE/.test(code)) return 0
     if (/UNION|CPLG/.test(code)) return 5
     return SIZE.valve * (/^BFLY/.test(code) ? 0.7 : 1) + (flangedPort(code) ? 2 + SIZE.flangeThickness : 0)
   }
@@ -37,7 +40,6 @@ export function drawPipes(ctx: IsoContext) {
     return run.from === node.id ? g.dir : scale2(g.dir, -1)
   }
   for (const g of ctx.geometry.values()) {
-    if (g.run.connector) { line(g.a, g.b, 'SYMBOL', g.run.id, 0.8); continue }
     const ea = ctx.extent.get(g.run.from) ?? 0, eb = ctx.extent.get(g.run.to) ?? 0
     if (g.length <= ea + eb) continue
     line(add2(g.a, scale2(g.dir, ea)), sub2(g.b, scale2(g.dir, eb)), 'PIPE', g.run.id)
@@ -78,12 +80,7 @@ export function drawPipes(ctx: IsoContext) {
     switch (node.kind) {
       case 'elbow90': case 'elbow45': case 'tee': case 'weld': return
       case 'end':
-        if (node.continuation) {
-          // Break line where the pipe continues on another drawing.
-          const back = scale2(along, -1), fb = frame(at, back, across), pts: Point[] = []
-          for (let i = 0; i <= 12; i++) { const y = -9 + i * 1.5; pts.push(fb(-3 * Math.sin(y / 9 * Math.PI) - 2, y)) }
-          poly(pts, 'SYMBOL', owner)
-        }
+        if (node.continuation) continuation(at, scale2(along, -1), across, owner, 0)
         return
       case 'valve': return valve(node, code, at, along, across)
       case 'flange': {
@@ -95,7 +92,15 @@ export function drawPipes(ctx: IsoContext) {
         }
         const pipes = edges.filter(r => !r.connector)
         if (pipes.length === 2) flangePair(at, along, across, owner, [-1, 1])
-        else flangePair(at, along, across, owner, [1], 0)
+        else {
+          flangePair(at, along, across, owner, [1], 0)
+          // The flange it bolts to, and the pipe beyond on the next drawing, are drawn thin.
+          if (node.continuation) {
+            const out = scale2(along, -1), fo = frame(at, out, across), F = SIZE.flange, t = SIZE.flangeThickness
+            poly([fo(1.2, -F), fo(1.2 + t, -F), fo(1.2 + t, F), fo(1.2, F)], 'SYMBOL', owner, { closed: true, weight: 0.6 })
+            continuation(at, out, across, owner, 1.2 + t)
+          }
+        }
         // Lap-joint flanges show the stub-end lap at the face.
         if (isLapJoint(code)) for (const s of pipes.length === 2 ? [-1, 1] : [1]) line(f(s * 0.4, -SIZE.flange * 0.55), f(s * 0.4, SIZE.flange * 0.55), 'SYMBOL', owner, 1.2)
         return
@@ -123,8 +128,18 @@ export function drawPipes(ctx: IsoContext) {
       }
     }
   }
+  /** The pipe continuing on another drawing: a thin length ending in an S-break. */
+  function continuation(at: Point, out: Point, across: Point, owner: string, from: number) {
+    const fo = frame(at, out, across), reach = from + 26
+    line(fo(from + 1, 0), fo(reach, 0), 'SYMBOL', owner, 0.6)
+    const pts: Point[] = []
+    for (let i = 0; i <= 12; i++) { const y = -8 + i * 4 / 3; pts.push(fo(reach + 3 * Math.sin(y / 8 * Math.PI), y)) }
+    poly(pts, 'SYMBOL', owner, { weight: 0.6 })
+  }
   function valve(node: PipeNode, code: string, at: Point, along: Point, across: Point) {
     const owner = node.id, f = frame(at, along, across)
+    // A nipple is pipe; the line runs through it.
+    if (/NIPPLE/.test(code)) return
     if (/UNION|CPLG/.test(code)) {
       for (const x of [-4, 4]) line(f(x, -6), f(x, 6), 'SYMBOL', owner)
       if (/UNION/.test(code)) for (const x of [-1.5, 1.5]) line(f(x, -4.5), f(x, 4.5), 'SYMBOL', owner)
@@ -151,13 +166,18 @@ export function drawPipes(ctx: IsoContext) {
   function support(node: PipeNode, code: string, at: Point, along: Point, across: Point) {
     const owner = node.id, f = frame(at, along, across)
     // A hanger rod comes down onto a filled triangle on the pipe; a U-bolt straddles it.
+    // A hanger is a triangle standing on the pipe, its far half filled; a U-bolt is a stroke across the pipe.
     if (/HANG|HNGR|SPRG|SPRING/.test(code)) {
-      poly([add2(at, scale2(across, 1.5)), f(-3.5, 10), f(3.5, 10)], 'SYMBOL', owner, { closed: true, fill: true })
-      line(f(0, 10), f(0, 24), 'SYMBOL', owner)
+      const tip = add2(at, scale2(across, 1.4)), top = (x: number) => add2(add2(at, scale2(across, 12)), scale2(along, x))
+      poly([tip, top(-4.5), top(4.5)], 'SYMBOL', owner, { closed: true })
+      poly([tip, top(0), top(4.5)], 'SYMBOL', owner, { closed: true, fill: true })
+      line(top(0), add2(top(0), scale2(across, 10)), 'SYMBOL', owner)
       return
     }
     if (/U-?BOLT/.test(code)) {
-      poly([f(-4, 7), f(-4, -2), f(0, -5), f(4, -2), f(4, 7)], 'SYMBOL', owner)
+      line(f(0, -6), f(0, 6), 'SYMBOL', owner, 1.2)
+      line(f(0, 1), f(-4, 6), 'SYMBOL', owner, 1.2)
+      line(f(0, -1), f(-4, -6), 'SYMBOL', owner, 1.2)
       return
     }
     const glyph = frame(at, along, scale2(across, -1))

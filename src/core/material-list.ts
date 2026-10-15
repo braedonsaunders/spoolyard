@@ -5,7 +5,9 @@ import { connected, getNode, getSpec, runResult, type CatalogItem, type IsoDocum
 
 export type MaterialCategory =
   | 'pipe' | 'elbow90' | 'elbow45' | 'bend' | 'stub' | 'tee' | 'reducer' | 'cap' | 'small' | 'flange' | 'bolt' | 'gasket' | 'valve' | 'other'
-const ORDER: MaterialCategory[] = ['pipe', 'elbow90', 'elbow45', 'bend', 'stub', 'tee', 'reducer', 'cap', 'small', 'flange', 'bolt', 'gasket', 'valve', 'other']
+const ORDER: MaterialCategory[] = ['pipe', 'elbow90', 'elbow45', 'bend', 'stub', 'reducer', 'tee', 'cap', 'small', 'flange', 'bolt', 'gasket', 'valve', 'other']
+/** 90° and 45° elbows share a place in the list and follow the order they appear along the line. */
+const rank = (c: MaterialCategory) => c === 'elbow45' ? ORDER.indexOf('elbow90') : ORDER.indexOf(c)
 const FLANGE_ORDER = [/SO$/, /WN$/, /LJ$/, /SW$/, /SC$/, /BL$/]
 
 /** One row of a sheet's bill of materials, as printed. */
@@ -93,7 +95,10 @@ export function sheetMaterials(doc: IsoDocument, spool = ''): MaterialRow[] {
     rows.set(key, created)
     return created
   }
-  for (const run of routeOrder(doc, runs)) {
+  // Fittings joined without pipe are walked through but are not pieces to cut.
+  const route = routeOrder(doc, doc.runs.filter(r => !spool || r.spool === spool)), appears = new Map<string, number>()
+  route.forEach((r, i) => { for (const id of [r.from, r.to]) if (!appears.has(id)) appears.set(id, i) })
+  for (const run of route.filter(r => !r.connector)) {
     const spec = getSpec(doc, run.specId), size = spec.sizes.find(s => s.nps === run.nps), cut = runResult(doc, run).cut
     const base = size?.bomDescription?.toUpperCase() ??
       compose(size?.description ?? 'PIPE', size?.material ?? spec.material, schedule(size?.schedule ?? spec.schedule))
@@ -152,11 +157,13 @@ export function sheetMaterials(doc: IsoDocument, spool = ''): MaterialRow[] {
     }
   }
   for (const [key, member] of elsewhere) rows.get(key)?.memberIds.push(member)
+  const appear = (row: { memberIds: string[] }) => Math.min(...row.memberIds.map(id => appears.get(id) ?? Infinity))
   const sorted = [...rows.values()].sort((a, b) =>
-    ORDER.indexOf(a.category) - ORDER.indexOf(b.category) ||
+    rank(a.category) - rank(b.category) ||
     (a.category === 'pipe' ? a.size - b.size || a.first - b.first
       : a.category === 'flange' ? a.flangeRank - b.flangeRank || a.size - b.size || a.description.localeCompare(b.description)
-        : a.size - b.size || a.description.localeCompare(b.description)))
+        : a.category.startsWith('elbow') ? a.size - b.size || appear(a) - appear(b) || a.description.localeCompare(b.description)
+          : a.size - b.size || a.description.localeCompare(b.description)))
   return sorted.map((row, index) => {
     const { size, flangeRank, first, pieces, ...rest } = row
     if (row.category !== 'pipe') return { ...rest, id: index + 1, qtyText: String(row.qty) }

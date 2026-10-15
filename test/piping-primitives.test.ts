@@ -97,7 +97,7 @@ test('the editor layer draws every primitive with its owner, length handle and s
     })));
   const sans = render('sans'), cad = render('cad');
   for (const svg of [sans, cad]) {
-    assert.match(svg, /<line data-owner="run-1" [^>]*class="iso-primitive iso-layer-pipe selected" stroke-width="2.6"/);
+    assert.match(svg, /<line data-owner="run-1" [^>]*class="iso-primitive iso-layer-pipe selected" stroke-width="1.7"/);
     assert.match(svg, /<line data-owner="run-1" [^>]*stroke="transparent" stroke-width="14"/);
     assert.match(svg, /<line [^>]*class="iso-primitive iso-layer-symbol" stroke-width="5"/);
     assert.match(svg, /<polyline data-owner="valve-1" points="10,50 30,70 50,50" class="iso-primitive iso-layer-symbol"[^>]*fill="none"/);
@@ -138,7 +138,7 @@ test('DXF writes polylines, fills, styled text, lineweights and image frames', (
     assert.equal(value(style, 41), '0.8');
     assert.ok(all.some(r => r[0][1] === 'LAYER' && value(r, 2) === 'BW-ISO-TITLE'));
     const of = (type: string) => list.filter(e => e[0][1] === type);
-    assert.deepEqual(of('LINE').map(e => value(e, 370)), ['90', '20', '158']);
+    assert.deepEqual(of('LINE').map(e => value(e, 370)), ['53', '20', '158']);
     const polylines = of('LWPOLYLINE');
     assert.deepEqual(polylines.map(e => [value(e, 8), value(e, 90), value(e, 70)]), [
       ['BW-ISO-SYMBOL', '3', '0'], ['BW-ISO-TAG', '4', '1'], ['BW-ISO-LEADER', '4', '1'], ['BW-ISO-TITLE', '4', '1'],

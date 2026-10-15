@@ -52,7 +52,8 @@ export function drawAnnotations(ctx: IsoContext) {
   }
   /** A boxed BOM number with a leader to the item. */
   function tag(target: Point, id: number, owner: string, prefer?: Point) {
-    const w = Math.max(SIZE.tag, measureText(String(id), T) + 5), h = SIZE.tag
+    // Tag boxes hug their number, as drafted.
+    const w = measureText(String(id), T) + 4.5, h = T + 4
     const { centre } = spot(target, w, h, owner, undefined, prefer)
     poly(rectPoly(centre[0] - w / 2, centre[1] - h / 2, centre[0] + w / 2, centre[1] + h / 2), 'TAG', owner, { closed: true })
     ctx.place.add(rectPoly(centre[0] - w / 2, centre[1] - h / 2, centre[0] + w / 2, centre[1] + h / 2), 'tag', owner)
@@ -81,14 +82,15 @@ export function drawAnnotations(ctx: IsoContext) {
     for (const run of leg.runs) {
       const id = materialId(ctx.materials, run.id), g = ctx.geometry.get(run.id)
       if (!id || !g) continue
+      // On a riser the tag stands upright beside the pipe; elsewhere it lies in the pipe's isometric plane.
       const across = vertical ? left2(g.dir) : acrossOf(ctx, g.dir, g.dir3)
-      const label = String(id), w = Math.max(SIZE.tag, measureText(label, T) + 5), h = SIZE.tag
+      const label = String(id), w = measureText(label, T) + 4.5, h = T + 4
       let best: { cost: number; box: Poly; at: Point; foot: Point } | null = null
       for (const t of [0.5, 0.38, 0.62, 0.26, 0.74])
         for (const side of [1, -1])
           for (const gap of [9, 14, 20]) {
             const foot = lerp2(g.a, g.b, t), out = scale2(across, side * (gap + h / 2 + 1))
-            const at = add2(foot, out), u = g.dir, v = scale2(across, side)
+            const at = add2(foot, out), u: Point = vertical ? [1, 0] : g.dir, v: Point = vertical ? [0, 1] : scale2(across, side)
             const box: Poly = [add2(at, add2(scale2(u, -w / 2), scale2(v, -h / 2))), add2(at, add2(scale2(u, w / 2), scale2(v, -h / 2))),
               add2(at, add2(scale2(u, w / 2), scale2(v, h / 2))), add2(at, add2(scale2(u, -w / 2), scale2(v, h / 2)))]
             const cost = ctx.place.cost(box) * 2 + ctx.place.cost(segmentPoly(foot, add2(foot, scale2(v, gap)), 0.5), own(run.id)) + Math.abs(t - 0.5) * 6 + gap * 0.2
@@ -97,10 +99,11 @@ export function drawAnnotations(ctx: IsoContext) {
       if (!best) continue
       poly(best.box, 'TAG', run.id, { closed: true })
       ctx.place.add(best.box, 'tag', run.id)
-      const { rotation, oblique } = planeText(g.dir, across[1] < 0 ? across : scale2(across, -1))
-      const baseline = add2(best.at, scale2(across[1] < 0 ? across : scale2(across, -1), -T / 2))
+      const upright: Point = across[1] < 0 ? across : scale2(across, -1)
+      const { rotation, oblique } = vertical ? { rotation: 0, oblique: 0 } : planeText(g.dir, upright)
+      const baseline = vertical ? add2(best.at, [0, T / 2]) : add2(best.at, scale2(upright, -T / 2))
       text(baseline, label, T, 'TAG', run.id, { rotation, oblique, anchor: 'middle' })
-      const edge = sub2(best.at, scale2(unit2(sub2(best.at, best.foot)), h / 2))
+      const edge = sub2(best.at, scale2(unit2(sub2(best.at, best.foot)), vertical ? w / 2 : h / 2))
       line(best.foot, edge, 'LEADER', run.id)
       ctx.place.addSegment(best.foot, edge, 'tag', run.id, 1.5)
     }
@@ -116,8 +119,8 @@ export function drawAnnotations(ctx: IsoContext) {
     if (node.kind === 'valve' && (node.operator || node.tag)) {
       const lines = [String(id), ...(node.operator ? [node.operator.toUpperCase()] : []), ...(node.tag ? [node.tag.toUpperCase()] : [])]
       const block = callout(at, lines, node.id)
-      const w = Math.max(SIZE.tag, measureText(String(id), T) + 5)
-      poly(rectPoly(block.left - 2, block.top - 3, block.left - 2 + w, block.top - 3 + SIZE.tag), 'TAG', node.id, { closed: true })
+      const w = measureText(String(id), T) + 4.5
+      poly(rectPoly(block.left - 2.2, block.top - 2, block.left - 2.2 + w, block.top + T + 2), 'TAG', node.id, { closed: true })
       continue
     }
     tag(at, id, node.id)
@@ -126,7 +129,9 @@ export function drawAnnotations(ctx: IsoContext) {
   for (const joint of ctx.joints) {
     const target = jointPoint(joint)
     if (!target) continue
-    const f = materialId(ctx.materials, joint.flanges.some(x => x.implicit) ? joint.id + '#flange' : joint.nodeId)
+    // A port whose mating flange is not supplied (an existing flange) has no flange on this sheet to call out.
+    const f = !joint.flanges.length ? undefined : materialId(ctx.materials, joint.flanges.some(x => x.implicit) ? joint.id + '#flange' : joint.nodeId)
+    if (!joint.flanges.length && !joint.supplied.gasket && !joint.supplied.bolts) continue
     const b = joint.bolts ? materialId(ctx.materials, joint.id + '#bolts') : undefined
     const gsk = joint.gasket ? materialId(ctx.materials, joint.id + '#gasket') : undefined
     const parts = [f && `F${f}`, b && `B${b}`, gsk && `G${gsk}`].filter(Boolean) as string[]
@@ -136,9 +141,10 @@ export function drawAnnotations(ctx: IsoContext) {
       const left = centre[0] - width / 2, base = centre[1] + T / 2
       text([left, base], label, T, 'TEXT', joint.nodeId)
       if (b) {
-        const before = measureText(parts.slice(0, parts.indexOf(`B${b}`)).join(' ') + (f ? ' ' : '') + 'B', T)
-        const bw = measureText(String(b), T)
-        poly(rectPoly(left + before - 1.5, base - T - 2.5, left + before + bw + 1.5, base + 2.5), 'TAG', joint.nodeId, { closed: true, occupy: false })
+        // The bolt item is boxed, letter and number, as on the issued sheets.
+        const before = measureText(parts.slice(0, parts.indexOf(`B${b}`)).join(' ') + (f ? ' ' : ''), T)
+        const bw = measureText(`B${b}`, T)
+        poly(rectPoly(left + before - 1.5, base - T - 2, left + before + bw + 1.5, base + 2), 'TAG', joint.nodeId, { closed: true, occupy: false })
       }
       const from: Point = [target[0] > centre[0] ? left + width + 2 : left - 2, base - T / 2]
       leader(from, target, joint.nodeId, false)
@@ -204,7 +210,8 @@ export function drawAnnotations(ctx: IsoContext) {
     if (!at) continue
     if (node.continuation) {
       const lines = node.continuation.text.split('\n').map(s => s.trim().toUpperCase()).filter(Boolean)
-      if (node.continuation.coordinates !== false) lines.push(...coordinateText(ctx.doc, node.position))
+      const point = node.position
+      if (node.continuation.coordinates !== false) lines.push(...coordinateText(ctx.doc, point))
       callout(at, lines, node.id)
     }
     if (node.elevationCallout) callout(at, [elevationText(ctx.doc, node.position)], node.id)

@@ -35,7 +35,7 @@ test('a lap-joint sheet lists cut pieces, stub ends, flanges, bolts and gaskets 
   const rows = sheetMaterials(doc, 'S-1').map(r => [r.id, r.qtyText, r.nd, r.description]);
   assert.deepEqual(rows, [
     [1, `1'-2"`, '2"', `PIPE, WELDED, ASTM A312 TP316L, SCH 10S, ASME B36.19, BE - CUT TO 1'-1 5/8"`],
-    [2, `2'-1"`, '2"', `PIPE, WELDED, ASTM A312 TP316L, SCH 10S, ASME B36.19, BE - CUT TO 2'-1"`],
+    [2, `2'-2"`, '2"', `PIPE, WELDED, ASTM A312 TP316L, SCH 10S, ASME B36.19, BE - CUT TO 2'-1"`],
     [3, '1', '2"', 'ELBOW 90 LR, ASTM A403 WP316L, SCH 10S, ASME B16.9, BE'],
     [4, '2', '2"', 'STUB END, MSS SP-43 TYPE A, ASTM A403 WP316L, SCH 10S'],
     [5, '3', '2"', 'FLANGE LJ, ASTM A182 F316L, ASME B16.5, CL150, FF'],

@@ -18,11 +18,15 @@ function fractionText(numerator: number, denominator: number): string {
   const gcd = (a: number, b: number): number => b ? gcd(b, a % b) : a, g = gcd(numerator, denominator)
   return `${numerator / g}/${denominator / g}`
 }
-/** Length to order: rounded up to the whole inch (imperial) or the next 10 mm. */
+/**
+ * Length to order. Imperial pieces under a foot round up to the whole inch; a foot or more takes the next whole
+ * inch above the cut, as the issued sheets order them. Metric rounds up to the next 10 mm.
+ */
 export function purchaseLength(mm: number, units: IsoDocument['units']): string {
   if (!Number.isFinite(mm) || mm <= 0) return 'TBD'
   if (units === 'mm') return String(Math.ceil(mm / 10 - 1e-9) * 10)
-  const inches = Math.ceil(mm / 25.4 - 1e-6), feet = Math.floor(inches / 12), rest = inches % 12
+  const exact = mm / 25.4, inches = exact >= 12 - 1e-6 ? Math.floor(exact + 1e-6) + 1 : Math.ceil(exact - 1e-6)
+  const feet = Math.floor(inches / 12), rest = inches % 12
   return feet ? rest ? `${feet}'-${rest}"` : `${feet}'` : `${rest}"`
 }
 /** Plant coordinates of a model point: E/W, N/S and signed elevation. */

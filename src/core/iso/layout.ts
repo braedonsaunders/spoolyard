@@ -40,13 +40,17 @@ export function layoutSheet(doc: IsoDocument, runs: PipeRun[], nodes: PipeNode[]
   for (const r of runs) for (const end of [r.from, r.to]) edges.set(end, [...(edges.get(end) ?? []), r])
   const position = (id: string) => getNode(doc, id).position
   const unit = (a: Vec3, b: Vec3) => { const d = sub(b, a), l = length(d) || 1; return [d[0] / l, d[1] / l, d[2] / l] }
-  // Straight legs through in-line components keep their ends fixed while a component slides along them.
+  // Straight legs run through in-line components and along the run of tees, keeping their ends fixed while a
+  // component slides along them; fittings joined with no pipe between them are part of the leg.
   const inline = (id: string, from: PipeRun) => {
     const list = edges.get(id) ?? []
-    if (list.length !== 2 || getNode(doc, id).kind === 'end') return undefined
-    const next = list.find(r => r !== from)!
-    const u = unit(position(from.from === id ? from.to : from.from), position(id)), v = unit(position(id), position(next.from === id ? next.to : next.from))
-    return !from.connector && !next.connector && u[0] * v[0] + u[1] * v[1] + u[2] * v[2] > 0.999999 ? next : undefined
+    if (list.length < 2 || getNode(doc, id).kind === 'end') return undefined
+    const u = unit(position(from.from === id ? from.to : from.from), position(id))
+    return list.find(next => {
+      if (next === from) return false
+      const v = unit(position(id), position(next.from === id ? next.to : next.from))
+      return u[0] * v[0] + u[1] * v[1] + u[2] * v[2] > 0.999999
+    })
   }
   const legOf = new Map<string, { nodes: string[]; runs: PipeRun[] }>()
   for (const run of runs) {
@@ -62,7 +66,7 @@ export function layoutSheet(doc: IsoDocument, runs: PipeRun[], nodes: PipeNode[]
   }
   const legEdges = new Map<string, Array<{ nodes: string[]; runs: PipeRun[] }>>()
   for (const leg of new Set(legOf.values()))
-    for (const end of [leg.nodes[0], leg.nodes.at(-1)!]) legEdges.set(end, [...(legEdges.get(end) ?? []), leg])
+    for (const id of leg.nodes) legEdges.set(id, [...(legEdges.get(id) ?? []), leg])
   let ratio = 0, count = 0
   const done = new Set<{ nodes: string[]; runs: PipeRun[] }>()
   const legs = [...new Set(legOf.values())]
@@ -81,28 +85,29 @@ export function layoutSheet(doc: IsoDocument, runs: PipeRun[], nodes: PipeNode[]
       for (const leg of legEdges.get(at) ?? []) {
         if (done.has(leg)) continue
         done.add(leg)
-        const order = leg.nodes[0] === at ? leg.nodes : [...leg.nodes].reverse()
-        const far = order.at(-1)!, a = position(at), b = position(far)
+        // The leg is laid out from wherever it was reached: an end, or a tee on its run.
+        const order = leg.nodes, first = order[0], last = order.at(-1)!, a = position(first), b = position(last)
         const page = sub2(project(b), project(a)), span = Math.hypot(...page), mm = length(sub(b, a))
         const origin = raw.get(at)!
-        if (span < 1e-9 || mm < 1e-9) { for (const id of order) if (!raw.has(id)) raw.set(id, origin); queue.push(far); continue }
+        if (span < 1e-9 || mm < 1e-9) { for (const id of order) if (!raw.has(id)) { raw.set(id, origin); queue.push(id) } continue }
         // Each piece of the leg gets a compressed share, so short pieces between fittings stay readable.
         const pieces = order.slice(1).map((id, i) => length(sub(position(id), position(order[i]))))
         // A piece between drawn components (valves, flanges, reducers) needs room for their symbols and callouts.
         const busy = (id: string) => ['valve', 'flange', 'reducer', 'gasket'].includes(getNode(doc, id).kind) ? 260 : 0
-        const weights = pieces.map((p, i) => leg.runs[0].connector ? p : schematicLength(p) + busy(order[i]) + busy(order[i + 1]))
+        const weights = pieces.map((p, i) => schematicLength(p) + busy(order[i]) + busy(order[i + 1]))
         const total = weights.reduce((x, y) => x + y, 0) || 1
         // Offsets get extra room for their triangles, angles and leg dimensions.
         const d3 = sub(b, a), skew = Math.max(...d3.map(Math.abs)) / mm < 0.9999 ? 1.5 : 1
         const crowd = order.reduce((sum, id) => sum + busy(id), 0)
-        const drawn = (leg.runs[0].connector ? Math.max(60, schematicLength(mm) * 0.5) : (schematicLength(mm) * (1 + 0.3 * (pieces.length - 1)) + crowd) * skew) * span / mm
-        let along = 0
-        order.slice(1).forEach((id, i) => {
-          along += weights[i]
-          if (!raw.has(id)) raw.set(id, add2(origin, scale2(page, drawn * along / total / span)))
+        const drawn = (schematicLength(mm) * (1 + 0.3 * (pieces.length - 1)) + crowd) * skew * span / mm
+        const station = order.map((_, i) => weights.slice(0, i).reduce((x, y) => x + y, 0))
+        const from = station[order.indexOf(at)]
+        order.forEach((id, i) => {
+          if (raw.has(id)) return
+          raw.set(id, add2(origin, scale2(page, drawn * (station[i] - from) / total / span)))
+          queue.push(id)
         })
         ratio += drawn / span; count++
-        queue.push(far)
       }
     }
   }

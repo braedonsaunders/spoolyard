@@ -141,3 +141,16 @@ test('PCF carries a flanged valve with its flanges, gaskets and bolts, and reads
   cuts(restored).forEach((cut, i) => assert.ok(Math.abs(cut - cuts(doc)[i]) < 1e-6));
   assert.equal(flangedJoints(restored).length, 2);
 });
+
+test('a lateral takes its long run dimension on the side its branch leans toward', () => {
+  const doc = straight(1000);
+  const lateral = doc.nodes.find(n => n.id === doc.runs[0].to)!;
+  appendRun(doc, lateral.id, [1000, 0, 0], 'A', 2, 'SP-1', 'L-1');
+  appendRun(doc, lateral.id, [700, 700, 0], 'A', 2, 'SP-1', 'L-1');
+  assert.equal(lateral.component, 'W-LAT');
+  const [before, after] = doc.runs;
+  // Spec A 2" lateral: 4" short side, 8 1/2" on the leaning side and the branch.
+  assert.equal(runResult(doc, before).takeouts[1], 101.6);
+  assert.equal(runResult(doc, after).takeouts[0], 215.9);
+  assert.deepEqual(validateIso(doc), []);
+});
