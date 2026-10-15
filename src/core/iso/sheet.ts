@@ -179,8 +179,14 @@ export function drawSheet(input: {
   const notesBox: SheetRect = [NOTE_HEADER_X, notesTop, RIGHT, TB]
 
   // Bill of materials: blocks from the top-right corner leftwards; the rows that do not fit continue in the next block.
-  const layoutBom = (f: number): BomBlock[] | null => {
+  const layoutBom = (f: number, compact = false): BomBlock[] | null => {
     const blockWidth = BOM_COLUMNS.reduce((a, b) => a + b, 0) * f
+    // A long list narrows the QTY and ND columns to their contents, as drafted, so descriptions wrap less.
+    const fitted = (values: string[], header: string, least: number, most: number) =>
+      Math.min(most, Math.max(least, ...[header, ...values].map(v => Math.max(...wrapText(up(v), BOM_CAP, Infinity).map(l => measureText(l, BOM_CAP))) / kx + 14)))
+    const columns = compact
+      ? [BOM_COLUMNS[0], fitted(rows.map(r => r.qtyText), 'QTY', 78, BOM_COLUMNS[1]), fitted(rows.map(r => r.nd), 'ND', 73, BOM_COLUMNS[2])]
+      : BOM_COLUMNS.slice(0, 3)
     const cap = BOM_CAP * f
     const cell = (value: string, room: number): BomCell => {
       const lines = wrapText(value, cap, room * kx)
@@ -205,7 +211,7 @@ export function drawSheet(input: {
       const span = (r: SheetRect) => r[0] < x1 && r[2] > x0
       const top = north && span(northBox) ? northBox[3] + GAP : TOP
       const bottom = (notes.length && span(notesBox) ? notesTop : TB) - GAP
-      const widths = BOM_COLUMNS.map(w => w * f)
+      const widths = [...columns, BOM_COLUMNS.reduce((a, b) => a + b, 0) - columns.reduce((a, b) => a + b, 0)].map(w => w * f)
       widths[3] -= blockWidth - (x1 - x0)
       const block: BomBlock = { x0, x1, top, widths, rows: [] }
       let y = top + 2 * BOM_ROW * f
@@ -227,7 +233,11 @@ export function drawSheet(input: {
     }
     return blocks
   }
-  let bom: BomBlock[] | null = null
+  let bom: BomBlock[] | null = layoutBom(1)
+  if (bom && bom.length > 1) {
+    const compact = layoutBom(1, true)
+    if (compact && compact.length < bom.length) bom = compact
+  }
   for (let f = 1; !bom && f > 0.2; f *= 0.9) bom = layoutBom(f)
   bom ??= layoutBom(0.2)
   for (const block of bom ?? []) {

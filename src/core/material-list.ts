@@ -147,7 +147,8 @@ export function sheetMaterials(doc: IsoDocument, spool = ''): MaterialRow[] {
       const description = b.kind === 'lug' ? (/STUD/.test(own) ? own.replace(/STUD/g, 'LUG') : 'LUG BOLTS, ' + own) : own
       // ASME bolting is sized in inches on metric drawings too.
       const nd = boltSizeText(b.diameter, b.length)
-      part(JSON.stringify(['bolt', b.kind, description, nd]), { category: 'bolt', nd, description, qty: 0, size: b.diameter }, joint.id + '#bolts', b.count, joint.supplied.bolts)
+      // Bolting lists by diameter, then length.
+      part(JSON.stringify(['bolt', b.kind, description, nd]), { category: 'bolt', nd, description, qty: 0, size: Math.round(b.diameter / 25.4 * 16) * 1e4 + b.length }, joint.id + '#bolts', b.count, joint.supplied.bolts)
     }
   }
   for (const [key, member] of elsewhere) rows.get(key)?.memberIds.push(member)
