@@ -29,21 +29,29 @@ where it powers piping isometrics in Files and Tools.
 
 ## What it does
 
+- **Production isometrics.** Sheets are issued the way piping drafters draw them: a full title block with
+  revisions and logos, an ID / QTY / ND / DESCRIPTION bill of materials with `CUT TO` lengths, boxed item tags
+  with leaders, `F12 B13 G14` flanged-joint callouts, isometric-plane dimensions and lettering, continuation
+  callouts with plant coordinates, centreline elevations, tie points, valve operators and offset triangles. The
+  sheet can be drawn not to scale so short pieces stay readable, and labels are placed so nothing overlaps.
 - **Measured routing.** Click along the six iso directions with Ortho on, or type a length and pick East, North
   or Up. Bends and branches get the specification's elbows and tees automatically; rolling offsets route in XYZ.
 - **Cut lengths you can build from.** Each pipe's cut is the centreline length less fitting takeouts and root
-  gaps, per end preparation (butt-weld, socket-weld, threaded, plain).
-- **Specifications with real rows.** Eleven carbon- and stainless-steel specifications ship ready to use, with
-  about 15,000 rows of ASME B16 dimensions: pipe, elbows and returns, tees, crosses and laterals, reducers and
-  swages, caps and plugs, couplings and unions, olets, flanges, gaskets and bolting, valves and supports. Every
-  row is editable; add your own specifications, sizes and components.
-- **168 components and symbols** in the component library, each drawn on the sheet with its own symbol.
+  gaps, per end preparation (butt-weld, socket-weld, threaded, plain). A flanged valve or fitting brings its
+  mating flanges (weld-neck, slip-on or lap-joint with stub end), gaskets and ASME B16.5 bolting, and their
+  lengths come off the pipe.
+- **Standard dimensions built in.** Specifications supply their own rows; anything they lack falls back to ASME
+  B16.5, B16.9, B16.10, B16.11, B16.20/21, MSS SP-43 and API 609 tables, so standard components never need a
+  length typed in. Eleven carbon- and stainless-steel specifications ship ready to use, with about 15,000 rows;
+  every row is editable, and you can add your own specifications, sizes and components.
+- **174 components and symbols** in the component library, each drawn on the sheet in its isometric plane.
 - **Weld map and BOM.** Shop and field welds are numbered (numeric or alphabetic, with your own tags), and the
-  bill of materials keeps heat numbers, specs and measured fittings distinct.
-- **Paper or model space.** Draw directly on a tabloid, letter, A3 or A4 sheet with an editable title block, or
-  switch to an infinite isometric grid. A 3D review checks the routing.
+  bill of materials counts gaskets and bolts per flanged joint and keeps heat numbers, specs and measured
+  fittings distinct.
+- **Paper or model space.** Draw directly on the issued sheet, or switch to an infinite isometric grid. A 3D
+  review checks the routing.
 - **Outputs.** A full-page PDF package (one sheet per spool and view, plus material, cut and weld schedules),
-  DXF and native DWG, PCF for plant-design tools, SVG, and CSV schedules.
+  DXF and native DWG with AutoCAD ROMANS lettering, PCF for plant-design tools, SVG, and CSV schedules.
 
 | Specifications | Component library |
 | --- | --- |
