@@ -32,10 +32,13 @@ test('a lap-joint sheet lists cut pieces, stub ends, flanges, bolts and gaskets 
   applyComponent(doc, top, 'FLG-RFLJ', doc.specs[0].fittings[2]);
   // The top joint's gasket and bolts are listed on the next sheet, which also receives this sheet's mating flange.
   top.jointSupply = { gasket: false, bolts: false }; top.quantity = 2;
+  // The bottom flange is dimensioned to its own face, as that sheet was drafted.
+  bottom.jointSupply = { gasket: true, bolts: true, measuredTo: 'flange' };
   const rows = sheetMaterials(doc, 'S-1').map(r => [r.id, r.qtyText, r.nd, r.description]);
   assert.deepEqual(rows, [
     [1, `1'-2"`, '2"', `PIPE, WELDED, ASTM A312 TP316L, SCH 10S, ASME B36.19, BE - CUT TO 1'-1 5/8"`],
-    [2, `2'-2"`, '2"', `PIPE, WELDED, ASTM A312 TP316L, SCH 10S, ASME B36.19, BE - CUT TO 2'-1"`],
+    // An exact whole-inch cut is ordered at that length; the issued sheets only order more when the true cut is over.
+    [2, `2'-1"`, '2"', `PIPE, WELDED, ASTM A312 TP316L, SCH 10S, ASME B36.19, BE - CUT TO 2'-1"`],
     [3, '1', '2"', 'ELBOW 90 LR, ASTM A403 WP316L, SCH 10S, ASME B16.9, BE'],
     [4, '2', '2"', 'STUB END, MSS SP-43 TYPE A, ASTM A403 WP316L, SCH 10S'],
     [5, '3', '2"', 'FLANGE LJ, ASTM A182 F316L, ASME B16.5, CL150, FF'],
@@ -67,11 +70,57 @@ test('drafting formats match the issued sheets', () => {
   assert.equal(purchaseLength(inch(13.625), 'imperial'), `1'-2"`);
   assert.equal(purchaseLength(inch(23.8), 'imperial'), `2'`);
   assert.equal(purchaseLength(inch(3), 'imperial'), `3"`);
+  assert.equal(purchaseLength(inch(28), 'imperial'), `2'-4"`);
+  assert.equal(purchaseLength(inch(28.01), 'imperial'), `2'-5"`);
+  assert.equal(purchaseLength(inch(240), 'imperial'), `20'`);
   assert.equal(purchaseLength(1201, 'mm'), '1210');
   assert.equal(sizeText(3, 2), `3"X2"`);
   assert.equal(sizeText(0.5), `1/2"`);
   assert.equal(sizeText(1.5, 0.25), `1 1/2"X1/4"`);
   assert.equal(boltSizeText(inch(5 / 8), inch(3.25)), `5/8"X3 1/4"`);
-  const doc = newIso(); doc.units = 'imperial'; doc.coordinates = { origin: [inch(662.625), inch(-1582.25), inch(1209.1875)] };
-  assert.deepEqual(coordinateText(doc, [0, 0, 0]), [`E 55'-2 5/8"`, `S 131'-10 1/4"`, `EL +100'-9 3/16"`]);
+  const doc = newIso(); doc.units = 'imperial'; doc.coordinates = { origin: [inch(583.375), inch(-1156.25), inch(1259.5625)] };
+  assert.deepEqual(coordinateText(doc, [0, 0, 0]), [`E 48'-7 3/8"`, `S 96'-4 1/4"`, `EL +104'-11 9/16"`]);
+  // Whole feet are written without inches.
+  assert.deepEqual(coordinateText(doc, [inch(-7.375), inch(4.25), 0]), [`E 48'`, `S 96'`, `EL +104'-11 9/16"`]);
+});
+
+test('break joints list only what this drawing supplies, and lug mates take lug bolts', () => {
+  const build = () => {
+    const doc = newIso(); doc.units = 'imperial'; doc.specs = [lapJointSpec()];
+    const elbow = appendRun(doc, null, [inch(20), 0, 0], 'S1', 2, 'S-1', '10');
+    const end = appendRun(doc, elbow.id, [0, inch(20), 0], 'S1', 2, 'S-1', '10');
+    applyComponent(doc, end, 'FLG-RFLJ', doc.specs[0].fittings[2]);
+    return { doc, end };
+  };
+  const rows = (doc: ReturnType<typeof newIso>) => sheetMaterials(doc, 'S-1').filter(r => r.category !== 'pipe').map(r => [r.qtyText, r.nd, r.description.split(',')[0]]);
+  // Flange, gasket and bolts on the next drawing: only the stub end welded to this pipe is listed.
+  let { doc, end } = build();
+  end.jointSupply = { flange: false, gasket: false, bolts: false };
+  assert.deepEqual(rows(doc), [['1', '2"', 'ELBOW 90 LR'], ['1', '2"', 'STUB END']]);
+  // The flange bolts to a lug valve on the next drawing: lug bolts sized for one flange, here.
+  ({ doc, end } = build());
+  end.jointSupply = { gasket: true, bolts: true, mate: 'lug' };
+  const bolts = sheetMaterials(doc, 'S-1').find(r => r.category === 'bolt')!;
+  assert.equal(bolts.nd, `5/8"X2 3/4"`);
+  assert.match(bolts.description, /LUG BOLT/);
+  assert.equal(bolts.qtyText, '4');
+});
+
+test('a break flange pair welded straight to a fitting is one joint', async () => {
+  const { flangedJoints } = await import('../src/core/joints.ts');
+  const doc = newIso(); doc.units = 'imperial'; doc.specs = [lapJointSpec()];
+  const pair = appendRun(doc, null, [inch(30), 0, 0], 'S1', 2, 'S-1', '10');
+  applyComponent(doc, pair, 'FLG-RFLJ', doc.specs[0].fittings[2]);
+  // The far stub end is welded straight to the elbow: no pipe between them.
+  const elbow = appendRun(doc, pair.id, [inch(2.5 + 3 + 1 / 32), 0, 0], 'S1', 2, 'S-1', '10');
+  doc.runs.at(-1)!.connector = true;
+  appendRun(doc, elbow.id, [0, inch(20), 0], 'S1', 2, 'S-1', '10');
+  const joints = flangedJoints(doc).filter(j => j.nodeId === pair.id);
+  assert.equal(joints.length, 1);
+  assert.equal(joints[0].kind, 'flange-pair');
+  const list = sheetMaterials(doc, 'S-1');
+  assert.equal(list.find(r => /^FLANGE LJ/.test(r.description))!.qtyText, '2');
+  assert.equal(list.find(r => /^STUB END/.test(r.description))!.qtyText, '2');
+  assert.equal(list.find(r => /^GASKET/.test(r.description))!.qtyText, '1');
+  assert.equal(list.find(r => /^STUD BOLT/.test(r.description))!.qtyText, '4');
 });

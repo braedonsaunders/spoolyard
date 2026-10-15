@@ -51,7 +51,7 @@ export function drawAnnotations(ctx: IsoContext) {
     return add2(centre, scale2(d, 1 / s))
   }
   /** A boxed BOM number with a leader to the item. */
-  function tag(target: Point, id: number, owner: string, prefer?: Point) {
+  function tag(target: Point, id: number | string, owner: string, prefer?: Point) {
     // Tag boxes hug their number, as drafted.
     const w = measureText(String(id), T) + 4.5, h = T + 4
     const { centre } = spot(target, w, h, owner, undefined, prefer)
@@ -126,17 +126,17 @@ export function drawAnnotations(ctx: IsoContext) {
     }
     tag(at, id, node.id)
   }
-  // Flanged joints: "F12 B13 G14" with the bolt number boxed; stub ends are tagged at each joint.
+  // Flanged joints: "F12 B13 G14" with the bolt number boxed, naming only the parts this drawing supplies. A joint whose
+  // gasket and bolts are on another drawing tags its flange alone; the second flange of a pair gets its own tag.
   for (const joint of ctx.joints) {
     const target = jointPoint(joint)
     if (!target) continue
-    // A port whose mating flange is not supplied (an existing flange) has no flange on this sheet to call out.
-    const f = !joint.flanges.length ? undefined : materialId(ctx.materials, joint.flanges.some(x => x.implicit) ? joint.id + '#flange' : joint.nodeId)
-    if (!joint.flanges.length && !joint.supplied.gasket && !joint.supplied.bolts) continue
-    const b = joint.bolts ? materialId(ctx.materials, joint.id + '#bolts') : undefined
-    const gsk = joint.gasket ? materialId(ctx.materials, joint.id + '#gasket') : undefined
+    const flangeMember = joint.flanges.some(x => x.implicit) ? joint.id + '#flange' : joint.flangeNodeId ?? joint.nodeId
+    const f = joint.supplied.flange && joint.flanges.length ? materialId(ctx.materials, flangeMember) : undefined
+    const b = joint.bolts && joint.supplied.bolts ? materialId(ctx.materials, joint.id + '#bolts') : undefined
+    const gsk = joint.gasket && joint.supplied.gasket ? materialId(ctx.materials, joint.id + '#gasket') : undefined
     const parts = [f && `F${f}`, b && `B${b}`, gsk && `G${gsk}`].filter(Boolean) as string[]
-    if (parts.length) {
+    if (b || gsk) {
       const label = parts.join(' '), width = measureText(label, T)
       const { centre } = spot(target, width + 6, T + 6, joint.nodeId, [34, 48, 66, 90, 120])
       const left = centre[0] - width / 2, base = centre[1] + T / 2
@@ -149,11 +149,15 @@ export function drawAnnotations(ctx: IsoContext) {
       }
       const from: Point = [target[0] > centre[0] ? left + width + 2 : left - 2, base - T / 2]
       leader(from, target, joint.nodeId, false)
+    } else if (f) tag(target, `F${f}`, joint.nodeId)
+    if (f && joint.kind === 'flange-pair') {
+      const node = getNode(ctx.doc, joint.nodeId), run = ctx.runs.find(r => r.id === joint.runIds[1]), g = run && ctx.geometry.get(run.id)
+      if (g) tag(add2(target, scale2(run!.from === node.id ? g.dir : scale2(g.dir, -1), 4)), `F${f}`, joint.nodeId)
     }
     const stub = joint.stubEnds.length ? materialId(ctx.materials, joint.id + '#stub') : undefined
     if (stub) {
       const node = getNode(ctx.doc, joint.nodeId)
-      for (const run of joint.runIds.map(id => ctx.runs.find(r => r.id === id)).filter(Boolean) as PipeRun[]) {
+      for (const run of joint.stubRunIds.map(id => ctx.runs.find(r => r.id === id)).filter(Boolean) as PipeRun[]) {
         const g = ctx.geometry.get(run.id)
         if (!g) continue
         const out = run.from === node.id ? g.dir : scale2(g.dir, -1)

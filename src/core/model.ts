@@ -1,6 +1,6 @@
 import type { GridSettings } from './grid'
 import { COMPONENT_TYPES } from './components'
-import { defaultCode, flangedAllowance, flangedJoints, nodeItem, pipeEndPrep } from './joints'
+import { defaultCode, flangedAllowance, flangedJoints, isFlangePair, nodeItem, pipeEndPrep } from './joints'
 import { boltSizeText } from './format'
 /** Spoolyard piping semantics (file schema id "bidwright-piping" is kept for compatibility). Coordinates and fabrication lengths are millimetres. */
 export type Vec3 = [number, number, number]
@@ -126,8 +126,14 @@ export interface PipeNode {
   dimensioned?: boolean
   /** Mating flange makeup per flanged port, keyed by pipe id. */
   portFlanges?: Record<string, PortFlange>
-  /** What a pipe-end flange joint to equipment supplies. */
-  jointSupply?: { gasket: boolean; bolts: boolean }
+  /**
+   * What a flanged joint at a pipe end (equipment, an existing flange or a break to another drawing) supplies on this
+   * drawing: the flange itself (a lap-joint end keeps its stub end), the gasket and the bolting; whether the mate is a
+   * flange (studs through both) or a lugged or tapped body such as a lug valve (lug bolts into it); and whether the end
+   * point is the face it bolts to, with the gasket this drawing supplies inside the dimension (the default), or this
+   * flange's own face.
+   */
+  jointSupply?: { gasket: boolean; bolts: boolean; flange?: boolean; mate?: 'flange' | 'lug'; measuredTo?: 'mate' | 'flange' }
 }
 export interface PortFlange {
   /** Mating flange component code, or 'NONE' when the mate is not supplied. */
@@ -1122,11 +1128,11 @@ export function bom(
     const s = getSpec(doc, edge.specId),
       f = nodeItem(doc, n),
       code = n.component ?? f?.component,
-      // A flange between two pipes is a bolted pair of flanges.
-      pipes = edges.filter(r => !r.connector),
-      pair = n.kind === 'flange' && pipes.length === 2 && COMPONENT_TYPES.find(t => t.code === code)?.endPrep !== 'FL' &&
-        pipes.every(r => (r.from === n.id ? r.fromPrep : r.toPrep) !== 'FL'),
+      // A flange between two pieces is a bolted pair of flanges.
+      pair = isFlangePair(doc, n),
       qty = n.quantity ?? (pair ? 2 : 1)
+    // A flange the next drawing supplies is not listed here (its stub end is, with the joint).
+    if (n.kind === 'flange' && !pair && n.jointSupply?.flange === false && !/^STUB-END/.test(code ?? '')) continue
     const kg = n.weightKg ?? f?.weightKg,
       area = n.areaM2 ?? f?.areaM2
     addRow(
@@ -1408,7 +1414,10 @@ export function parseIsoJson(raw: string): IsoDocument {
       (n.operator != null && !isString(n.operator, 120)) ||
       (n.calloutText != null && !isString(n.calloutText, 300)) ||
       (n.jointSupply != null && (!isPlain(n.jointSupply) ||
-        typeof n.jointSupply.gasket !== 'boolean' || typeof n.jointSupply.bolts !== 'boolean')) ||
+        typeof n.jointSupply.gasket !== 'boolean' || typeof n.jointSupply.bolts !== 'boolean' ||
+        (n.jointSupply.flange != null && typeof n.jointSupply.flange !== 'boolean') ||
+        (n.jointSupply.mate != null && n.jointSupply.mate !== 'flange' && n.jointSupply.mate !== 'lug') ||
+        (n.jointSupply.measuredTo != null && n.jointSupply.measuredTo !== 'mate' && n.jointSupply.measuredTo !== 'flange'))) ||
       (n.portFlanges != null && (!isPlain(n.portFlanges) || Object.keys(n.portFlanges).length > 8 ||
         !Object.values(n.portFlanges).every(f => isPlain(f) &&
           (f.component == null || isString(f.component, 60)) &&

@@ -46,7 +46,7 @@ test('widths and strokes scale linearly with size and width factor', () => {
   sameShape(large, small.map(s => s.map(([x, y]): [number, number] => [2 * x, 2 * y])));
   assert.equal(measureText('', 10), 0);
   // Production lettering: about 2/3 of a cap height per character in a dimension string.
-  const perChar = measureText(`19'-8 1/8"`, 1) / 10;
+  const perChar = measureText(`17'-3 5/8"`, 1) / 10;
   assert.ok(perChar > 0.55 && perChar < 0.8, `advance per character ${perChar}`);
 });
 

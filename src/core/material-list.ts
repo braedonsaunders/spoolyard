@@ -1,5 +1,5 @@
 import { COMPONENT_TYPE_BY_CODE } from './components'
-import { flangedJoints, nodeCode, nodeItem, type FlangedJoint } from './joints'
+import { flangedJoints, isFlangePair, nodeCode, nodeItem, type FlangedJoint } from './joints'
 import { boltSizeText, draftLength, purchaseLength, sizeText } from './format'
 import { connected, getNode, getSpec, runResult, type CatalogItem, type IsoDocument, type PipeNode, type PipeRun } from './model'
 
@@ -120,9 +120,9 @@ export function sheetMaterials(doc: IsoDocument, spool = ''): MaterialRow[] {
     const item = nodeItem(doc, node), code = nodeCode(doc, node) ?? item?.component ?? ''
     const sizes = edges.map(r => r.nps), nps = item?.nps ?? Math.max(...sizes, host.nps)
     const small = item?.smallerNps ?? (sizes.length > 1 ? Math.min(...sizes) : undefined)
-    const pipes = edges.filter(r => !r.connector)
-    const pair = node.kind === 'flange' && pipes.length === 2 && COMPONENT_TYPE_BY_CODE[code]?.endPrep !== 'FL' &&
-      pipes.every(r => (r.from === node.id ? r.fromPrep : r.toPrep) !== 'FL')
+    const pair = isFlangePair(doc, node)
+    // A flange the next drawing supplies is not listed here (its stub end is, with the joint).
+    if (node.kind === 'flange' && !pair && node.jointSupply?.flange === false && !/^STUB-END/.test(code)) continue
     const label = node.description ?? COMPONENT_TYPE_BY_CODE[code]?.label ?? node.kind
     const description = node.description ? node.description.toUpperCase() : rowDescription(item, label)
     const category = categoryOf(node.kind, code)
@@ -131,7 +131,6 @@ export function sheetMaterials(doc: IsoDocument, spool = ''): MaterialRow[] {
       flangeRank: FLANGE_ORDER.findIndex(r => r.test(code)) + 1 || 9
     }, node.id, node.quantity ?? (pair ? 2 : 1))
   }
-  const elsewhere: Array<[string, string]> = []
   for (const joint of flangedJoints(doc, spool)) addJoint(joint)
   function addJoint(joint: FlangedJoint) {
     for (const flange of joint.flanges.filter(f => f.implicit)) {
@@ -145,9 +144,8 @@ export function sheetMaterials(doc: IsoDocument, spool = ''): MaterialRow[] {
       const description = rowDescription(stub, 'STUB END')
       add(JSON.stringify(['stub', stub.id, description, sizeText(joint.nps), null, null]), { category: 'stub', nd: sizeText(joint.nps), description, qty: 0, size: joint.nps }, joint.id + '#stub', 1)
     }
-    // Parts supplied elsewhere are not counted, but their callout still names the matching BOM item.
-    const part = (key: string, row: Parameters<typeof add>[1], member: string, qty: number, supplied: boolean) =>
-      supplied ? add(key, row, member, qty) : elsewhere.push([key, member])
+    // Parts supplied on another drawing or by others are neither counted nor named here.
+    const part = (key: string, row: Parameters<typeof add>[1], member: string, qty: number, supplied: boolean) => { if (supplied) add(key, row, member, qty) }
     if (joint.gasket) {
       const description = rowDescription(joint.gasket.item, 'GASKET')
       part(JSON.stringify(['gasket', joint.gasket.item?.id, description, joint.nps]), { category: 'gasket', nd: sizeText(joint.nps), description, qty: 0, size: joint.nps }, joint.id + '#gasket', 1, joint.supplied.gasket)
@@ -161,7 +159,6 @@ export function sheetMaterials(doc: IsoDocument, spool = ''): MaterialRow[] {
       part(JSON.stringify(['bolt', b.kind, description, nd]), { category: 'bolt', nd, description, qty: 0, size: Math.round(b.diameter / 25.4 * 16) * 1e4 + b.length }, joint.id + '#bolts', b.count, joint.supplied.bolts)
     }
   }
-  for (const [key, member] of elsewhere) rows.get(key)?.memberIds.push(member)
   const appear = (row: { memberIds: string[] }) => Math.min(...row.memberIds.map(id => appears.get(id) ?? Infinity))
   const sorted = [...rows.values()].sort((a, b) =>
     rank(a.category) - rank(b.category) ||

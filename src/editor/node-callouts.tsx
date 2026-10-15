@@ -112,20 +112,39 @@ export function NodeCallouts({ doc, nodeId, commit }: { doc: IsoDocument; nodeId
         <Text label="Label" value={node.calloutText} placeholder={type?.label.toUpperCase()}
           onCommit={(text) => edit((n) => { n.calloutText = text.trim() || undefined; })} />
       )}
-      {node.kind === "flange" && edges.filter((r) => !r.connector).length === 1 && type?.endPrep !== "FL" && (
-        <>
-          <label className="iso-check">
-            <input type="checkbox" checked={node.jointSupply?.gasket !== false}
-              onChange={(e) => edit((n) => { n.jointSupply = { gasket: e.target.checked, bolts: n.jointSupply?.bolts ?? true }; })} />
-            Supply the gasket for this flange
-          </label>
-          <label className="iso-check">
-            <input type="checkbox" checked={node.jointSupply?.bolts !== false}
-              onChange={(e) => edit((n) => { n.jointSupply = { gasket: n.jointSupply?.gasket ?? true, bolts: e.target.checked }; })} />
-            Supply the bolts for this flange
-          </label>
-        </>
-      )}
+      {node.kind === "flange" && edges.length === 1 && type?.endPrep !== "FL" && (() => {
+        const supply = { gasket: true, bolts: true, ...node.jointSupply };
+        const set = (change: Partial<NonNullable<PipeNode["jointSupply"]>>) => edit((n) => { n.jointSupply = { ...supply, ...change }; });
+        const lap = isLapJoint(code);
+        return (
+          <>
+            <label className="iso-check">
+              <input type="checkbox" checked={supply.flange !== false} onChange={(e) => set({ flange: e.target.checked })} />
+              {lap ? "Supply the lap-joint flange (the stub end is always listed)" : "Supply the flange"}
+            </label>
+            <label className="iso-check">
+              <input type="checkbox" checked={supply.gasket} onChange={(e) => set({ gasket: e.target.checked })} />
+              Supply the gasket for this joint
+            </label>
+            <label className="iso-check">
+              <input type="checkbox" checked={supply.bolts} onChange={(e) => set({ bolts: e.target.checked })} />
+              Supply the bolts for this joint
+            </label>
+            <Row label="Bolts to">
+              <select aria-label="Joint mate" value={supply.mate ?? "flange"} onChange={(e) => set({ mate: e.target.value as "flange" | "lug" })}>
+                <option value="flange">A flange (stud bolts through both)</option>
+                <option value="lug">A lug valve or tapped nozzle (lug bolts)</option>
+              </select>
+            </Row>
+            <Row label="End point">
+              <select aria-label="Joint measured to" value={supply.measuredTo ?? "mate"} onChange={(e) => set({ measuredTo: e.target.value as "mate" | "flange" })}>
+                <option value="mate">The face it bolts to (gasket allowed for)</option>
+                <option value="flange">This flange's face</option>
+              </select>
+            </Row>
+          </>
+        );
+      })()}
       {type?.endPrep === "FL" && edges.map((run, i) => {
         const choice = node.portFlanges?.[run.id];
         const set = (change: Partial<NonNullable<PipeNode["portFlanges"]>[string]>) =>

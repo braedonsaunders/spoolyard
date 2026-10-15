@@ -19,23 +19,27 @@ function fractionText(numerator: number, denominator: number): string {
   return `${numerator / g}/${denominator / g}`
 }
 /**
- * Length to order. Imperial pieces under a foot round up to the whole inch; a foot or more takes the next whole
- * inch above the cut, as the issued sheets order them. Metric rounds up to the next 10 mm.
+ * Length to order: the true cut rounded up to the whole inch (metric: the next 10 mm), as the issued sheets order it.
  */
 export function purchaseLength(mm: number, units: IsoDocument['units']): string {
   if (!Number.isFinite(mm) || mm <= 0) return 'TBD'
   if (units === 'mm') return String(Math.ceil(mm / 10 - 1e-9) * 10)
-  const exact = mm / 25.4, inches = exact >= 12 - 1e-6 ? Math.floor(exact + 1e-6) + 1 : Math.ceil(exact - 1e-6)
+  const inches = Math.ceil(mm / 25.4 - 1e-6)
   const feet = Math.floor(inches / 12), rest = inches % 12
   return feet ? rest ? `${feet}'-${rest}"` : `${feet}'` : `${rest}"`
+}
+/** A coordinate length: feet-inches, with whole feet written without inches (`S 132'`). */
+const coordinateLength = (mm: number, units: IsoDocument['units']) => {
+  const text = draftLength(mm, units)
+  return /^\d+'-0"$/.test(text) ? text.replace(/-0"$/, '') : text
 }
 /** Plant coordinates of a model point: E/W, N/S and signed elevation. */
 export function coordinateText(doc: IsoDocument, p: Vec3): [string, string, string] {
   const [e, n, el] = plantCoordinate(doc, p)
   return [
-    `${e < 0 ? 'W' : 'E'} ${draftLength(Math.abs(e), doc.units)}`,
-    `${n < 0 ? 'S' : 'N'} ${draftLength(Math.abs(n), doc.units)}`,
-    `EL ${el < 0 ? '-' : '+'}${draftLength(Math.abs(el), doc.units)}`
+    `${e < 0 ? 'W' : 'E'} ${coordinateLength(Math.abs(e), doc.units)}`,
+    `${n < 0 ? 'S' : 'N'} ${coordinateLength(Math.abs(n), doc.units)}`,
+    `EL ${el < 0 ? '-' : '+'}${coordinateLength(Math.abs(el), doc.units)}`
   ]
 }
 export function elevationText(doc: IsoDocument, p: Vec3): string {

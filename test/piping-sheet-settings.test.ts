@@ -204,9 +204,9 @@ test('SVG pixel size comes from width, height and viewBox', () => {
 });
 
 test('plant coordinates parse feet-inches and negatives, and the origin follows a known point', () => {
-  const [e, n, el] = parsePlant([`55'-2 5/8"`, '-131\'-10 1/4"', ''], 'imperial');
-  assert.ok(Math.abs(e - (55 * 12 + 2.625) * 25.4) < 1e-9);
-  assert.ok(Math.abs(n + (131 * 12 + 10.25) * 25.4) < 1e-9);
+  const [e, n, el] = parsePlant([`48'-7 3/8"`, '-96\'-4 1/4"', ''], 'imperial');
+  assert.ok(Math.abs(e - (48 * 12 + 7.375) * 25.4) < 1e-9);
+  assert.ok(Math.abs(n + (96 * 12 + 4.25) * 25.4) < 1e-9);
   assert.equal(el, 0);
   assert.deepEqual(parsePlant(['1200', '-3.5 m', '0'], 'mm'), [1200, -3500, 0]);
   assert.throws(() => parsePlant(['abc'], 'mm'));
