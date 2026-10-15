@@ -129,7 +129,7 @@ export function isometricDxf(doc: IsoDocument, drawing: Drawing = createDrawing(
     put(97, 0, 75, 0, 76, 1, 98, 1, 10, seed[0], 20, -seed[1]);
   };
   /** One TEXT per line, stacked and slanted like the stroke lettering; middle/end text keeps its anchor as the alignment point. */
-  const text = (at: Point, value: string, size: number, layer: string, rotation = 0, oblique = 0, anchor = "start") => {
+  const text = (at: Point, value: string, size: number, layer: string, rotation = 0, oblique = 0, anchor = "start", factor = 1) => {
     const angle = (rotation * Math.PI) / 180,
       cos = Math.cos(angle),
       sin = Math.sin(angle),
@@ -140,12 +140,12 @@ export function isometricDxf(doc: IsoDocument, drawing: Drawing = createDrawing(
       const v = row * LINE_SPACING * size,
         base: Point = [at[0] - v * slant * cos + v * sin, at[1] + v * slant * sin + v * cos],
         shift = anchor === "middle" ? 0.5 : anchor === "end" ? 1 : 0,
-        width = measureText(line, size, cad ? 1 : 1 / ROMANS_WIDTH_FACTOR) * shift,
+        width = measureText(line, size, (cad ? 1 : 1 / ROMANS_WIDTH_FACTOR) * factor) * shift,
         start: Point = [base[0] - width * cos, base[1] + width * sin];
       entity("TEXT", layer, Math.max(0.35, size * 0.1));
       put(100, "AcDbText", 10, start[0], 20, -start[1], 30, 0, 40, size, 1, content);
       if (rotation) put(50, ((rotation % 360) + 360) % 360);
-      if (cad) put(41, ROMANS_WIDTH_FACTOR);
+      if (cad || factor !== 1) put(41, (cad ? ROMANS_WIDTH_FACTOR : 1) * factor);
       if (oblique) put(51, Math.max(-85, Math.min(85, oblique)));
       put(7, cad ? "ROMANS" : "STANDARD");
       if (shift) put(72, shift === 1 ? 2 : 1, 11, base[0], 21, -base[1], 31, 0);
@@ -168,7 +168,7 @@ export function isometricDxf(doc: IsoDocument, drawing: Drawing = createDrawing(
       entity("CIRCLE", p.layer, weightOf(p));
       put(100, "AcDbCircle", 10, p.p[0], 20, -p.p[1], 30, 0, 40, p.r);
       if (p.fill) hatch(p.layer, [92, 1, 93, 1, 72, 2, 10, p.p[0], 20, -p.p[1], 40, p.r, 50, 0, 51, 360, 73, 1], p.p);
-    } else if (p.type === "text") text(p.p, p.text, p.size, p.layer, p.rotation, p.oblique, p.anchor);
+    } else if (p.type === "text") text(p.p, p.text, p.size, p.layer, p.rotation, p.oblique, p.anchor, p.width ?? 1);
     else {
       // DXF R2000 cannot embed a raster, so a logo is its frame and name for the drafter to re-attach.
       const [x, y] = p.p,

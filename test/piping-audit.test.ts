@@ -281,13 +281,13 @@ test('annotation collision adjustments keep dimension labels within the model vi
 });
 
 test('DXF keeps multiline text and literal braces without breaking group-code pairs', () => {
-  const doc = newIso(); doc.customer = 'Client {A}\nProject B';
+  const doc = newIso(); doc.sheetNotes = [{ id: 'n', spool: '', text: 'Client {A}\nProject B', at: [300, 300] }];
   const dxf = isometricDxf(doc), lines = dxf.trimEnd().split('\n');
   assert.equal(lines.length % 2, 0);
   for (let i = 0; i < lines.length; i += 2) assert.match(lines[i], /^\d+$/);
   // TEXT has no line breaks: each line is its own entity, stacked below the first, and braces stay literal.
   const values = lines.flatMap((line, i) => (i % 2 === 0 && line === '1' ? [lines[i + 1]] : []));
-  assert.ok(values.includes('Client {A}') && values.includes('Project B'));
+  assert.ok(values.includes('CLIENT {A}') && values.includes('PROJECT B'));
   assert.deepEqual(readIsometric(dxf), doc);
 });
 

@@ -14,7 +14,7 @@ const paths = new WeakMap<Text, string>();
 const cadPath = (p: Text) => {
   let d = paths.get(p);
   if (d == null)
-    paths.set(p, (d = strokeTextPath(p.text, { at: p.p, size: p.size, rotation: p.rotation, oblique: p.oblique, anchor: p.anchor })));
+    paths.set(p, (d = strokeTextPath(p.text, { at: p.p, size: p.size, rotation: p.rotation, oblique: p.oblique, anchor: p.anchor, width: p.width })));
   return d;
 };
 /** Rotation (counter-clockwise on the page) and oblique (leaning right) about the text's anchor point. */

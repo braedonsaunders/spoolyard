@@ -156,7 +156,7 @@ export async function drawPrimitives(
         setLineCap(LineCapStyle.Round),
         setLineJoin(LineJoinStyle.Round),
       );
-      const strokes = strokeText(p.text, { at: p.p, size: p.size, rotation: p.rotation, oblique: p.oblique, anchor: p.anchor });
+      const strokes = strokeText(p.text, { at: p.p, size: p.size, rotation: p.rotation, oblique: p.oblique, anchor: p.anchor, width: p.width });
       for (const s of strokes) path(s);
       ops.push(...(strokes.length ? [stroke()] : []), popGraphicsState());
       return;

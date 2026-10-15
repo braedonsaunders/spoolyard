@@ -1,8 +1,8 @@
 import { type IsoDocument, type Vec3 } from './model'
 import { gridSvg, type GridSettings } from './grid'
-import { strokeTextPath } from './stroke-font'
+import { LINE_SPACING, strokeTextPath } from './stroke-font'
 import { renderIso } from './iso/render'
-import { basicFrame as sheetFrame } from './iso/basic-frame'
+import { drawSheet as sheetFrame } from './iso/sheet'
 export type Point = [number, number]
 /**
  * Sheet primitives in sheet units (the sheet is 850 units tall). `weight` is the stroke width in sheet units;
@@ -28,6 +28,8 @@ export type Primitive =
       /** Slant in degrees, positive leaning right; isometric lettering uses the same angle as the rotation. */
       oblique?: number
       anchor?: 'start' | 'middle' | 'end'
+      /** Width factor relative to standard ROMANS lettering. */
+      width?: number
     }
   | { type: 'image'; p: Point; width: number; height: number; href: string; layer: string; owner?: string }
 /** Default stroke widths in sheet units. */
@@ -111,11 +113,13 @@ export function drawingSvg(
     if (p.type === 'circle')
       return `<circle ${attrs} cx="${p.p[0]}" cy="${p.p[1]}" r="${p.r}" stroke-width="${width}" fill="${p.fill ? 'currentColor' : 'white'}"/>`
     if (d.lettering === 'cad')
-      return `<path ${attrs} d="${strokeTextPath(p.text, { at: p.p, size: p.size, rotation: p.rotation, oblique: p.oblique, anchor: p.anchor })}" fill="none" stroke-width="${Math.max(0.35, p.size * 0.1)}" stroke-linecap="round" stroke-linejoin="round" data-text="${escape(p.text)}"/>`
+      return `<path ${attrs} d="${strokeTextPath(p.text, { at: p.p, size: p.size, rotation: p.rotation, oblique: p.oblique, anchor: p.anchor, width: p.width })}" fill="none" stroke-width="${Math.max(0.35, p.size * 0.1)}" stroke-linecap="round" stroke-linejoin="round" data-text="${escape(p.text)}"/>`
     const transform = p.rotation || p.oblique
-      ? ` transform="translate(${p.p[0]} ${p.p[1]}) rotate(${-(p.rotation ?? 0)}) skewX(${p.oblique ?? 0}) translate(${-p.p[0]} ${-p.p[1]})"` : ''
+      ? ` transform="translate(${p.p[0]} ${p.p[1]}) rotate(${-(p.rotation ?? 0)}) skewX(${-(p.oblique ?? 0)}) translate(${-p.p[0]} ${-p.p[1]})"` : ''
     const anchor = p.anchor && p.anchor !== 'start' ? ` text-anchor="${p.anchor}"` : ''
-    return `<text ${attrs} x="${p.p[0]}" y="${p.p[1]}" font-size="${p.size / 0.72}"${anchor}${transform}>${escape(p.text)}</text>`
+    // Lines stack at the stroke font's spacing so every output wraps text identically.
+    const lines = p.text.split('\n').map((line, i) => `<tspan x="${p.p[0]}" y="${p.p[1] + i * p.size * LINE_SPACING}">${escape(line)}</tspan>`).join('')
+    return `<text ${attrs} x="${p.p[0]}" y="${p.p[1]}" font-size="${p.size / 0.72}"${anchor}${transform}>${lines}</text>`
   }
   const hits = interactive
     ? [...d.positions]

@@ -36,8 +36,8 @@ export function segmentPoly(a: Point, b: Point, pad = 1): Poly {
   return [add2(sub2(a, e), n), add2(add2(b, e), n), sub2(add2(b, e), n), sub2(sub2(a, e), n)]
 }
 /** The parallelogram covered by a (multi-line) text primitive, padded. */
-export function textPoly(at: Point, text: string, size: number, rotation = 0, oblique = 0, anchor: 'start' | 'middle' | 'end' = 'start', pad = 1.5): Poly {
-  const lines = text.split('\n'), width = Math.max(...lines.map(l => measureText(l, size)))
+export function textPoly(at: Point, text: string, size: number, rotation = 0, oblique = 0, anchor: 'start' | 'middle' | 'end' = 'start', pad = 1.5, factor = 1): Poly {
+  const lines = text.split('\n'), width = Math.max(...lines.map(l => measureText(l, size, factor)))
   const below = (lines.length - 1) * size * LINE_SPACING
   const x0 = anchor === 'middle' ? -width / 2 : anchor === 'end' ? -width : 0
   const r = rotation * Math.PI / 180, slant = Math.tan(oblique * Math.PI / 180)
