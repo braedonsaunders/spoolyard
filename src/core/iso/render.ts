@@ -5,7 +5,7 @@ import { getNode, styleOf, type IsoDocument, type Vec3 } from '../model'
 import { SIZE, type IsoContext, type RunGeometry } from './context'
 import { drawDimensions } from './dimensions'
 import { drawAnnotations } from './annotations'
-import { layoutSheet, viewProject, type View } from './layout'
+import { layoutSheet, viewProject, type Layout, type View } from './layout'
 import { clipOutside, Placement, textPoly, type Rect } from './placement'
 import { unit2, unit3 } from './plane'
 import { drawPipes } from './symbols'
@@ -35,20 +35,35 @@ export function renderIso(
   const sheet = model || !frame ? null : frame({ doc, spool, width, height, rows: materials, view })
   const viewport: Rect = sheet?.viewport ?? [-1e6, -1e6, 1e6, 1e6]
   const exclusions = sheet?.exclusions ?? []
-  const layout = layoutSheet(doc, runs, nodes, facing, style.layout === 'schematic' && !model)
+  const schematic = style.layout === 'schematic' && !model
   // Fit to the open part of the sheet: left of the bill of materials, clear of the frame, with room for callouts.
   const fitArea: Rect = sheet ? openArea(viewport, exclusions) : [0, 0, width, height]
-  const raw = [...layout.raw.values()]
-  const xs = raw.map(p => p[0]), ys = raw.map(p => p[1])
-  const minX = raw.length ? Math.min(...xs) : 0, maxX = raw.length ? Math.max(...xs) : 1
-  const minY = raw.length ? Math.min(...ys) : 0, maxY = raw.length ? Math.max(...ys) : 1
-  const fw = fitArea[2] - fitArea[0], fh = fitArea[3] - fitArea[1]
-  const fit: SheetFit = model
-    ? { centre: [0, 0], scale: 0.3 }
-    : hold ?? {
-        centre: [(maxX + minX) / 2, (maxY + minY) / 2],
-        scale: raw.length ? Math.min(fw * 0.8 / Math.max(1, maxX - minX), fh * 0.78 / Math.max(1, maxY - minY)) : 0.3
-      }
+  const fitOf = (layout: Layout, base?: number): SheetFit => {
+    const raw = [...layout.raw.values()]
+    const xs = raw.map(p => p[0]), ys = raw.map(p => p[1])
+    const minX = raw.length ? Math.min(...xs) : 0, maxX = raw.length ? Math.max(...xs) : 1
+    const minY = raw.length ? Math.min(...ys) : 0, maxY = raw.length ? Math.max(...ys) : 1
+    const fw = fitArea[2] - fitArea[0], fh = fitArea[3] - fitArea[1]
+    return {
+      centre: [(maxX + minX) / 2, (maxY + minY) / 2],
+      scale: raw.length ? Math.min(fw * 0.8 / Math.max(1, maxX - minX), fh * 0.78 / Math.max(1, maxY - minY)) : 0.3,
+      ...(base != null ? { base } : {})
+    }
+  }
+  let base = hold?.base ?? 1
+  if (schematic && hold?.base == null && runs.length) {
+    // Not to scale, symbols and callouts keep their sheet size; share what is left of the sheet out by pipe
+    // length, so the drawing fills the open area the way a drafter lays it out.
+    let lo = 1e-3, hi = 4
+    for (let i = 0; i < 16; i++) {
+      const mid = Math.sqrt(lo * hi)
+      if (fitOf(layoutSheet(doc, runs, nodes, facing, true, mid)).scale >= 1) lo = mid
+      else hi = mid
+    }
+    base = lo
+  }
+  const layout = layoutSheet(doc, runs, nodes, facing, schematic, base)
+  const fit: SheetFit = model ? { centre: [0, 0], scale: 0.3 } : hold ? { ...hold, base } : fitOf(layout, schematic ? base : undefined)
   const cx = model ? 550 : (fitArea[0] + fitArea[2]) / 2, cy = model ? 425 : (fitArea[1] + fitArea[3]) / 2
   const toSheet = (q: Point): Point => [(q[0] - fit.centre[0]) * fit.scale + cx, (q[1] - fit.centre[1]) * fit.scale + cy]
   const pos = new Map([...layout.raw].map(([id, p]) => [id, toSheet(p)] as [string, Point]))

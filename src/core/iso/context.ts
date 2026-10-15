@@ -15,9 +15,11 @@ export const SIZE = {
   weld: 2.1,
   flange: 12,
   flangeThickness: 3.2,
-  valve: 16,
-  valveWidth: 14,
-  tier: 26,
+  valve: 18,
+  valveWidth: 10,
+  /** Gap between a valve body and its end flanges. */
+  valveGap: 3,
+  tier: 38,
   tierStep: 22,
   extGap: 3,
   extOver: 4

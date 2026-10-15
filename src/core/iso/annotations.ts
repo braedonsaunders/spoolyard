@@ -63,7 +63,8 @@ export function drawAnnotations(ctx: IsoContext) {
   /** Multi-line callout text placed clear of everything, with a leader to the item. */
   function callout(target: Point, lines: string[], owner: string, options: { head?: boolean; prefer?: Point; boxed?: number } = {}) {
     const width = Math.max(...lines.map(l => measureText(l, T))), height = T + (lines.length - 1) * T * LINE_SPACING
-    const { centre } = spot(target, width + 4, height + 4, owner, [30, 44, 60, 80, 105, 140], options.prefer)
+    // Blocks keep a clear line from other lettering, so neighbouring callouts never read as one.
+    const { centre } = spot(target, width + 8, height + 4 + T, owner, [30, 44, 60, 80, 105, 140], options.prefer)
     const left = centre[0] - width / 2, top = centre[1] - height / 2
     text([left, top + T], lines.join('\n'), T, 'TEXT', owner)
     // The leader leaves the end of the first or last line nearest the item without crossing the text.
@@ -173,7 +174,8 @@ export function drawAnnotations(ctx: IsoContext) {
   const sized = new Set<string>()
   for (const leg of sheetLegs(ctx)) {
     const run = leg.runs[0], key = `${run.line}|${run.nps}`
-    if (sized.has(key)) continue
+    // A branch off an olet is sized by the olet's own callout.
+    if (sized.has(key) || leg.nodes.some(id => getNode(ctx.doc, id).associatedRunId)) continue
     sized.add(key)
     const g = ctx.geometry.get(run.id)!
     callout(lerp2(g.a, g.b, 0.2), [`${sizeText(run.nps)} NS`], run.id, { head: false })
@@ -183,6 +185,13 @@ export function drawAnnotations(ctx: IsoContext) {
     if (sizes.length < 2 || node.kind === 'tee' && !node.branchEdgeId) continue
     const at = ctx.pos.get(node.id)
     if (at) callout(at, [`${sizeText(Math.max(...sizes), Math.min(...sizes))} NS`], node.id, { head: false })
+  }
+  // Olets: the header by branch size and the fitting type.
+  for (const node of ctx.nodes) {
+    const at = ctx.pos.get(node.id), nd = node.kind === 'olet' ? ctx.materials.find(r => r.memberIds.includes(node.id))?.nd : undefined
+    if (!at || !nd) continue
+    const code = nodeCode(ctx.doc, node) ?? ''
+    callout(at, [`${nd} NS`, ...(/^(SOL|WOL|TOL)$/.test(code) ? [code] : [])], node.id, { head: false })
   }
   // Line numbers written along the longest pipe of each line.
   const lines = new Map<string, PipeRun>()
@@ -226,7 +235,7 @@ export function drawAnnotations(ctx: IsoContext) {
   }
   function tiePoint(target: Point, node: PipeNode) {
     const r = 15, label = node.tiePoint!.label?.toUpperCase()
-    const { centre } = spot(target, r * 2.2, r * 2 + (label ? T * 2 : 0), node.id, [40, 56, 76, 100])
+    const { centre } = spot(target, Math.max(r * 2.3, label ? measureText(label, T) + 4 : 0), r * 2 + (label ? T * 2 : 0), node.id, [40, 56, 76, 100])
     const c: Point = [centre[0], centre[1] - (label ? T : 0)]
     const hex = Array.from({ length: 6 }, (_, i) => add2(c, [Math.cos(i * Math.PI / 3) * r * 1.15, Math.sin(i * Math.PI / 3) * r])) as Point[]
     poly(hex, 'TAG', node.id, { closed: true })

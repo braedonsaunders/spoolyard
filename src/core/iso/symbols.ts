@@ -25,7 +25,7 @@ export function symbolExtent(ctx: IsoContext, node: PipeNode): number {
   if (node.kind === 'valve') {
     if (/NIPPLE/.test(code)) return 0
     if (/UNION|CPLG/.test(code)) return 5
-    return SIZE.valve * (/^BFLY/.test(code) ? 0.7 : 1) + (flangedPort(code) ? 2 + SIZE.flangeThickness : 0)
+    return SIZE.valve + (flangedPort(code) ? SIZE.valveGap + SIZE.flangeThickness + 0.4 : 0)
   }
   if (node.kind === 'reducer') return 9
   if (node.kind === 'flange' && isBlind(code)) return 2 + SIZE.flangeThickness * 2
@@ -145,12 +145,13 @@ export function drawPipes(ctx: IsoContext) {
       if (/UNION/.test(code)) for (const x of [-1.5, 1.5]) line(f(x, -4.5), f(x, 4.5), 'SYMBOL', owner)
       return
     }
-    // Every line valve is a bow-tie in its plane; butterfly valves are drawn shorter, with the disc's actuator dome.
-    const butterfly = /^BFLY/.test(code), h = butterfly ? SIZE.valve * 0.7 : SIZE.valve, w = SIZE.valveWidth
+    // Every line valve is a bow-tie in its plane, butterfly valves with the disc's actuator dome.
+    const butterfly = /^BFLY/.test(code), h = SIZE.valve, w = SIZE.valveWidth
     poly([f(-h, -w), f(h, w), f(h, -w), f(-h, w)], 'SYMBOL', owner, { closed: true })
     if (flangedPort(code)) {
       const F = SIZE.flange, t = SIZE.flangeThickness
-      for (const s of [-1, 1]) poly([f(s * (h + 1.6), -F), f(s * (h + 1.6 + t), -F), f(s * (h + 1.6 + t), F), f(s * (h + 1.6), F)], 'SYMBOL', owner, { closed: true })
+      const g = h + SIZE.valveGap
+      for (const s of [-1, 1]) poly([f(s * g, -F), f(s * (g + t), -F), f(s * (g + t), F), f(s * g, F)], 'SYMBOL', owner, { closed: true })
     }
     // Operator on its stem: handwheel for gate/globe, lever for ball/plug, actuator dome for butterfly valves.
     const stemDir = node.operator && Object.entries(OPERATORS).find(([k]) => node.operator!.toUpperCase().includes(k))?.[1]
