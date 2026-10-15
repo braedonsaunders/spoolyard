@@ -125,3 +125,18 @@ test('the same flange drawn as a node and supplied with a valve is one BOM line'
   const flanges = sheetMaterials(doc, 'SP-1').filter(r => r.category === 'flange');
   assert.deepEqual(flanges.map(r => r.qty), [3]);
 });
+
+test('PCF carries a flanged valve with its flanges, gaskets and bolts, and reads back to the same joint', async () => {
+  const { exportPcf, importPcf } = await import('../src/core/pcf.ts');
+  const doc = straight();
+  placeComponentOnPipe(doc, doc.runs[0].id, type('GATE-FL'), 0.5);
+  const pcf = exportPcf(doc);
+  assert.equal(pcf.match(/^FLANGE$/gm)?.length, 2);
+  assert.equal(pcf.match(/^GASKET$/gm)?.length, 2);
+  assert.equal(pcf.match(/^BOLT$/gm)?.length, 2);
+  const restored = importPcf(pcf).doc;
+  assert.equal(restored.nodes.length, doc.nodes.length);
+  const cuts = (d: typeof doc) => d.runs.map(r => runResult(d, r).cut).sort((a, b) => a - b);
+  cuts(restored).forEach((cut, i) => assert.ok(Math.abs(cut - cuts(doc)[i]) < 1e-6));
+  assert.equal(flangedJoints(restored).length, 2);
+});

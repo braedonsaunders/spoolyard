@@ -19,6 +19,8 @@ import {
   fitting,
   runResult
 } from './model'
+import { flangedAllowance, flangedJoints, gasketThickness } from './joints'
+import { COMPONENT_TYPE_BY_CODE } from './components'
 interface PcfRecord {
   type: string
   fields: Map<string, string[]>
@@ -147,6 +149,29 @@ export function importPcf(text: string): {
     : [
         'PCF endpoint lengths are used directly; imported root gap starts at 0 mm. Add the actual pipe specification and weights before fabrication.'
       ]
+  // Flanges, gaskets and bolts Spoolyard exported for its own flanged joints are rebuilt from the joint:
+  // drop them, and reconnect the component's face to the pipe end they bridged.
+  const implicit = (r: PcfRecord) => r.fields.get('ATTRIBUTE97')?.some(v => v.startsWith('SPOOLYARD-IMPLICIT'))
+  const xyz = (v: string) => v.split(/\s+/).slice(0, 3).map(Number).map(n => n.toFixed(3)).join(' ')
+  const bridged = new Map<string, string>()
+  for (const flange of records.filter(r => implicit(r) && r.type === 'FLANGE')) {
+    const [face, pipeEnd] = flange.fields.get('END-POINT') ?? []
+    if (!face || !pipeEnd) continue
+    bridged.set(xyz(face), pipeEnd)
+    const gasket = records.find(r => implicit(r) && r.type === 'GASKET' && xyz(r.fields.get('END-POINT')?.[1] ?? '') === xyz(face))
+    const componentFace = gasket?.fields.get('END-POINT')?.[0]
+    if (componentFace) bridged.set(xyz(componentFace), pipeEnd)
+  }
+  for (let i = records.length - 1; i >= 0; i--) if (implicit(records[i])) records.splice(i, 1)
+  for (const r of records)
+    for (const key of ['END-POINT', 'BRANCH1-POINT']) {
+      const points = r.fields.get(key)
+      if (!points) continue
+      r.fields.set(key, points.map(v => {
+        const to = bridged.get(xyz(v))
+        return to ? [...to.split(/\s+/).slice(0, 3), ...v.split(/\s+/).slice(3)].join(' ') : v
+      }))
+    }
   const unsupported = records.filter(
     r => r.type !== 'PIPE' && !TYPES[r.type] && !CONNECTIONS.has(r.type)
   )
@@ -453,12 +478,29 @@ export function exportPcf(doc: IsoDocument): string {
   const materials = bom(doc, 'global')
   const material = (member: string) =>
     materials.find(r => r.memberIds?.includes(member))?.item ?? 1
-  const port = (n: PipeNode, r: PipeRun): Vec3 => {
+  /** Where a component's port ends; `face` stops at a flanged component's own face, before its gasket and mate. */
+  const port = (n: PipeNode, r: PipeRun, face = false): Vec3 => {
     const other = getNode(doc, r.from === n.id ? r.to : r.from)
     const delta = sub(other.position, n.position),
       d = distance(n.position, other.position),
-      t = takeout(doc, n, r.id) ?? 0
+      t = (takeout(doc, n, r.id) ?? 0) - (face ? flangedAllowance(doc, n, r) : 0)
     return add(n.position, mul(delta, t / (d || 1)))
+  }
+  // A flanged component's mating flange, gasket and bolts are their own PCF components.
+  for (const joint of flangedJoints(doc).filter(j => j.kind === 'component-port' && j.flanges.some(f => f.implicit))) {
+    const n = getNode(doc, joint.nodeId), r = doc.runs.find(x => x.id === joint.runIds[0])!
+    const faceAt = port(n, r, true), pipeEnd = port(n, r), dir = sub(pipeEnd, faceAt), span = distance(pipeEnd, faceAt) || 1
+    const gasket = joint.gasket ? gasketThickness(joint.gasket.item) : 0
+    const flangeFace = add(faceAt, mul(dir, gasket / span))
+    const head = [`PIPELINE-REFERENCE ${safe(r.line || doc.drawing)}`]
+    out.push(...head, 'FLANGE', `    END-POINT ${fmt(flangeFace, r.nps, 'FL')}`, `    END-POINT ${fmt(pipeEnd, r.nps, prepAt(r, r.from === n.id ? 0 : 1) === 'FL' ? 'BW' : prepAt(r, r.from === n.id ? 0 : 1))}`,
+      `    MATERIAL-IDENTIFIER ${material(joint.id)}`, `    PIPING-SPEC ${r.specId}`, `    SPOOL-IDENTIFIER ${r.spool}`, '    ATTRIBUTE97 SPOOLYARD-IMPLICIT')
+    if (joint.gasket)
+      out.push(...head, 'GASKET', `    END-POINT ${fmt(faceAt, r.nps, 'FL')}`, `    END-POINT ${fmt(flangeFace, r.nps, 'FL')}`,
+        `    PIPING-SPEC ${r.specId}`, `    SPOOL-IDENTIFIER ${r.spool}`, '    ATTRIBUTE97 SPOOLYARD-IMPLICIT')
+    if (joint.bolts)
+      out.push(...head, 'BOLT', `    CO-ORDS ${fmt(faceAt, r.nps)}`, `    BOLT-QUANTITY ${joint.bolts.count}`, `    BOLT-DIA ${(joint.bolts.diameter / 25.4).toFixed(4)}`,
+        `    BOLT-LENGTH ${joint.bolts.length.toFixed(1)}`, `    PIPING-SPEC ${r.specId}`, `    SPOOL-IDENTIFIER ${r.spool}`, '    ATTRIBUTE97 SPOOLYARD-IMPLICIT')
   }
   for (const n of doc.nodes.filter(n => n.kind !== 'end' && n.kind !== 'annotation')) {
     const edges = doc.runs.filter(r => r.from === n.id || r.to === n.id),
@@ -477,7 +519,7 @@ export function exportPcf(doc: IsoDocument): string {
     out.push(`    ATTRIBUTE96 SPOOLYARD-COMPONENT ${encodeURIComponent(JSON.stringify(Object.fromEntries(Object.entries(n).filter(([key]) => !['id', 'position', 'portTakeouts', 'branchEdgeId', 'associatedRunId'].includes(key)))))}`)
     for (const r of edges)
       out.push(
-        `    ${n.branchEdgeId === r.id ? 'BRANCH1-POINT' : 'END-POINT'} ${fmt(port(n, r), r.nps, prepAt(r, r.from === n.id ? 0 : 1))}`
+        `    ${n.branchEdgeId === r.id ? 'BRANCH1-POINT' : 'END-POINT'} ${fmt(port(n, r, COMPONENT_TYPE_BY_CODE[n.component ?? '']?.endPrep === 'FL'), r.nps, prepAt(r, r.from === n.id ? 0 : 1))}`
       )
     if (n.kind === 'support' || n.kind === 'bolt')
       out.push(`    CO-ORDS ${fmt(n.position, associated.nps)}`)
