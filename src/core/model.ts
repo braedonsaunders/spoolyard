@@ -1166,8 +1166,8 @@ export function bom(
   for (const joint of flangedJoints(doc)) {
     for (const flange of joint.flanges.filter(f => f.implicit)) supplied(flange.item, flange.code, 1, joint)
     for (const stub of joint.stubEnds) supplied(stub, 'STUB END', 1, joint)
-    if (joint.gasket) supplied(joint.gasket.item, 'GASKET', 1, joint)
-    if (joint.bolts) {
+    if (joint.gasket && joint.supplied.gasket) supplied(joint.gasket.item, 'GASKET', 1, joint)
+    if (joint.bolts && joint.supplied.bolts) {
       const b = joint.bolts, row = b.item
       const size = boltSizeText(b.diameter, b.length)
       supplied(row, 'STUD BOLTS', b.count, joint,

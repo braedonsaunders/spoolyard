@@ -72,7 +72,8 @@ test('a flange on an open end mates with equipment; a flange mid-pipe is a bolte
   // The pipe stops one weld-neck hub short of the flange face.
   assert.ok(Math.abs(runResult(doc, doc.runs[0]).cut - (2000 - 63.5)) < 1e-9);
   end.jointSupply = { gasket: false, bolts: false };
-  assert.equal(flangedJoints(doc)[0].gasket, null);
+  assert.deepEqual(flangedJoints(doc)[0].supplied, { gasket: false, bolts: false });
+  assert.ok(!bom(doc).some(r => /GASKET|STUD/.test(r.description)));
   const pair = placeComponentOnPipe(doc, doc.runs[0].id, type('FLG-RFWN'), 0.5);
   joints = flangedJoints(doc);
   const middle = joints.find(j => j.nodeId === pair.id)!;

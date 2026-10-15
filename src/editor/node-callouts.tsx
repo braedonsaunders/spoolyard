@@ -145,8 +145,8 @@ export function NodeCallouts({ doc, nodeId, commit }: { doc: IsoDocument; nodeId
       {joints.map((j, i) => (
         <p key={j.id} className="iso-help">
           Joint {joints.length > 1 ? i + 1 : ""}: {j.flanges.map((f) => (isLapJoint(f.code) ? "lap-joint flange + stub end" : COMPONENT_TYPES.find((t) => t.code === f.code)?.label.toLowerCase() ?? f.code)).join(", ") || "existing flange"}
-          {j.gasket ? ` · gasket ${draftLength(j.gasket.thickness, "imperial")} thick` : " · no gasket"}
-          {j.bolts ? ` · ${j.bolts.count} ${j.bolts.kind === "lug" ? "lug bolts" : "studs"} ${boltSizeText(j.bolts.diameter, j.bolts.length)}` : " · no bolts"}
+          {j.gasket ? ` · gasket ${draftLength(j.gasket.thickness, "imperial")} thick${j.supplied.gasket ? "" : " (by others)"}` : " · no gasket"}
+          {j.bolts ? ` · ${j.bolts.count} ${j.bolts.kind === "lug" ? "lug bolts" : "studs"} ${boltSizeText(j.bolts.diameter, j.bolts.length)}${j.supplied.bolts ? "" : " (by others)"}` : " · no bolts"}
         </p>
       ))}
     </div>

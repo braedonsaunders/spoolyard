@@ -108,6 +108,7 @@ export function sheetMaterials(doc: IsoDocument, spool = ''): MaterialRow[] {
       flangeRank: FLANGE_ORDER.findIndex(r => r.test(code)) + 1 || 9
     }, node.id, node.quantity ?? (pair ? 2 : 1))
   }
+  const elsewhere: Array<[string, string]> = []
   for (const joint of flangedJoints(doc, spool)) addJoint(joint)
   function addJoint(joint: FlangedJoint) {
     for (const flange of joint.flanges.filter(f => f.implicit)) {
@@ -121,18 +122,22 @@ export function sheetMaterials(doc: IsoDocument, spool = ''): MaterialRow[] {
       const description = rowDescription(stub, 'STUB END')
       add(JSON.stringify(['stub', stub.id, description, joint.nps]), { category: 'stub', nd: sizeText(joint.nps), description, qty: 0, size: joint.nps }, joint.id + '#stub', 1)
     }
+    // Parts supplied elsewhere are not counted, but their callout still names the matching BOM item.
+    const part = (key: string, row: Parameters<typeof add>[1], member: string, qty: number, supplied: boolean) =>
+      supplied ? add(key, row, member, qty) : elsewhere.push([key, member])
     if (joint.gasket) {
       const description = rowDescription(joint.gasket.item, 'GASKET')
-      add(JSON.stringify(['gasket', joint.gasket.item?.id, description, joint.nps]), { category: 'gasket', nd: sizeText(joint.nps), description, qty: 0, size: joint.nps }, joint.id + '#gasket', 1)
+      part(JSON.stringify(['gasket', joint.gasket.item?.id, description, joint.nps]), { category: 'gasket', nd: sizeText(joint.nps), description, qty: 0, size: joint.nps }, joint.id + '#gasket', 1, joint.supplied.gasket)
     }
     if (joint.bolts) {
       const b = joint.bolts, own = rowDescription(b.item, 'STUD BOLTS C/W 2 NUTS')
       const description = b.kind === 'lug' ? (/STUD/.test(own) ? own.replace(/STUD/g, 'LUG') : 'LUG BOLTS, ' + own) : own
       // ASME bolting is sized in inches on metric drawings too.
       const nd = boltSizeText(b.diameter, b.length)
-      add(JSON.stringify(['bolt', b.kind, description, nd]), { category: 'bolt', nd, description, qty: 0, size: b.diameter }, joint.id + '#bolts', b.count)
+      part(JSON.stringify(['bolt', b.kind, description, nd]), { category: 'bolt', nd, description, qty: 0, size: b.diameter }, joint.id + '#bolts', b.count, joint.supplied.bolts)
     }
   }
+  for (const [key, member] of elsewhere) rows.get(key)?.memberIds.push(member)
   const sorted = [...rows.values()].sort((a, b) =>
     ORDER.indexOf(a.category) - ORDER.indexOf(b.category) ||
     (a.category === 'pipe' ? a.size - b.size || a.first - b.first

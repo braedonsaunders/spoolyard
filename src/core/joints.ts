@@ -161,8 +161,10 @@ export interface FlangedJoint {
   /** Flanges at this joint; implicit ones are supplied with a flanged component and are not separate nodes. */
   flanges: Array<{ code: string; item?: CatalogItem; implicit: boolean }>
   stubEnds: CatalogItem[]
+  /** The joint's gasket and bolting; `supplied` says whether this drawing's material list provides them. */
   gasket: { item?: CatalogItem; thickness: number } | null
   bolts: JointBolts | null
+  supplied: { gasket: boolean; bolts: boolean }
   /** Bolting is required but neither the specification nor the standard sizes it. */
   boltsUnknown: boolean
   spool: string
@@ -203,14 +205,14 @@ export function flangedJoints(doc: IsoDocument, spool = ''): FlangedJoint[] {
         ? { code: `FLG-${face}LJ`, item: catalogRow(spec, `FLG-${face}LJ`, host.nps), implicit: true }
         : { code, item, implicit: false }
       const gasket = gasketRow(spec, host.nps, face)
-      const bolts = supply.bolts ? jointBolts(spec, host.nps, face, lj ? 'lj-pair' : 'flange-pair') : null
+      const bolts = jointBolts(spec, host.nps, face, lj ? 'lj-pair' : 'flange-pair')
       out.push({
         ...base, id: node.id, nodeId: node.id, runIds: edges.map(r => r.id), position: node.position, face,
         kind: pair ? 'flange-pair' : 'equipment',
         flanges: pair ? [flange, flange] : [flange],
         stubEnds: stub ? (pair ? [stub, stub] : [stub]) : [],
-        gasket: supply.gasket ? { item: gasket, thickness: gasketThickness(gasket) } : null,
-        bolts, boltsUnknown: supply.bolts && !bolts
+        gasket: { item: gasket, thickness: gasketThickness(gasket) },
+        bolts, supplied: { gasket: supply.gasket, bolts: supply.bolts }, boltsUnknown: supply.bolts && !bolts
       })
       continue
     }
@@ -225,8 +227,9 @@ export function flangedJoints(doc: IsoDocument, spool = ''): FlangedJoint[] {
       const faceDistance = (node.branchEdgeId === run.id ? item?.branchTakeout : item?.takeout) ?? 0
       const gasket = gasketRow(runSpec, run.nps, face)
       const makeup = lug ? 'lug-valve-side' : wafer ? 'wafer-valve' : mate && isLapJoint(mate.code) ? 'lj-pair' : 'flange-pair'
-      const wanted = choice?.bolts !== false && !(wafer && index > 0)
-      const bolts = wanted ? jointBolts(runSpec, run.nps, face, makeup) : null
+      // A wafer valve's through-studs belong to its first joint.
+      const physical = !(wafer && index > 0)
+      const bolts = physical ? jointBolts(runSpec, run.nps, face, makeup) : null
       const other = getNode(doc, run.from === node.id ? run.to : run.from), explicit = run.connector && other.kind === 'flange'
       out.push({
         ...base, nps: run.nps, spool: run.spool, line: run.line, specId: runSpec.id, rating: specRating(runSpec),
@@ -235,8 +238,9 @@ export function flangedJoints(doc: IsoDocument, spool = ''): FlangedJoint[] {
         flanges: mate ? [{ code: mate.code, item: mate.item, implicit: true }]
           : explicit ? [{ code: nodeCode(doc, other) ?? 'FLANGE', item: nodeItem(doc, other), implicit: false }] : [],
         stubEnds: mate?.stub ? [mate.stub] : [],
-        gasket: choice?.gasket === false ? null : { item: gasket, thickness: gasketThickness(gasket) },
-        bolts, boltsUnknown: wanted && !bolts
+        gasket: { item: gasket, thickness: gasketThickness(gasket) },
+        bolts, supplied: { gasket: choice?.gasket !== false, bolts: choice?.bolts !== false && physical },
+        boltsUnknown: choice?.bolts !== false && physical && !bolts
       })
     }
   }

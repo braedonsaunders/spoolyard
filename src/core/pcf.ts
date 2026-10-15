@@ -495,10 +495,11 @@ export function exportPcf(doc: IsoDocument): string {
     const head = [`PIPELINE-REFERENCE ${safe(r.line || doc.drawing)}`]
     out.push(...head, 'FLANGE', `    END-POINT ${fmt(flangeFace, r.nps, 'FL')}`, `    END-POINT ${fmt(pipeEnd, r.nps, prepAt(r, r.from === n.id ? 0 : 1) === 'FL' ? 'BW' : prepAt(r, r.from === n.id ? 0 : 1))}`,
       `    MATERIAL-IDENTIFIER ${material(joint.id)}`, `    PIPING-SPEC ${r.specId}`, `    SPOOL-IDENTIFIER ${r.spool}`, '    ATTRIBUTE97 SPOOLYARD-IMPLICIT')
+    // The gasket is always written: it carries the joint's geometry back on import.
     if (joint.gasket)
       out.push(...head, 'GASKET', `    END-POINT ${fmt(faceAt, r.nps, 'FL')}`, `    END-POINT ${fmt(flangeFace, r.nps, 'FL')}`,
         `    PIPING-SPEC ${r.specId}`, `    SPOOL-IDENTIFIER ${r.spool}`, '    ATTRIBUTE97 SPOOLYARD-IMPLICIT')
-    if (joint.bolts)
+    if (joint.bolts && joint.supplied.bolts)
       out.push(...head, 'BOLT', `    CO-ORDS ${fmt(faceAt, r.nps)}`, `    BOLT-QUANTITY ${joint.bolts.count}`, `    BOLT-DIA ${(joint.bolts.diameter / 25.4).toFixed(4)}`,
         `    BOLT-LENGTH ${joint.bolts.length.toFixed(1)}`, `    PIPING-SPEC ${r.specId}`, `    SPOOL-IDENTIFIER ${r.spool}`, '    ATTRIBUTE97 SPOOLYARD-IMPLICIT')
   }
