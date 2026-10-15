@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { appendRun, applyComponent, bom, clone, getNode, insertComponent, newIso, runResult, validateIso, welds, type PipeSpec } from '../src/core/model.ts';
+import { appendRun, bom, clone, getNode, insertComponent, newIso, runResult, validateIso, welds, type PipeSpec } from '../src/core/model.ts';
 import { flangedJoints } from '../src/core/joints.ts';
 import { COMPONENT_TYPES } from '../src/core/components.ts';
 import { placeComponentOnPipe } from '../src/core/component-position.ts';

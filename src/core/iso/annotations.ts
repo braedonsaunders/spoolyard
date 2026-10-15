@@ -20,7 +20,7 @@ const overlapsSegment = (shape: Poly, a: Point, b: Point) => {
 const ANGLES = Array.from({ length: 16 }, (_, i) => i * Math.PI / 8)
 
 export function drawAnnotations(ctx: IsoContext) {
-  const { line, poly, arrow, text, circle } = emitters(ctx)
+  const { line, poly, arrow, text } = emitters(ctx)
   const T = SIZE.text
   const own = (owner?: string) => (o: Occupant) => !!owner && o.owner === owner
   /** Best free spot for a w×h block whose leader runs to `target`. */
@@ -74,7 +74,6 @@ export function drawAnnotations(ctx: IsoContext) {
     return { left, top, width, height }
   }
 
-  const tagged = new Set<string>()
   // Pipe pieces: a box beside the pipe in its isometric plane, joined by a short line.
   for (const leg of sheetLegs(ctx)) {
     const vertical = Math.abs(leg.dir3[2]) > 0.7
@@ -112,7 +111,6 @@ export function drawAnnotations(ctx: IsoContext) {
     if (node.kind === 'flange' && !/^STUB-END/.test(code)) continue
     const id = materialId(ctx.materials, node.id)
     if (!id) continue
-    tagged.add(node.id)
     if (node.kind === 'valve' && (node.operator || node.tag)) {
       const lines = [String(id), ...(node.operator ? [node.operator.toUpperCase()] : []), ...(node.tag ? [node.tag.toUpperCase()] : [])]
       const block = callout(at, lines, node.id)
@@ -239,5 +237,4 @@ export function drawAnnotations(ctx: IsoContext) {
       const { centre } = spot(p, width + 3, T + 3, w.nodeId, [8, 12, 16, 22])
       text([centre[0] - width / 2, centre[1] + T * 0.45], w.tag, T * 0.9, 'WELD', w.nodeId)
     }
-  void circle; void tagged
 }
