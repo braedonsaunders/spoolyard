@@ -74,22 +74,39 @@ export function ratingClass(text: string | number | undefined): number | undefin
   for (const m of (text ?? '').matchAll(/\d+/g)) if (CLASSES.includes(Number(m[0]))) return Number(m[0])
   return undefined
 }
-// ---- ASME B36.10M / B36.19M wall thickness (in): [nps, 10S, STD, XS]
+// ---- ASME B36.10M / B36.19M nominal wall (in): [nps, 5S, 10S, STD/40S, XS/80S, 40, 60, 80, 120, 160, XXS]; 0 = not listed.
 const WALL = [
-  [0.125, 0.049, 0.068, 0.095], [0.25, 0.065, 0.088, 0.119], [0.375, 0.065, 0.091, 0.126],
-  [0.5, 0.083, 0.109, 0.147], [0.75, 0.083, 0.113, 0.154], [1, 0.109, 0.133, 0.179],
-  [1.25, 0.109, 0.14, 0.191], [1.5, 0.109, 0.145, 0.2], [2, 0.109, 0.154, 0.218],
-  [2.5, 0.12, 0.203, 0.276], [3, 0.12, 0.216, 0.3], [3.5, 0.12, 0.226, 0.318], [4, 0.12, 0.237, 0.337],
-  [5, 0.134, 0.258, 0.375], [6, 0.134, 0.28, 0.432], [8, 0.148, 0.322, 0.5], [10, 0.165, 0.365, 0.5],
-  [12, 0.18, 0.375, 0.5], [14, 0.188, 0.375, 0.5], [16, 0.188, 0.375, 0.5], [18, 0.188, 0.375, 0.5],
-  [20, 0.218, 0.375, 0.5], [22, 0.218, 0.375, 0.5], [24, 0.25, 0.375, 0.5]
+  [0.125, 0.035, 0.049, 0.068, 0.095, 0.068, 0, 0.095, 0, 0, 0],
+  [0.25, 0.049, 0.065, 0.088, 0.119, 0.088, 0, 0.119, 0, 0, 0],
+  [0.375, 0.049, 0.065, 0.091, 0.126, 0.091, 0, 0.126, 0, 0, 0],
+  [0.5, 0.065, 0.083, 0.109, 0.147, 0.109, 0, 0.147, 0, 0.188, 0.294],
+  [0.75, 0.065, 0.083, 0.113, 0.154, 0.113, 0, 0.154, 0, 0.219, 0.308],
+  [1, 0.065, 0.109, 0.133, 0.179, 0.133, 0, 0.179, 0, 0.25, 0.358],
+  [1.25, 0.065, 0.109, 0.14, 0.191, 0.14, 0, 0.191, 0, 0.25, 0.382],
+  [1.5, 0.065, 0.109, 0.145, 0.2, 0.145, 0, 0.2, 0, 0.281, 0.4],
+  [2, 0.065, 0.109, 0.154, 0.218, 0.154, 0, 0.218, 0, 0.344, 0.436],
+  [2.5, 0.083, 0.12, 0.203, 0.276, 0.203, 0, 0.276, 0, 0.375, 0.552],
+  [3, 0.083, 0.12, 0.216, 0.3, 0.216, 0, 0.3, 0, 0.438, 0.6],
+  [3.5, 0.083, 0.12, 0.226, 0.318, 0.226, 0, 0.318, 0, 0, 0.636],
+  [4, 0.083, 0.12, 0.237, 0.337, 0.237, 0, 0.337, 0.438, 0.531, 0.674],
+  [5, 0.109, 0.134, 0.258, 0.375, 0.258, 0, 0.375, 0.5, 0.625, 0.75],
+  [6, 0.109, 0.134, 0.28, 0.432, 0.28, 0, 0.432, 0.562, 0.719, 0.864],
+  [8, 0.109, 0.148, 0.322, 0.5, 0.322, 0.406, 0.5, 0.719, 0.906, 0.875],
+  [10, 0.134, 0.165, 0.365, 0.5, 0.365, 0.5, 0.594, 0.844, 1.125, 1],
+  [12, 0.156, 0.18, 0.375, 0.5, 0.406, 0.562, 0.688, 1, 1.312, 1],
+  [14, 0.156, 0.188, 0.375, 0.5, 0.438, 0.594, 0.75, 1.094, 1.406, 0],
+  [16, 0.165, 0.188, 0.375, 0.5, 0.5, 0.656, 0.844, 1.219, 1.594, 0],
+  [18, 0.165, 0.188, 0.375, 0.5, 0.562, 0.75, 0.938, 1.375, 1.781, 0],
+  [20, 0.188, 0.218, 0.375, 0.5, 0.594, 0.812, 1.031, 1.5, 1.969, 0],
+  [22, 0.188, 0.218, 0.375, 0.5, 0, 0.875, 1.125, 1.625, 2.125, 0],
+  [24, 0.218, 0.25, 0.375, 0.5, 0.688, 0.969, 1.219, 1.812, 2.344, 0]
 ]
-/** Nominal wall (mm) for Sch 10S, STD (40S) or XS (80S); undefined for other schedules. */
+const WALL_COLUMNS = ['5S', '10S', 'STD', 'XS', '40', '60', '80', '120', '160', 'XXS']
+/** Nominal pipe wall (mm) for a schedule ('STD', 'XS', 'XXS', '5S', '10S', '40S', '80S', '40', 'SCH.80', 'SCH 160'…); undefined if unknown. */
 export function pipeWall(nps: number, schedule = 'STD'): number | undefined {
-  const s = schedule.toUpperCase().replace(/^SCH(EDULE)?\.?\s*/, '').replace(/\.$/, '')
-  const i = s === '10S' ? 1 : ['STD', '40S'].includes(s) || (s === '40' && nps <= 10) ? 2 : ['XS', '80S'].includes(s) || (s === '80' && nps <= 8) ? 3 : 0
-  const r = at(WALL, nps)
-  return i && r ? mmx(r[i]) : undefined
+  const s = schedule.toUpperCase().replace(/^SCH(EDULE)?\.?\s*/, '').replace(/\.$/, '').trim()
+  const i = WALL_COLUMNS.indexOf(s === '40S' ? 'STD' : s === '80S' ? 'XS' : s) + 1, r = at(WALL, nps)
+  return i && r?.[i] ? mmx(r[i]) : undefined
 }
 // ---- ASME B16.5 (inches). [nps, O, C, Y weld neck, Y slip-on/SW/THD (0 = none), Y lapped, bolt circle, bolts, bolt dia, stud length, machine bolt]
 // Class 150/300 C and Y include the 0.06 in raised face; Class 600+ exclude the 0.25 in raised face (added in flange()).
@@ -334,7 +351,7 @@ const TEE_M: Record<string, number[][]> = {
   24: [[22, 17], [20, 17], [18, 16.5], [16, 16], [14, 16], [12, 15.62], [10, 15.12]]
 }
 /** 45° laterals as catalogued (Bonney Forge, matching the library specs): [nps, short-side C-E, long-side and branch C-E] (in). */
-const LATERAL = [[2, 4, 8.5], [2.5, 4.5, 10], [3, 5, 11], [3.5, 5.5, 12], [4, 6, 13], [5, 7, 14.5], [6, 8, 16.5], [8, 10, 20], [10, 12, 23], [12, 13, 27]]
+const LATERAL = [[1, 2.5, 6.5], [1.25, 2.75, 7], [1.5, 3, 8], [2, 4, 8.5], [2.5, 4.5, 10], [3, 5, 11], [3.5, 5.5, 12], [4, 6, 13], [5, 7, 14.5], [6, 8, 16.5], [8, 10, 20], [10, 12, 23], [12, 13, 27], [14, 14, 30], [16, 16, 33], [18, 17, 36]]
 /** MSS SP-95 swage nipple length (in). */
 const SWAGE = [[0.25, 2], [0.375, 2.5], [0.5, 2.75], [0.75, 3], [1, 3.5], [1.25, 4], [1.5, 4.5], [2, 6.5], [2.5, 7], [3, 8], [4, 9], [5, 11], [6, 12]]
 // ---- ASME B16.10 face-to-face (RF) / end-to-end (BW) (in). Class 600+ RF lengths include the raised faces.
@@ -412,7 +429,10 @@ const SW = [
   [2.5, 1.62, 0, 1.12, 0], [3, 2.25, 0, 1.25, 0], [4, 2.62, 0, 1.62, 0]
 ]
 /** B16.11 minimum socket depth J (in). */
-const socketDepth = (nps: number) => mm(nps <= 0.5 ? 0.375 : nps <= 1.5 ? 0.5 : nps <= 3 ? 0.625 : 0.75)
+const minSocket = (nps: number) => mm(nps <= 0.5 ? 0.375 : nps <= 1.5 ? 0.5 : nps <= 3 ? 0.625 : 0.75)
+/** Socket depth of forged fittings as made (Bonney Forge, as in the library specs; deeper than the B16.11 minimum J). */
+const FORGED_SOCKET = [[0.125, 0.375], [0.25, 0.375], [0.375, 0.4375], [0.5, 0.5], [0.75, 0.5625], [1, 0.625], [1.25, 0.6875], [1.5, 0.75], [2, 0.875], [2.5, 0.875], [3, 1], [4, 1.125]]
+const socketDepth = (nps: number) => (v => (v ? mm(v) : minSocket(nps)))(at(FORGED_SOCKET, nps)?.[1])
 /** B16.11 socket-weld coupling laying length E between socket bottoms (in). */
 const swCouplingGap = (nps: number) => mm(nps <= 0.375 ? 0.25 : nps <= 0.75 ? 0.375 : nps <= 1.5 ? 0.5 : 0.75)
 /** Threaded centre-to-end (mm): [nps, 90/tee 2000, 3000, 6000, 45 2000, 3000, 6000]. */
@@ -427,9 +447,9 @@ const THD_COUPLING = [[0.125, 32], [0.25, 35], [0.375, 38], [0.5, 48], [0.75, 51
 /** MSS SP-83 union laying length (in) as catalogued: [nps, 3000, 6000]. */
 const UNION = [[0.375, 2, 0], [0.5, 2.125, 2.875], [0.75, 2.3125, 3.375], [1, 2.5, 3.625], [1.25, 2.8125, 3.875], [1.5, 3.125, 4.1875], [2, 3.5, 4.625]]
 /** Cap end beyond the pipe end (in), manufacturer lengths (B16.11 fixes only the minimum end wall): [nps, SW 3000, SW 6000, THD 3000, THD 6000]. */
-const CAP = [[0.5, 0.375, 0.5, 0.375, 0.5], [0.75, 0.4375, 0.5, 0.4375, 0.5], [1, 0.4375, 0.625, 0.375, 0.5625], [1.25, 0.5, 0.625, 0.5, 0.625], [1.5, 0.5, 0.625, 0.5625, 0.6875], [2, 0, 0.75, 0, 0.875]]
+const CAP = [[0.5, 0.375, 0.5, 0.375, 0.5], [0.75, 0.4375, 0.5, 0.4375, 0.5], [1, 0.4375, 0.625, 0.375, 0.5625], [1.25, 0.5, 0.625, 0.5, 0.625], [1.5, 0.5, 0.625, 0.5625, 0.6875], [2, 0.625, 0.75, 0.75, 0.875], [2.5, 0.625, 0, 0.5625, 0], [3, 0.75, 0, 0.75, 0], [4, 0.75, 0, 0.75, 0]]
 /** B16.11 square-head plug thread length (in). */
-const PLUG = [[0.125, 0.38], [0.25, 0.44], [0.375, 0.5], [0.5, 0.56], [0.75, 0.62], [1, 0.75], [1.25, 0.81], [1.5, 0.81], [2, 0.88]]
+const PLUG = [[0.125, 0.38], [0.25, 0.44], [0.375, 0.5], [0.5, 0.56], [0.75, 0.62], [1, 0.75], [1.25, 0.81], [1.5, 0.81], [2, 0.88], [2.5, 1.06], [3, 1.12], [4, 1.25]]
 /** Forged-fitting class for a rating: 2000 (threaded only), 3000 or 6000; flange classes map 150–600 → 3000, 900+ → 6000. */
 const forgedClass = (cls: number | undefined, threaded: boolean) =>
   cls === 2000 ? (threaded ? 2000 : 3000) : cls === 3000 || cls === 6000 ? cls : cls === 9000 ? undefined : cls && cls >= 900 ? 6000 : 3000
@@ -555,7 +575,7 @@ export function standardRow(code: string, nps: number, rating?: string | number,
     case 'SW-RTEE':
     case 'SW-RCRS':
       return runSw && small != null && small < nps && isNps(small)
-        ? row('tee', nps, runSw, `REDUCING ${c === 'SW-RTEE' ? 'TEE' : 'CROSS'} SW ${label}`, `${swSource}; reducing outlet bored in the run-size body: branch = A + J(run) - J(outlet)`, { ...sized, branchTakeout: r2(runSw + j - socketDepth(small)), socketDepth: j })
+        ? row('tee', nps, runSw, `REDUCING ${c === 'SW-RTEE' ? 'TEE' : 'CROSS'} SW ${label}`, `${swSource}; reducing outlet bored in the run-size body: branch = A + socket depth(run) - socket depth(outlet)`, { ...sized, branchTakeout: r2(runSw + j - socketDepth(small)), socketDepth: j })
         : undefined
     case 'SC-90ELL': return runThd && eng ? row('elbow90', nps, runThd - eng, `ELBOW 90 THD ${label}`, thdSource, { threadEngagement: eng }) : undefined
     case 'SC-45ELL': return thd45 && eng ? row('elbow45', nps, thd45 - eng, `ELBOW 45 THD ${label}`, thdSource, { threadEngagement: eng }) : undefined
@@ -589,8 +609,8 @@ export function standardRow(code: string, nps: number, rating?: string | number,
     case 'UNION-SC': {
       const u = at(UNION, nps)?.[fc === 6000 ? 2 : 1]
       if (!u) return undefined
-      const l = mm(u), end = c === 'UNION-SW' ? j : eng
-      return end == null ? undefined : row('valve', nps, (l - 2 * end) / 2, `UNION ${c === 'UNION-SW' ? 'SW' : 'THD'} ${fc === 2000 ? '3000#' : label}`, `MSS SP-83 Class ${fc === 6000 ? 6000 : 3000} union, laying length as catalogued; effective takeout = half the length less ${c === 'UNION-SW' ? 'socket depth' : 'thread engagement'}`, c === 'UNION-SW' ? { faceToFace: l, socketDepth: j } : { faceToFace: l, threadEngagement: end })
+      const l = mm(u), end = c === 'UNION-SW' ? minSocket(nps) : eng
+      return end == null ? undefined : row('valve', nps, (l - 2 * end) / 2, `UNION ${c === 'UNION-SW' ? 'SW' : 'THD'} ${fc === 2000 ? '3000#' : label}`, `MSS SP-83 Class ${fc === 6000 ? 6000 : 3000} union, laying length as catalogued; effective takeout = half the length less ${c === 'UNION-SW' ? 'B16.11 socket depth J' : 'thread engagement'}`, c === 'UNION-SW' ? { faceToFace: l, socketDepth: end } : { faceToFace: l, threadEngagement: end })
     }
   }
   return undefined
