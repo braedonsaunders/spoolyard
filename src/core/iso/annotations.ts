@@ -7,7 +7,7 @@ import { connected, getNode, welds, type PipeNode, type PipeRun } from '../model
 import { measureText, LINE_SPACING } from '../stroke-font'
 import { SIZE, emitters, type IsoContext } from './context'
 import { overlaps, rectPoly, segmentPoly, textPoly, type Occupant, type Poly } from './placement'
-import { add2, dot2, left2, lerp2, planeText, scale2, sub2, unit2 } from './plane'
+import { add2, dot2, left2, lerp2, planeText, scale2, sub2, unit2, uprightOf } from './plane'
 import { acrossOf } from './symbols'
 import { sheetLegs } from './dimensions'
 
@@ -22,7 +22,8 @@ const ANGLES = Array.from({ length: 16 }, (_, i) => i * Math.PI / 8)
 export function drawAnnotations(ctx: IsoContext) {
   const { line, poly, arrow, text } = emitters(ctx)
   const T = SIZE.text
-  const own = (owner?: string) => (o: Occupant) => !!owner && o.owner === owner
+  /** A label may touch its own item's linework, never its other labels. */
+  const own = (owner?: string) => (o: Occupant) => !!owner && o.owner === owner && o.kind !== 'text' && o.kind !== 'tag'
   /** Best free spot for a w×h block whose leader runs to `target`. */
   function spot(target: Point, w: number, h: number, owner?: string, radii = [24, 34, 46, 62, 82, 110], prefer?: Point): Candidate {
     let best: Candidate | null = null
@@ -101,6 +102,7 @@ export function drawAnnotations(ctx: IsoContext) {
       text(baseline, label, T, 'TAG', run.id, { rotation, oblique, anchor: 'middle' })
       const edge = sub2(best.at, scale2(unit2(sub2(best.at, best.foot)), h / 2))
       line(best.foot, edge, 'LEADER', run.id)
+      ctx.place.addSegment(best.foot, edge, 'tag', run.id, 1.5)
     }
   }
   // Fittings, valves and stub ends: a box with an arrowed leader.
@@ -183,12 +185,13 @@ export function drawAnnotations(ctx: IsoContext) {
   for (const run of lines.values()) {
     const g = ctx.geometry.get(run.id)!, across = Math.abs(g.dir3[2]) > 0.7 ? left2(g.dir) : acrossOf(ctx, g.dir, g.dir3)
     let best: { cost: number; at: Point; up: Point } | null = null
-    for (const t of [0.6, 0.4, 0.75, 0.25])
+    for (const t of [0.6, 0.4, 0.75, 0.25, 0.5, 0.85, 0.15])
       for (const side of [1, -1]) {
-        const up = scale2(across, side), at = add2(lerp2(g.a, g.b, t), scale2(up, 3))
-        const { rotation, oblique } = planeText(g.dir, up)
-        const shape = textPoly(at, run.line, T, rotation, oblique, 'middle', 1)
-        const cost = ctx.place.cost(shape, own(run.id)) + Math.abs(t - 0.6) * 4
+        // The lettering stands clear of the pipe on this side, whichever way its uprights face.
+        const up = scale2(across, side), turn = planeText(g.dir, up), facing = dot2(uprightOf(turn), up) >= 0
+        const at = add2(lerp2(g.a, g.b, t), scale2(up, facing ? 3.5 : 3.5 + T))
+        const shape = textPoly(at, run.line, T, turn.rotation, turn.oblique, 'middle', 1)
+        const cost = ctx.place.cost(shape) + Math.abs(t - 0.6) * 4
         if (!best || cost < best.cost) best = { cost, at, up }
       }
     if (!best) continue
