@@ -1402,3 +1402,6 @@
     min-width: 220px;
   }
 }
+.iso-sheet.panning:active {
+  cursor: grabbing;
+}

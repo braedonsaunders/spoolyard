@@ -332,7 +332,10 @@ export function IsometricEditor({
     three = useRef<HTMLDivElement>(null),
     specInput = useRef<HTMLInputElement>(null),
     lengthInput = useRef<HTMLInputElement>(null);
-  const drag = useRef<{ x: number; y: number; pan: Point; scale: number } | null>(null);
+  // A left-button press waits for movement before it pans, so the same press can still click.
+  const drag = useRef<{ x: number; y: number; pan: Point; scale: number; pending: boolean; moved: boolean } | null>(null);
+  const [spacePan, setSpacePan] = useState(false);
+  const viewState = useRef({ zoom: 1, pan: [0, 0] as Point, width: 1100, sheet: 1100 });
   const lengthCancel = useRef(false);
   const lengthClosing = useRef(false);
   const nodeDrag = useRef<{
@@ -511,6 +514,46 @@ export function IsometricEditor({
     return () => window.removeEventListener("keydown", key);
   });
   useEffect(() => {
+    // Hold Space to pan with the left button from any tool.
+    const typing = (e: KeyboardEvent) => !!(e.target as HTMLElement)?.closest("input,select,textarea,[contenteditable]");
+    const down = (e: KeyboardEvent) => {
+      if (e.code !== "Space" || typing(e)) return;
+      e.preventDefault();
+      setSpacePan(true);
+    };
+    const up = (e: KeyboardEvent) => { if (e.code === "Space") setSpacePan(false); };
+    const blur = () => setSpacePan(false);
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    window.addEventListener("blur", blur);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      window.removeEventListener("blur", blur);
+    };
+  }, []);
+  useEffect(() => {
+    const element = stage.current;
+    if (!element) return;
+    // React registers wheel listeners as passive; zooming and trackpad panning must cancel page scrolling.
+    const wheel = (e: WheelEvent) => {
+      if ((e.target as Element).closest(".iso-view-controls,.iso-bottom-controls,input,select,textarea")) return;
+      e.preventDefault();
+      const lines = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1;
+      if (e.ctrlKey || e.metaKey) {
+        // Trackpad pinch arrives as a ctrl+wheel with small deltas; ctrl+mouse wheel steps.
+        navigation.current.zoomAt(e.clientX, e.clientY, Math.exp(-Math.max(-50, Math.min(50, e.deltaY * lines)) * 0.01));
+        return;
+      }
+      const notch = e.deltaMode !== 0 || (e.deltaX === 0 && Math.abs(e.deltaY) >= 50) ||
+        (e.deltaX === 0 && Math.abs((e as WheelEvent & { wheelDeltaY?: number }).wheelDeltaY ?? 0) % 120 === 0 && ((e as WheelEvent & { wheelDeltaY?: number }).wheelDeltaY ?? 0) !== 0);
+      if (notch) navigation.current.zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.12 : 1 / 1.12);
+      else navigation.current.panBy(e.deltaX * lines, e.deltaY * lines);
+    };
+    element.addEventListener("wheel", wheel, { passive: false });
+    return () => element.removeEventListener("wheel", wheel);
+  }, [tab, ready]);
+  useEffect(() => {
     loadSpecIndex()
       .then(setLibrary)
       .catch(() => setLibrary([]));
@@ -569,6 +612,28 @@ export function IsometricEditor({
   const viewportWidth = surface === "grid" ? 850 * stageSize.width / stageSize.height : W;
   const viewportX = W / 2 - viewportWidth / 2 / zoom + pan[0];
   const viewportY = 425 - 425 / zoom + pan[1];
+  viewState.current = { zoom, pan, width: viewportWidth, sheet: W };
+  /** Zoom so the drawing point under the pointer stays under it. */
+  const zoomAt = (clientX: number, clientY: number, factor: number) => {
+    const { zoom: current, pan: [px, py], width, sheet } = viewState.current;
+    const next = Math.min(32, Math.max(0.01, current * factor)),
+      matrix = svg.current?.getScreenCTM();
+    if (next === current) return;
+    if (!matrix) return setZoom(next);
+    const p = new DOMPoint(clientX, clientY).matrixTransform(matrix.inverse());
+    const left = sheet / 2 - width / 2 / current + px, top = 425 - 425 / current + py;
+    const nextLeft = p.x - (p.x - left) * current / next, nextTop = p.y - (p.y - top) * current / next;
+    viewState.current = { ...viewState.current, zoom: next, pan: [nextLeft - sheet / 2 + width / 2 / next, nextTop - 425 + 425 / next] };
+    setZoom(next);
+    setPan(viewState.current.pan);
+  };
+  const panBy = (dx: number, dy: number) => {
+    const scale = svg.current?.getScreenCTM()?.a || 1, [px, py] = viewState.current.pan;
+    viewState.current = { ...viewState.current, pan: [px + dx / scale, py + dy / scale] };
+    setPan(viewState.current.pan);
+  };
+  const navigation = useRef({ zoomAt, panBy });
+  navigation.current = { zoomAt, panBy };
   const modelGrid = surface === "grid" && grid.visible
     ? gridLines(drawing, GRID_ORIGIN, grid, doc.units, {
         area: [viewportX, viewportY, viewportX + viewportWidth / zoom, viewportY + 850 / zoom],
@@ -1262,10 +1327,6 @@ export function IsometricEditor({
             <div
               ref={stage}
               className={cn("iso-stage", surface === "grid" && "iso-stage-grid")}
-              onWheel={(e) => {
-                e.preventDefault();
-                setZoom((z) => Math.min(8, Math.max(0.01, z * (e.deltaY < 0 ? 1.12 : 1 / 1.12))));
-              }}
             >
               <div className="iso-view-controls">
                 <div className="iso-segment">
@@ -1331,7 +1392,7 @@ export function IsometricEditor({
                     "iso-sheet",
                     surface === "grid" && "model-space",
                     tool === "pipe" && "routing",
-                    tool === "pan" && "panning",
+                    (tool === "pan" || spacePan) && "panning",
                     armed && tool === "insert" && "placing",
                   )}
                   viewBox={[
@@ -1346,7 +1407,7 @@ export function IsometricEditor({
                     const owner = target.closest("[data-owner]")?.getAttribute("data-owner");
                     const node = target.closest("[data-node]")?.getAttribute("data-node") ?? doc.nodes.find(n => n.id === owner)?.id;
                     const p = point(e);
-                    if ((tool === "select" || tool === "insert" && !armed) && node && p) {
+                    if (e.button === 0 && !spacePan && (tool === "select" || tool === "insert" && !armed) && node && p) {
                       e.preventDefault();
                       e.currentTarget.setPointerCapture(e.pointerId);
                       const position = getNode(doc, node).position;
@@ -1361,10 +1422,14 @@ export function IsometricEditor({
                       selectConnection(node);
                       return;
                     }
-                    if (tool === "pan" || e.button === 1) {
-                      e.preventDefault();
-                      e.currentTarget.setPointerCapture(e.pointerId);
-                      drag.current = { x: e.clientX, y: e.clientY, pan: [...pan], scale: svg.current?.getScreenCTM()?.a ?? 1 };
+                    const immediate = tool === "pan" || spacePan || e.button === 1 || e.button === 2;
+                    if (immediate || e.button === 0) {
+                      // Middle, right, Space or the Pan tool pan at once; a plain left press pans only once it moves.
+                      if (immediate) {
+                        e.preventDefault();
+                        e.currentTarget.setPointerCapture(e.pointerId);
+                      }
+                      drag.current = { x: e.clientX, y: e.clientY, pan: [...pan], scale: svg.current?.getScreenCTM()?.a ?? 1, pending: !immediate, moved: false };
                     }
                   }}
                   onPointerMove={(e) => {
@@ -1393,10 +1458,17 @@ export function IsometricEditor({
                       return;
                     }
                     if (drag.current) {
-                      setPan([
-                        drag.current.pan[0] - (e.clientX - drag.current.x) / drag.current.scale,
-                        drag.current.pan[1] - (e.clientY - drag.current.y) / drag.current.scale,
-                      ]);
+                      const state = drag.current, distance = Math.hypot(e.clientX - state.x, e.clientY - state.y);
+                      if (state.pending) {
+                        if (distance < 6) return;
+                        state.pending = false;
+                        e.currentTarget.setPointerCapture(e.pointerId);
+                        setInsertHover(null);
+                        setCursor(null);
+                      }
+                      state.moved ||= distance >= 3;
+                      viewState.current = { ...viewState.current, pan: [state.pan[0] - (e.clientX - state.x) / state.scale, state.pan[1] - (e.clientY - state.y) / state.scale] };
+                      setPan(viewState.current.pan);
                       return;
                     }
                     if (armed && tool === "insert") {
@@ -1411,6 +1483,8 @@ export function IsometricEditor({
                     }
                   }}
                   onPointerLeave={() => setInsertHover(null)}
+                  onMouseDown={(e) => { if (e.button === 1) e.preventDefault(); }}
+                  onContextMenu={(e) => e.preventDefault()}
                   onPointerCancel={() => { nodeDrag.current = null; drag.current = null; setCursor(null); setInsertHover(null); }}
                   onPointerUp={(e) => {
                     if (nodeDrag.current) {
@@ -1434,9 +1508,12 @@ export function IsometricEditor({
                       return;
                     }
                     if (drag.current) {
+                      const state = drag.current;
                       drag.current = null;
-                      e.currentTarget.releasePointerCapture(e.pointerId);
-                      return;
+                      if (!state.pending) {
+                        if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+                        return;
+                      }
                     }
                     if (!armed && (e.target as Element).closest("[data-length]") && e.detail >= 2) return;
                     place(e);
@@ -1715,11 +1792,11 @@ export function IsometricEditor({
                   </datalist>
                 </div>
                 <div>
-                  <button aria-label="Zoom out" onClick={() => setZoom((z) => Math.max(0.01, z / 1.2))}>
+                  <button aria-label="Zoom out" onClick={() => { const r = svg.current?.getBoundingClientRect(); if (r) zoomAt(r.left + r.width / 2, r.top + r.height / 2, 1 / 1.2); }}>
                     <ZoomOut size={15} />
                   </button>
                   <span>{Math.round(zoom * 100)}%</span>
-                  <button aria-label="Zoom in" onClick={() => setZoom((z) => Math.min(32, z * 1.2))}>
+                  <button aria-label="Zoom in" onClick={() => { const r = svg.current?.getBoundingClientRect(); if (r) zoomAt(r.left + r.width / 2, r.top + r.height / 2, 1.2); }}>
                     <ZoomIn size={15} />
                   </button>
                   <button aria-label="Fit drawing" onClick={fit}>
