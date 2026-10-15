@@ -75,10 +75,11 @@ export class Placement {
   }
   free(poly: Poly, excuse?: (o: Occupant) => boolean) { return this.inside(poly) && !this.hits(poly, excuse).length }
   /** Overlap cost for ranking candidate positions: text collisions are worst, crossing thin lines is mild. */
-  cost(poly: Poly, excuse?: (o: Occupant) => boolean): number {
+  cost(poly: Poly, excuse?: (o: Occupant) => boolean, weights: Partial<Record<Occupant['kind'], number>> = {}): number {
     let cost = this.inside(poly) ? 0 : 1000
     // Thin dimension and leader lines are broken around text afterwards, so crossing one costs little.
-    for (const o of this.hits(poly, excuse)) cost += o.kind === 'text' || o.kind === 'symbol' || o.kind === 'tag' ? 100 : o.kind === 'pipe' ? 60 : 3
+    for (const o of this.hits(poly, excuse))
+      cost += weights[o.kind] ?? (o.kind === 'text' || o.kind === 'symbol' || o.kind === 'tag' ? 100 : o.kind === 'pipe' ? 60 : 3)
     return cost
   }
 }

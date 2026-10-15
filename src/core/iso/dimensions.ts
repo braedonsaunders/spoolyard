@@ -4,7 +4,7 @@ import { connected, distance, getNode, length, runResult, sub, takeout, type Pip
 import { nodeCode } from '../joints'
 import { SIZE, emitters, type IsoContext } from './context'
 import { measureText } from '../stroke-font'
-import { segmentPoly, textPoly } from './placement'
+import { segmentPoly, textPoly, type Poly } from './placement'
 import { add2, dot2, isAxial, lerp2, planeText, scale2, sub2, unit2, unit3, uprightOf } from './plane'
 
 interface Station { model: Vec3; page: Point; node?: string }
@@ -49,10 +49,9 @@ function stations(ctx: IsoContext, leg: Leg): Station[] {
     const node = getNode(ctx.doc, id), page = ctx.pos.get(id)!
     const inner = i > 0 && i < leg.nodes.length - 1
     if (inner && node.kind === 'gasket') return
-    // Screwed or fitting-to-fitting assemblies are made of their parts: only the ends of their pipe and the
-    // branches between them are measured.
-    if (inner && node.kind !== 'tee' && leg.runs.filter(r => r.from === id || r.to === id).every(r => r.connector)) return
     const code = nodeCode(ctx.doc, node) ?? ''
+    // Nipples, couplings, unions and regulators only join the pieces either side: the dimensions run through them.
+    if (inner && /NIPPLE|UNION|CPLG|REGUL/.test(code)) return
     const joints = ctx.joints.filter(j => j.nodeId === id && j.kind === 'component-port')
     const e = ctx.extent.get(id) ?? 0
     if (inner && joints.length) {
@@ -114,12 +113,16 @@ export function drawDimensions(ctx: IsoContext) {
   const { line, poly, arrow } = emitters(ctx)
   const units = ctx.doc.units
   for (const leg of sheetLegs(ctx)) {
-    // Screwed nipple assemblies (a vent's nipple and cap) are made of their parts; they take no dimensions.
-    if (leg.runs.every(r => r.connector) && leg.nodes.some(id => /NIPPLE/.test(nodeCode(ctx.doc, getNode(ctx.doc, id)) ?? ''))) continue
+    // A screwed vent or drain (nipple and cap off a pipe) is made of its parts; it takes no dimensions.
+    const node = (id: string) => getNode(ctx.doc, id)
+    if (leg.runs.every(r => r.connector) && leg.nodes.some(id => /NIPPLE/.test(nodeCode(ctx.doc, node(id)) ?? '')) &&
+      [leg.nodes[0], leg.nodes.at(-1)!].some(id => node(id).kind === 'cap' || !!node(id).associatedRunId)) continue
     const points = stations(ctx, leg)
     if (points.length < 2) continue
-    if (!isAxial(leg.dir3)) { offset(leg, points); continue }
     const segments = points.slice(1).map((p, i) => ({ a: points[i], b: p, mm: distance(points[i].model, p.model) })).filter(s => s.mm > 0.5)
+    const skewed = !isAxial(leg.dir3)
+    // An offset with nothing along it is dimensioned by its construction alone.
+    if (skewed && segments.length < 2 && !locations(ctx, leg, points).length) { offset(leg, points); continue }
     if (!segments.length) continue
     // Branch locations next to the pipe, then the chain between stations, then an overall dimension for each part
     // of the leg between branches.
@@ -130,7 +133,9 @@ export function drawDimensions(ctx: IsoContext) {
       sections.at(-1)!.push(s)
       if (s.b.node && s.b !== points.at(-1) && getNode(ctx.doc, s.b.node).kind === 'tee') sections.push([])
     }
-    const overall = sections.filter(sec => sec.length > 1).map(sec => ({ a: sec[0].a, b: sec.at(-1)!.b, mm: distance(sec[0].a.model, sec.at(-1)!.b.model) }))
+    const across = (sec: typeof segments) => ({ a: sec[0].a, b: sec.at(-1)!.b, mm: distance(sec[0].a.model, sec.at(-1)!.b.model) })
+    // When tees cut the chain into single pieces, the overall runs the whole leg instead.
+    const overall = sections.every(sec => sec.length < 2) ? segments.length > 1 ? [across(segments)] : [] : sections.filter(sec => sec.length > 1).map(across)
     if (overall.length) tiers.push(overall)
     // Extension lines run along an isometric axis across the leg: vertical for horizontal legs, horizontal for risers.
     const horizontal = Math.abs(leg.dir3[2]) < 0.7
@@ -144,14 +149,17 @@ export function drawDimensions(ctx: IsoContext) {
         const off = SIZE.tier + t * SIZE.tierStep
         for (const s of tier) {
           const a = add2(s.a.page, scale2(ext, off)), b = add2(s.b.page, scale2(ext, off))
-          cost += ctx.place.cost(segmentPoly(a, b, 1)) + ctx.place.cost(labelPoly(s.mm, a, b, ext))
+          // A dimension line may cross a pipe; its lettering may not.
+          cost += ctx.place.cost(segmentPoly(a, b, 1), undefined, { pipe: 8, symbol: 30 }) + ctx.place.cost(labelPoly(s.mm, a, b, ext))
         }
       })
+      // An offset's construction goes on the other side of the pipe from its chain.
+      if (skewed) cost += triangleCost(leg, points, ext)
       // Prefer dimensions above and to the right, as drafted.
       cost += (ext[1] > 0 ? 3 : 0) + (ext[0] < -0.1 ? 2 : 0)
       if (!best || cost < best.cost) best = { cost, ext }
     }
-    if (!best) continue
+    if (!best) { if (skewed) offset(leg, points); continue }
     const ext = best.ext
     tiers.forEach((tier, t) => {
       const off = SIZE.tier + t * SIZE.tierStep
@@ -159,6 +167,8 @@ export function drawDimensions(ctx: IsoContext) {
       const spans = tier.map(s => [s.a.page, s.b.page] as [Point, Point])
       for (const s of tier) dimension(s.a, s.b, s.mm, ext, off, runBetween(leg, s), ownerOf(leg, s), spans.filter(([a]) => a !== s.a.page))
     })
+    // The overall of a skewed leg is its true length; the construction goes on the other side.
+    if (skewed) offset(leg, points, ext)
   }
   /** The pipe a dimension measures node to node, so its length can be edited in place. */
   function runBetween(leg: Leg, s: { a: Station; b: Station }) {
@@ -228,7 +238,20 @@ export function drawDimensions(ctx: IsoContext) {
         { rotation: t.rotation, oblique: t.oblique, anchor: 'middle', role: 'cut' })
   }
   /** Rolling or plane offsets: hatched triangle with both leg dimensions and the offset angle. */
-  function offset(leg: Leg, points: Station[]) {
+  /** Clutter under the plane-offset triangle that would go opposite `ext`. */
+  function triangleCost(leg: Leg, points: Station[], ext: Point) {
+    const start = points[0], end = points.at(-1)!, d = sub(end.model, start.model)
+    const comps = [0, 1, 2].filter(i => Math.abs(d[i]) > 0.5)
+    if (comps.length !== 2) return 0
+    const axis = (i: number): Point => { const v: Vec3 = [0, 0, 0]; v[i] = 1; return ctx.axis(v) }
+    const projected = comps.reduce<Point>((sum, i) => add2(sum, scale2(axis(i), d[i])), [0, 0])
+    const k = Math.hypot(...sub2(end.page, start.page)) / (Math.hypot(...projected) || 1), mid = lerp2(start.page, end.page, 0.5)
+    const corners = comps.map(i => add2(start.page, scale2(axis(i), d[i] * k)))
+    const corner = corners.find(c => dot2(sub2(c, mid), ext) <= 0) ?? corners[0]
+    return ctx.place.cost([start.page, corner, end.page] as Poly, o => leg.runs.some(r => r.id === o.owner), { pipe: 40, line: 1 })
+  }
+  /** The offset construction of a skewed leg; `chainExt` is the side its chain dimensions took, if it has them. */
+  function offset(leg: Leg, points: Station[], chainExt?: Point) {
     const start = points[0], end = points.at(-1)!, d = sub(end.model, start.model), total = length(d)
     if (total < 1) return
     const owner = leg.runs[0].id
@@ -240,23 +263,38 @@ export function drawDimensions(ctx: IsoContext) {
     const step = (from: Point, i: number): Point => add2(from, scale2(unitAxis(i), d[i] * k))
     // A plane offset is one right triangle; a rolling offset is a horizontal triangle (the travel in plan) and a
     // vertical one (the rise), drawn as the reference sheets do.
-    const horizontal = comps.filter(i => i !== 2), rises = comps.includes(2)
-    const first = horizontal[0] ?? 2
-    const corner = step(start.page, first)
-    const plan = horizontal.length === 2 ? step(corner, horizontal[1]) : corner
+    const horizontal = comps.filter(i => i !== 2).sort((a, b) => Math.abs(d[b]) - Math.abs(d[a])), rises = comps.includes(2)
+    const centre0 = lerp2(start.page, end.page, 0.5)
     // Each leg, the length along its axis, and the axis its lettering stands on (the triangle's other axis).
-    const legs: Array<[Point, Point, number, number]> = [[start.page, corner, Math.abs(d[first]), horizontal[1] ?? 2]]
-    if (horizontal.length === 2) legs.push([corner, plan, Math.abs(d[horizontal[1]]), horizontal[0]])
-    if (rises && horizontal.length) legs.push([plan, end.page, Math.abs(d[2]), horizontal[0]])
-    for (const [a, b] of legs) line(a, b, 'DIM', owner)
+    const legs: Array<[Point, Point, number, number]> = []
     const triangles: Array<{ apex: Point; leg: Point; far: Point; angle: number; plane: 'H' | 'V' }> = []
-    if (horizontal.length === 2)
+    if (comps.length === 2) {
+      // Either leg can come first; the triangle goes on the side clear of the run's chain dimensions, or of other work.
+      const [a, b] = comps
+      const build = ([p, q]: number[]) => ({ p, q, corner: step(start.page, p) })
+      const options = [build([a, b]), build([b, a])]
+      const score = (o: { corner: Point }) => chainExt
+        ? (dot2(sub2(o.corner, centre0), chainExt) > 0 ? 1000 : 0)
+        : ctx.place.cost([start.page, o.corner, end.page] as Poly)
+      const { p, q, corner } = options.reduce((x, y) => score(y) < score(x) ? y : x)
+      legs.push([start.page, corner, Math.abs(d[p]), q], [corner, end.page, Math.abs(d[q]), p])
+      // The angle is given off the longer leg, at the end of the pipe where that leg meets it.
+      const long = Math.abs(d[p]) >= Math.abs(d[q])
+      triangles.push({
+        apex: long ? start.page : end.page, leg: corner, far: long ? end.page : start.page,
+        angle: Math.atan2(Math.min(Math.abs(d[p]), Math.abs(d[q])), Math.max(Math.abs(d[p]), Math.abs(d[q]))) * 180 / Math.PI,
+        plane: comps.includes(2) ? 'V' : 'H'
+      })
+    } else {
+      const first = horizontal[0]
+      const corner = step(start.page, first), plan = step(corner, horizontal[1])
+      legs.push([start.page, corner, Math.abs(d[first]), horizontal[1]], [corner, plan, Math.abs(d[horizontal[1]]), horizontal[0]], [plan, end.page, Math.abs(d[2]), horizontal[0]])
       triangles.push({ apex: start.page, leg: corner, far: plan, angle: Math.atan2(Math.abs(d[horizontal[1]]), Math.abs(d[horizontal[0]])) * 180 / Math.PI, plane: 'H' })
-    if (rises && horizontal.length) {
-      const run = Math.hypot(...horizontal.map(i => d[i]))
-      if (horizontal.length === 2) line(start.page, plan, 'DIM', owner, 0.4)
-      triangles.push({ apex: start.page, leg: plan, far: end.page, angle: Math.atan2(Math.abs(d[2]), run) * 180 / Math.PI, plane: 'V' })
+      line(start.page, plan, 'DIM', owner, 0.4)
+      triangles.push({ apex: start.page, leg: plan, far: end.page, angle: Math.atan2(Math.abs(d[2]), Math.hypot(d[horizontal[0]], d[horizontal[1]])) * 180 / Math.PI, plane: 'V' })
     }
+    const corner = legs[0][1]
+    for (const [a, b] of legs) line(a, b, 'DIM', owner)
     for (const t of triangles) {
       // Hatching fills the acute corner between the pipe and the leg; a square marks the right angle.
       for (let i = 1; i <= 4; i++) {
@@ -282,15 +320,16 @@ export function drawDimensions(ctx: IsoContext) {
       }, { q: spots[0], c: Infinity }).q
       emitters(ctx).text([at[0], at[1] + SIZE.text / 2], label, SIZE.text, 'DIM', owner, { anchor: 'middle' })
     }
-    // The true length is dimensioned along the pipe, on the side away from the construction.
-    if (comps.length === 3) {
+    // The true length is dimensioned along the pipe, on the side away from the construction, unless the chain
+    // along the pipe already gives it.
+    if (comps.length === 3 && !chainExt) {
       const along = unit2(sub2(end.page, start.page)), mid = lerp2(start.page, end.page, 0.5)
       let ext: Point = [along[1], -along[0]]
       const bulk = legs.reduce<Point>((sum, [a, b]) => add2(sum, sub2(lerp2(a, b, 0.5), mid)), [0, 0])
       if (dot2(ext, bulk) > 0) ext = scale2(ext, -1)
       dimension(start, end, total, ext, SIZE.tier, leg.runs.length === 1 ? leg.runs[0] : undefined, owner)
     }
-    if (comps.length === 2) {
+    if (comps.length === 2 && !chainExt) {
       const normal: Vec3 = [0, 0, 0]
       normal[[0, 1, 2].find(i => !comps.includes(i)) ?? 2] = 1
       const dir3 = unit3(d), across3: Vec3 = [normal[1] * dir3[2] - normal[2] * dir3[1], normal[2] * dir3[0] - normal[0] * dir3[2], normal[0] * dir3[1] - normal[1] * dir3[0]]

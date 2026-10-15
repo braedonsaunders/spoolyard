@@ -69,14 +69,18 @@ export function wrapText(text: string, size: number, width: number, factor = 1):
   const out: string[] = []
   for (const paragraph of text.split('\n')) {
     let line = ''
-    // A spaced dash stays with the word before it ("BV -" then "CUT TO …").
-    const words = paragraph.split(/\s+/).filter(Boolean).reduce<string[]>((acc, w) => {
-      if (w === '-' && acc.length) acc[acc.length - 1] += ' -'
-      else acc.push(w)
-      return acc
-    }, [])
-    for (let word of words) {
-      const next = line ? `${line} ${word}` : word
+    // Words keep the spacing written between them (verbatim catalogue text has double spaces); a spaced dash stays
+    // with the word before it ("BV -" then "CUT TO …").
+    const words: Array<{ word: string; gap: string }> = []
+    for (const [, word, gap] of paragraph.trim().matchAll(/(\S+)(\s*)/g)) {
+      const last = words.at(-1)
+      if (word === '-' && last) { last.word += last.gap + '-'; last.gap = gap }
+      else words.push({ word, gap })
+    }
+    let gap = ''
+    for (let { word, gap: after } of words) {
+      const next = line ? `${line}${gap || ' '}${word}` : word
+      gap = after
       if (measureText(next, size, factor) <= width) { line = next; continue }
       if (line) out.push(line)
       while (word.length > 1 && measureText(word, size, factor) > width) {

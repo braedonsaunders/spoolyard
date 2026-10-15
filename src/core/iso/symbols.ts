@@ -1,7 +1,7 @@
 import type { Point } from '../drawing'
 import { COMPONENT_TYPE_BY_CODE } from '../components'
 import { isBlind, isLapJoint, nodeCode, nodeItem } from '../joints'
-import { connected, getNode, welds, type IsoDocument, type PipeNode, type PipeRun, type Vec3 } from '../model'
+import { connected, getNode, pipePrepAt, welds, type IsoDocument, type PipeNode, type PipeRun, type Vec3 } from '../model'
 import { symbolStrokes } from '../symbols'
 import { SIZE, emitters, type IsoContext } from './context'
 import { add2, crossAxis, dot2, frame, isAxial, left2, len2, scale2, sub2, unit2 } from './plane'
@@ -54,16 +54,25 @@ export function drawPipes(ctx: IsoContext) {
   // Weld dots sit just off the fitting they join, clear of its symbol, whatever the sheet scale.
   for (const w of welds(ctx.doc)) {
     const g = ctx.geometry.get(w.runId)
-    if (!g || g.run.connector) continue
+    if (!g) continue
     const node = getNode(ctx.doc, w.nodeId), at = ctx.pos.get(node.id)
     if (!at) continue
     let p: Point
     if (node.kind === 'weld') p = at
+    // Fittings welded straight together meet where their takeouts do, along the drawn joint.
+    else if (g.run.connector) p = ctx.project(w.position)
     else {
       const out = toward(node, g.run), projected = len2(sub2(ctx.project(w.position), at))
       p = add2(at, scale2(out, (ctx.extent.get(node.id) ?? 0) + Math.min(14, Math.max(7, projected))))
     }
     circle(p, w.field ? SIZE.weld * 1.4 : SIZE.weld, 'WELD', w.nodeId, !w.field)
+  }
+  // A butt-welded end continuing on another drawing is welded there to the next piece.
+  for (const node of ctx.nodes) {
+    const run = node.kind === 'end' && node.continuation && !/OPEN END|CLOSED/i.test(node.continuation.text) ? connected(ctx.doc, node.id)[0] : undefined
+    const at = ctx.pos.get(node.id)
+    if (!run || !at || !ctx.geometry.has(run.id)) continue
+    if (pipePrepAt(ctx.doc, run, run.from === node.id ? 0 : 1) === 'BW') circle(at, SIZE.weld, 'WELD', node.id, true)
   }
   for (const node of ctx.nodes) drawSymbol(ctx, node)
   function flangePair(at: Point, along: Point, across: Point, owner: string, sides: Array<1 | -1>, gap = 1.2) {
