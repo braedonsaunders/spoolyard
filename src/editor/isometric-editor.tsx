@@ -38,6 +38,7 @@ import {
 import { cn } from "./cn";
 import { SheetLayer } from "./sheet-layer";
 import { NodeCallouts } from "./node-callouts";
+import { SheetSettings } from "./sheet-settings";
 import {
   appendRun,
   applyComponent,
@@ -1707,64 +1708,20 @@ export function IsometricEditor({
               </div>
               {tab === "sheet" ? (
                 <>
-                  {(
-                    [
-                      "title",
-                      "drawing",
-                      "revision",
-                      "customer",
-                      "project",
-                      "drawnBy",
-                      "checkedBy",
-                      "notes",
-                    ] as const
-                  ).map((key) => (
-                    <Field key={key} label={key.replace(/([A-Z])/g, " $1")}>
-                      <input
-                        aria-label={"Setup " + key}
-                        value={doc[key]}
-                        onChange={(e) =>
-                          commit((d) => {
-                            d[key] = e.target.value;
-                          })
-                        }
-                      />
-                    </Field>
-                  ))}
-                  <Field label="Paper size">
-                    <select
-                      value={doc.paper ?? "tabloid"}
-                      onChange={(e) =>
-                        commit((d) => {
-                          d.paper = e.target.value as IsoDocument["paper"];
-                        })
+                  <SheetSettings
+                    doc={doc}
+                    commit={commit}
+                    onError={setError}
+                    spool={filter || spool}
+                    selectedNodeId={selectedNode?.id}
+                    onUnitsChange={(units, previous) => {
+                      try {
+                        setSpan(lengthInputValue(parseLength(span, previous), units));
+                      } catch {
+                        setSpan(units === "imperial" ? "10'" : "1000");
                       }
-                    >
-                      {["tabloid", "letter", "a3", "a4"].map((p) => (
-                        <option key={p}>{p}</option>
-                      ))}
-                    </select>
-                  </Field>
-                  <Field label="Units">
-                    <select
-                      value={doc.units}
-                      onChange={(e) => {
-                        const units = e.target.value as IsoDocument["units"];
-                        const previous = doc.units;
-                        commit((d) => {
-                          d.units = units;
-                        });
-                        try {
-                          setSpan(lengthInputValue(parseLength(span, previous), units));
-                        } catch {
-                          setSpan(units === "imperial" ? "10'" : "1000");
-                        }
-                      }}
-                    >
-                      <option value="mm">Millimetres</option>
-                      <option value="imperial">Feet / inches</option>
-                    </select>
-                  </Field>
+                    }}
+                  />
                   <Field label="Isometric scale">
                     <BlockScaleInput
                       spacing={grid.spacing}
@@ -1793,17 +1750,6 @@ export function IsometricEditor({
                       {v} PDF sheet
                     </label>
                   ))}
-                  <Field label="North rotation (degrees)">
-                    <input
-                      type="number"
-                      value={doc.north}
-                      onChange={(e) =>
-                        commit((d) => {
-                          d.north = Number(e.target.value);
-                        })
-                      }
-                    />
-                  </Field>
                 </>
               ) : (
                 <>

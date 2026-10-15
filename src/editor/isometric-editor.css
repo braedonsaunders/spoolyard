@@ -1644,3 +1644,8 @@
   opacity: 0;
   pointer-events: none;
 }
+.iso-sheet-section > summary small {
+  margin-left: 6px;
+  font-weight: 400;
+  opacity: 0.7;
+}

@@ -323,6 +323,8 @@ export function drawSheet(input: {
   // Logos, fitted into their panels at their own proportions.
   const panels: Array<[SheetRect, number]> = [[[1242, TB, 1617, 1464.5], 15], [[1617, TB, 1760.5, 1464.5], 3]]
   tb.logos.slice(0, 2).forEach((logo, i) => {
+    // An unnamed placeholder keeps the client logo in its own slot; it draws nothing.
+    if (!logo.name) return
     const [[x0, y0, x1, y1], pad] = panels[i]
     const bw = X(x1 - x0 - 2 * pad), bh = Y(y1 - y0 - 2 * pad)
     const aspect = imageAspect(logo.dataUrl) ?? bw / bh
