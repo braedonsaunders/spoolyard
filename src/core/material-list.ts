@@ -128,7 +128,8 @@ export function sheetMaterials(doc: IsoDocument, spool = ''): MaterialRow[] {
     if (joint.bolts) {
       const b = joint.bolts, own = rowDescription(b.item, 'STUD BOLTS C/W 2 NUTS')
       const description = b.kind === 'lug' ? (/STUD/.test(own) ? own.replace(/STUD/g, 'LUG') : 'LUG BOLTS, ' + own) : own
-      const nd = boltSizeText(b.diameter, b.length, doc.units)
+      // ASME bolting is sized in inches on metric drawings too.
+      const nd = boltSizeText(b.diameter, b.length)
       add(JSON.stringify(['bolt', b.kind, description, nd]), { category: 'bolt', nd, description, qty: 0, size: b.diameter }, joint.id + '#bolts', b.count)
     }
   }
