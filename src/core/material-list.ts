@@ -47,22 +47,35 @@ function categoryOf(kind: PipeNode['kind'], code = ''): MaterialCategory {
     default: return 'other'
   }
 }
-/** Pipes in the order a fitter follows them: from an open end through every branch. */
+/**
+ * Pipes in the order a fitter follows them: from an open end straight through tees to the far end, then the next
+ * open end back to the network, and so on.
+ */
 export function routeOrder(doc: IsoDocument, runs: PipeRun[]): PipeRun[] {
   const pending = new Set(runs.map(r => r.id)), out: PipeRun[] = []
-  const degree = (id: string) => connected(doc, id).filter(r => pending.has(r.id) || out.includes(r)).length
+  const left = () => runs.filter(r => pending.has(r.id))
+  const open = (id: string) => connected(doc, id).filter(r => runs.includes(r)).length === 1
+  const direction = (r: PipeRun, from: string) => {
+    const a = getNode(doc, from).position, b = getNode(doc, r.from === from ? r.to : r.from).position
+    const d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], l = Math.hypot(...d) || 1
+    return d.map(v => v / l)
+  }
   while (pending.size) {
-    const left = runs.filter(r => pending.has(r.id))
-    const start = left.flatMap(r => [r.from, r.to]).find(id => degree(id) === 1 && getNode(doc, id).kind === 'end') ??
-      left.flatMap(r => [r.from, r.to]).find(id => degree(id) === 1) ?? left[0].from
-    const stack = [start]
-    while (stack.length) {
-      const at = stack.pop()!
-      for (const r of connected(doc, at).filter(r => pending.has(r.id)).reverse()) {
-        pending.delete(r.id)
-        out.push(r)
-        stack.push(r.from === at ? r.to : r.from)
-      }
+    const ends = left().flatMap(r => [r.from, r.to])
+    let at = ends.find(id => open(id) && getNode(doc, id).kind !== 'weld') ?? ends.find(id => out.some(r => r.from === id || r.to === id)) ?? ends[0]
+    let heading: number[] | null = null
+    for (;;) {
+      const next = connected(doc, at).filter(r => pending.has(r.id))
+      if (!next.length) break
+      // Carry straight on through a junction; turn only when the line turns.
+      const run = heading ? next.reduce((a, b) => {
+        const da = direction(a, at), db = direction(b, at)
+        return db.reduce((s, v, i) => s + v * heading![i], 0) > da.reduce((s, v, i) => s + v * heading![i], 0) ? b : a
+      }) : next[0]
+      heading = direction(run, at)
+      pending.delete(run.id)
+      out.push(run)
+      at = run.from === at ? run.to : run.from
     }
   }
   return out
@@ -120,7 +133,7 @@ export function sheetMaterials(doc: IsoDocument, spool = ''): MaterialRow[] {
     }
     for (const stub of joint.stubEnds) {
       const description = rowDescription(stub, 'STUB END')
-      add(JSON.stringify(['stub', stub.id, description, joint.nps]), { category: 'stub', nd: sizeText(joint.nps), description, qty: 0, size: joint.nps }, joint.id + '#stub', 1)
+      add(JSON.stringify(['stub', stub.id, description, sizeText(joint.nps), null, null]), { category: 'stub', nd: sizeText(joint.nps), description, qty: 0, size: joint.nps }, joint.id + '#stub', 1)
     }
     // Parts supplied elsewhere are not counted, but their callout still names the matching BOM item.
     const part = (key: string, row: Parameters<typeof add>[1], member: string, qty: number, supplied: boolean) =>
