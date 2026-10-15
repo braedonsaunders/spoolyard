@@ -285,7 +285,9 @@ test('DXF keeps multiline text and literal braces without breaking group-code pa
   const dxf = isometricDxf(doc), lines = dxf.trimEnd().split('\n');
   assert.equal(lines.length % 2, 0);
   for (let i = 0; i < lines.length; i += 2) assert.match(lines[i], /^\d+$/);
-  assert.ok(dxf.includes('Client \\{A\\}\\PProject B'));
+  // TEXT has no line breaks: each line is its own entity, stacked below the first, and braces stay literal.
+  const values = lines.flatMap((line, i) => (i % 2 === 0 && line === '1' ? [lines[i + 1]] : []));
+  assert.ok(values.includes('Client {A}') && values.includes('Project B'));
   assert.deepEqual(readIsometric(dxf), doc);
 });
 

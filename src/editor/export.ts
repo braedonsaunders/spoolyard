@@ -1,8 +1,35 @@
 import { download } from "./download";
 export { download };
 import { assetUrl } from "./assets";
-import { PDFDocument, rgb } from "pdf-lib";
+import {
+  PDFDocument,
+  rgb,
+  type Color,
+  type PDFFont,
+  type PDFImage,
+  type PDFOperator,
+  type PDFPage,
+  appendBezierCurve,
+  closePath,
+  concatTransformationMatrix,
+  fillAndStroke,
+  LineCapStyle,
+  LineJoinStyle,
+  lineTo,
+  moveTo,
+  popGraphicsState,
+  pushGraphicsState,
+  setFillingColor,
+  setLineCap,
+  setLineJoin,
+  setLineWidth,
+  setStrokingColor,
+  setTextRenderingMode,
+  stroke,
+  TextRenderingMode,
+} from "pdf-lib";
 import fontkit from "@pdf-lib/fontkit";
+import { LINE_SPACING, strokeText } from "../core/stroke-font";
 import {
   type IsoDocument,
   bom,
@@ -18,8 +45,148 @@ import {
   formatAllowance,
   displayBom,
 } from "../core/model";
-import { createDrawing, drawingSvg } from "../core/drawing";
+import { createDrawing, drawingSvg, weightOf, type Drawing, type Primitive } from "../core/drawing";
 import { defaultGrid, GRID_ORIGIN, gridLines } from "../core/grid";
+
+const hex = (value: string) =>
+  rgb(...([1, 3, 5].map((i) => parseInt(value.slice(i, i + 2), 16) / 255) as [number, number, number]));
+/** The SVG sheet's stylesheet colours. */
+const STROKE_INK: Record<string, Color> = { PIPE: hex("#1c2b38"), DIM: hex("#8ea4b4"), WELD: hex("#0c6880"), BOM: hex("#607180") },
+  TEXT_INK: Record<string, Color> = { DIM: hex("#31404c"), TEXT: hex("#6d7a86"), WELD: hex("#0c6880"), BOM: hex("#1c2b38") },
+  INK = hex("#17212c"),
+  WHITE = rgb(1, 1, 1);
+const images = new WeakMap<PDFDocument, Map<string, Promise<PDFImage | null>>>();
+/** PNG and JPEG data URLs (or fetchable URLs) embed once per document; anything else is left off the page. */
+function embedImage(pdf: PDFDocument, href: string): Promise<PDFImage | null> {
+  let cache = images.get(pdf);
+  if (!cache) images.set(pdf, (cache = new Map()));
+  let image = cache.get(href);
+  if (!image)
+    cache.set(
+      href,
+      (image = (async () => {
+        try {
+          const bytes = href.startsWith("data:")
+            ? href
+            : new Uint8Array(await (await fetch(href)).arrayBuffer());
+          const type = typeof bytes === "string" ? /^data:image\/(png|jpe?g)/i.exec(bytes)?.[1]?.toLowerCase()
+            : bytes[0] === 0x89 && bytes[1] === 0x50 ? "png" : bytes[0] === 0xff && bytes[1] === 0xd8 ? "jpeg" : undefined;
+          return type === "png" ? await pdf.embedPng(bytes) : type ? await pdf.embedJpg(bytes) : null;
+        } catch {
+          return null;
+        }
+      })()),
+    );
+  return image;
+}
+
+/**
+ * Draws a sheet's primitives the way drawingSvg does: `frame` is the page position of the sheet's top-left corner
+ * and the page points per sheet unit.
+ */
+export async function drawPrimitives(
+  page: PDFPage,
+  d: Drawing,
+  font: PDFFont,
+  frame: { x: number; y: number; scale: number },
+): Promise<void> {
+  const embedded = new Map(
+    await Promise.all(
+      d.primitives.flatMap((p) => (p.type === "image" ? [p.href] : [])).map(async (href) => [href, await embedImage(page.doc, href)] as const),
+    ),
+  );
+  const ops: PDFOperator[] = [];
+  const path = (points: Array<[number, number]>, closed = false) => {
+    points.forEach((q, i) => ops.push(i ? lineTo(q[0], q[1]) : moveTo(q[0], q[1])));
+    if (closed) ops.push(closePath());
+  };
+  const flush = () => page.pushOperators(...ops.splice(0));
+  // Sheet units with y down from here on; stroke widths are in sheet units like the SVG's.
+  page.pushOperators(pushGraphicsState(), concatTransformationMatrix(frame.scale, 0, 0, -frame.scale, frame.x, frame.y));
+  for (const p of d.primitives) {
+    if (p.type === "image") {
+      const image = embedded.get(p.href);
+      if (!image) continue;
+      // preserveAspectRatio="xMidYMid meet", upright on the page.
+      const fit = Math.min(p.width / image.width, p.height / image.height),
+        w = image.width * fit,
+        h = image.height * fit;
+      ops.push(pushGraphicsState(), concatTransformationMatrix(1, 0, 0, -1, p.p[0], p.p[1] + p.height));
+      flush();
+      page.drawImage(image, { x: (p.width - w) / 2, y: (p.height - h) / 2, width: w, height: h });
+      ops.push(popGraphicsState());
+    } else if (p.type === "text") drawText(p);
+    else if (p.type !== "polyline" || p.points.length > 1) {
+      const ink = STROKE_INK[p.layer] ?? INK;
+      ops.push(pushGraphicsState(), setStrokingColor(ink), setLineWidth(weightOf(p)));
+      if (p.type === "line") ops.push(moveTo(p.a[0], p.a[1]), lineTo(p.b[0], p.b[1]), stroke());
+      else if (p.type === "polyline") {
+        ops.push(setLineJoin(LineJoinStyle.Round), setFillingColor(ink));
+        path(p.points, p.closed || p.fill);
+        ops.push(p.fill ? fillAndStroke() : stroke());
+      } else {
+        const [x, y] = p.p,
+          r = p.r,
+          k = r * 0.5523;
+        ops.push(
+          setFillingColor(p.fill ? ink : WHITE),
+          moveTo(x + r, y),
+          appendBezierCurve(x + r, y + k, x + k, y + r, x, y + r),
+          appendBezierCurve(x - k, y + r, x - r, y + k, x - r, y),
+          appendBezierCurve(x - r, y - k, x - k, y - r, x, y - r),
+          appendBezierCurve(x + k, y - r, x + r, y - k, x + r, y),
+          closePath(),
+          fillAndStroke(),
+        );
+      }
+      ops.push(popGraphicsState());
+    }
+  }
+  flush();
+  page.pushOperators(popGraphicsState());
+
+  function drawText(p: Extract<Primitive, { type: "text" }>) {
+    const ink = TEXT_INK[p.layer] ?? INK,
+      shift = p.anchor === "middle" ? 0.5 : p.anchor === "end" ? 1 : 0;
+    if (d.lettering === "cad") {
+      ops.push(
+        pushGraphicsState(),
+        setStrokingColor(ink),
+        setLineWidth(Math.max(0.35, p.size * 0.1)),
+        setLineCap(LineCapStyle.Round),
+        setLineJoin(LineJoinStyle.Round),
+      );
+      const strokes = strokeText(p.text, { at: p.p, size: p.size, rotation: p.rotation, oblique: p.oblique, anchor: p.anchor });
+      for (const s of strokes) path(s);
+      ops.push(...(strokes.length ? [stroke()] : []), popGraphicsState());
+      return;
+    }
+    // translate(p) rotate(-rotation) skewX(-oblique) in the y-down sheet, then glyph space with y up.
+    const angle = ((p.rotation ?? 0) * Math.PI) / 180,
+      cos = Math.cos(angle),
+      sin = Math.sin(angle),
+      slant = Math.tan(((p.oblique ?? 0) * Math.PI) / 180),
+      size = p.size / 0.72;
+    ops.push(pushGraphicsState(), concatTransformationMatrix(cos, -sin, slant * cos - sin, -(slant * sin + cos), p.p[0], p.p[1]));
+    flush();
+    p.text.split(/\r?\n/).forEach((line, row) => {
+      const at = { x: -font.widthOfTextAtSize(line, size) * shift, y: -row * LINE_SPACING * p.size, size, font };
+      // The SVG's white halo (paint-order: stroke) keeps lettering legible over lines; WELD and BOM text is bold there.
+      if (p.layer !== "SYMBOL") {
+        page.pushOperators(setTextRenderingMode(TextRenderingMode.Outline), setLineWidth(3), setLineJoin(LineJoinStyle.Round), setStrokingColor(WHITE));
+        page.drawText(line, { ...at, color: WHITE });
+      }
+      const bold = p.layer === "WELD" || p.layer === "BOM";
+      page.pushOperators(
+        setTextRenderingMode(bold ? TextRenderingMode.FillAndOutline : TextRenderingMode.Fill),
+        setLineWidth(size * 0.03),
+        setStrokingColor(ink),
+      );
+      page.drawText(line, { ...at, color: ink });
+    });
+    ops.push(popGraphicsState());
+  }
+}
 export async function exportPdf(doc: IsoDocument): Promise<Blob> {
   const pdf = await PDFDocument.create();
   pdf.setTitle(`${doc.drawing} - ${doc.title}`);
@@ -81,51 +248,7 @@ export async function exportPdf(doc: IsoDocument): Promise<Blob> {
           font,
           color: rgb(0.31, 0.447, 0.537),
         });
-      for (const p of d.primitives) {
-        if (p.type === "line")
-          page.drawLine({
-            start: { x: ox + p.a[0] * scale, y: height - oy - p.a[1] * scale },
-            end: { x: ox + p.b[0] * scale, y: height - oy - p.b[1] * scale },
-            thickness: (p.layer === "PIPE" ? 2 : 0.7) * scale,
-            color: rgb(0.05, 0.1, 0.15),
-          });
-        else if (p.type === "circle")
-          page.drawCircle({
-            x: ox + p.p[0] * scale,
-            y: height - oy - p.p[1] * scale,
-            size: p.r * scale,
-            color: rgb(1, 1, 1),
-            borderWidth: 0.8 * scale,
-            borderColor: rgb(0.05, 0.1, 0.15),
-          });
-        else {
-          const ink =
-            p.layer === "DIM"
-              ? rgb(0.19, 0.25, 0.31)
-              : p.layer === "TEXT" && p.owner
-                ? rgb(0.42, 0.47, 0.52)
-                : p.layer === "WELD"
-                  ? rgb(0.05, 0.38, 0.47)
-                  : rgb(0.05, 0.1, 0.15);
-          if (p.owner && ["DIM", "TEXT", "WELD", "BOM"].includes(p.layer)) {
-            const w = p.text.length * p.size * 0.62;
-            page.drawRectangle({
-              x: ox + (p.p[0] - 1.5) * scale,
-              y: height - oy - (p.p[1] + 2) * scale,
-              width: (w + 3) * scale,
-              height: (p.size + 4) * scale,
-              color: rgb(1, 1, 1),
-            });
-          }
-          page.drawText(p.text, {
-            x: ox + p.p[0] * scale,
-            y: height - oy - p.p[1] * scale,
-            size: p.size * scale,
-            font,
-            color: ink,
-          });
-        }
-      }
+      await drawPrimitives(page, d, font, { x: ox, y: height - oy, scale });
       if (issues.length)
         page.drawText("DRAFT - FABRICATION DATA INCOMPLETE", {
           x: width / 2 - 145,

@@ -36,6 +36,7 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "./cn";
+import { SheetLayer } from "./sheet-layer";
 import {
   appendRun,
   applyComponent,
@@ -607,6 +608,20 @@ export function IsometricEditor({
     heldFit.current = d.fit;
     return d;
   }, [doc, filter, surface, view, holding]);
+  // On paper the header and title-block text is replaced by inline inputs.
+  const sheetPrimitives = useMemo(
+    () =>
+      drawing.primitives.filter(
+        (p) =>
+          !(
+            surface === "paper" &&
+            p.type === "text" &&
+            !p.owner &&
+            ((p.p[0] < 740 && p.p[1] < 100) || (p.p[0] < 700 + dx && p.p[1] >= 650))
+          ),
+      ),
+    [drawing, surface, dx],
+  );
   const pick = (p: Point) =>
     routing && grid.ortho !== false ? pickOrthoPoint(drawing, p, anchor, grid) : pickGridPoint(drawing, p, anchor, grid);
   const viewportWidth = surface === "grid" ? 850 * stageSize.width / stageSize.height : W;
@@ -955,7 +970,7 @@ export function IsometricEditor({
       return;
     }
     const text = svg.current.querySelector(
-      `text[data-length="${lengthEdit.role}"][data-owner="${CSS.escape(lengthEdit.runId)}"]`,
+      `:is(text, path)[data-length="${lengthEdit.role}"][data-owner="${CSS.escape(lengthEdit.runId)}"]`,
     );
     if (!text) {
       setLengthBox(null);
@@ -1544,105 +1559,14 @@ export function IsometricEditor({
                   {surface === "paper" && grid.visible && (
                     <g dangerouslySetInnerHTML={{ __html: gridSvg(drawing, GRID_ORIGIN, grid, doc.units) }} />
                   )}
-                  {drawing.primitives
-                    .filter(
-                      (p) =>
-                        !(
-                          surface === "paper" &&
-                          p.type === "text" &&
-                          !p.owner &&
-                          ((p.p[0] < 740 && p.p[1] < 100) || (p.p[0] < 700 + dx && p.p[1] >= 650))
-                        ),
-                    )
-                    .map((p, i) =>
-                      p.type === "line" ? (
-                        <g key={i}>
-                          <line
-                            data-owner={p.owner}
-                            x1={p.a[0]}
-                            y1={p.a[1]}
-                            x2={p.b[0]}
-                            y2={p.b[1]}
-                            className={cn(
-                              "iso-primitive",
-                              "iso-layer-" + p.layer.toLowerCase(),
-                              p.owner === selection && "selected",
-                            )}
-                            strokeWidth={p.layer === "PIPE" ? 2.2 : p.layer === "SYMBOL" ? 1.6 : 0.75}
-                          />
-                          {p.layer === "PIPE" && p.owner && (
-                            <line
-                              data-owner={p.owner}
-                              x1={p.a[0]}
-                              y1={p.a[1]}
-                              x2={p.b[0]}
-                              y2={p.b[1]}
-                              stroke="transparent"
-                              strokeWidth={14}
-                            />
-                          )}
-                        </g>
-                      ) : p.type === "circle" ? (
-                        <circle
-                          key={i}
-                          data-owner={p.owner}
-                          cx={p.p[0]}
-                          cy={p.p[1]}
-                          r={p.r}
-                          className={cn(
-                            "iso-primitive",
-                            "iso-layer-" + p.layer.toLowerCase(),
-                            p.owner === selection && "selected",
-                          )}
-                          fill={surface === "paper" ? "white" : "var(--iso-canvas)"}
-                        />
-                      ) : (
-                        <g key={i}>
-                          <text
-                            data-owner={p.owner}
-                            data-length={p.role}
-                            x={p.p[0]}
-                            y={p.p[1]}
-                            fontSize={p.size}
-                            className={cn(
-                              "iso-text",
-                              "iso-layer-" + p.layer.toLowerCase(),
-                              p.owner === selection && "selected",
-                            )}
-                            style={
-                              lengthEdit != null && lengthEdit.runId === p.owner && lengthEdit.role === p.role
-                                ? { visibility: "hidden" }
-                                : undefined
-                            }
-                          >
-                            {p.text}
-                          </text>
-                          {p.role && p.owner && !(lengthEdit != null && lengthEdit.runId === p.owner && lengthEdit.role === p.role) && (
-                            <rect
-                              data-owner={p.owner}
-                              data-length={p.role}
-                              x={p.p[0] - 4}
-                              y={p.p[1] - p.size}
-                              width={Math.max(36, p.text.length * p.size * 0.62 + 8)}
-                              height={p.size + 8}
-                              fill="transparent"
-                              className="iso-length-hit"
-                              onDoubleClick={(event) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                openLength(p.owner!, p.role!);
-                              }}
-                            >
-                              <title>
-                                {p.role === "cut"
-                                  ? "Double-click to edit the cut length"
-                                  : "Double-click to edit the centreline length"}
-                              </title>
-                            </rect>
-                          )}
-                        </g>
-                      ),
-                    )}
+                  <SheetLayer
+                    primitives={sheetPrimitives}
+                    lettering={drawing.lettering}
+                    background={surface === "paper" ? "white" : "var(--iso-canvas)"}
+                    selection={selection}
+                    editing={lengthEdit}
+                    onEditLength={openLength}
+                  />
                   {armed && insertHover && (() => {
                     const run = doc.runs.find(r => r.id === insertHover.runId);
                     if (!run) return null;

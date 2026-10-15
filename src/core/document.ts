@@ -1,5 +1,6 @@
 import { type IsoDocument, parseIsoJson } from "./model";
-import { createDrawing } from "./drawing";
+import { createDrawing, weightOf, LAYER_WEIGHT, type Drawing, type Point } from "./drawing";
+import { LINE_SPACING, ROMANS_WIDTH_FACTOR, measureText } from "./stroke-font";
 import { importPcf } from "./pcf";
 
 /** Read the original CAD extension record as well as standalone .piping JSON. */
@@ -35,13 +36,31 @@ export function readIsometric(content: string): IsoDocument {
   );
 }
 
-/** Editable AutoCAD R2000 primitives plus the same semantic XRECORD as legacy CAD. */
-export function isometricDxf(doc: IsoDocument): string {
+/** AutoCAD's standard lineweights, in 1/100 mm. */
+const LINEWEIGHTS = [0, 5, 9, 13, 15, 18, 20, 25, 30, 35, 40, 50, 53, 60, 70, 80, 90, 100, 106, 120, 140, 158, 200, 211];
+const PAPER_HEIGHT_MM = { letter: 215.9, tabloid: 279.4, a3: 297, a4: 210 } as const;
+/** Drafting symbols as TEXT control codes, and the typographic marks the SHX fonts lack as the stroke lettering draws them. */
+const DXF_CHARS: Record<string, string> = {
+  "°": "%%d", "±": "%%p", "⌀": "%%c", "′": "'", "’": "'", "‘": "'", "″": '"', "“": '"', "”": '"', "–": "-", "—": "-",
+  "−": "-", " ": " ", "\t": " ", "½": "1/2", "¼": "1/4", "¾": "3/4", "⅛": "1/8", "⅜": "3/8", "⅝": "5/8", "⅞": "7/8",
+};
+/** A TEXT value: literal %% kept, symbols as control codes, other Unicode as \U+ escapes. */
+const dxfText = (s: string) =>
+  [...[...s].slice(0, 250).join("").replace(/%%/g, "%%%%%%")]
+    .map((ch) => {
+      const code = ch.codePointAt(0)!;
+      return DXF_CHARS[ch] ?? (code < 32 ? "" : code < 127 ? ch : code > 0xffff ? "?" : "\\U+" + code.toString(16).toUpperCase().padStart(4, "0"));
+    })
+    .join("");
+
+/** Editable AutoCAD R2000 primitives of the sheet (or `drawing`) plus the same semantic XRECORD as legacy CAD. */
+export function isometricDxf(doc: IsoDocument, drawing: Drawing = createDrawing(doc)): string {
   const out: string[] = [],
     put = (...pairs: Array<string | number>) => {
       out.push(...pairs.map(String));
     };
   let handle = 0x100;
+  const next = () => (handle++).toString(16).toUpperCase();
   put(
     0,
     "SECTION",
@@ -56,21 +75,29 @@ export function isometricDxf(doc: IsoDocument): string {
     70,
     4,
     9,
+    "$LWDISPLAY",
+    290,
+    1,
+    9,
     "$HANDSEED",
     5,
     "FFFFF",
     0,
     "ENDSEC",
   );
-  const drawing = createDrawing(doc),
-    layers = [...new Set(drawing.primitives.map((p) => p.layer))];
-  put(0, "SECTION", 2, "TABLES", 0, "TABLE", 2, "LAYER", 70, layers.length);
+  const cad = drawing.lettering === "cad",
+    layers = [...new Set([...drawing.primitives.map((p) => p.layer), ...(drawing.primitives.some((p) => p.type === "image") ? ["TITLE"] : [])])];
+  // Sheet units to the nearest standard lineweight on the printed paper.
+  const mm = PAPER_HEIGHT_MM[doc.paper ?? "tabloid"] / drawing.height,
+    lineweight = (w: number) =>
+      LINEWEIGHTS.reduce((best, v) => (Math.abs(v - w * mm * 100) < Math.abs(best - w * mm * 100) ? v : best));
+  put(0, "SECTION", 2, "TABLES", 0, "TABLE", 2, "LAYER", 5, next(), 100, "AcDbSymbolTable", 70, layers.length);
   for (const layer of layers)
     put(
       0,
       "LAYER",
       5,
-      (handle++).toString(16),
+      next(),
       100,
       "AcDbSymbolTableRecord",
       100,
@@ -84,41 +111,71 @@ export function isometricDxf(doc: IsoDocument): string {
       6,
       "CONTINUOUS",
     );
+  put(0, "ENDTAB", 0, "TABLE", 2, "STYLE", 5, next(), 100, "AcDbSymbolTable", 70, 2);
+  // ROMANS at width factor 0.8 is the single-stroke lettering every other output draws.
+  for (const [name, font, width] of [["STANDARD", "txt", 1], ["ROMANS", "romans.shx", ROMANS_WIDTH_FACTOR]] as const)
+    put(0, "STYLE", 5, next(), 100, "AcDbSymbolTableRecord", 100, "AcDbTextStyleTableRecord", 2, name, 70, 0, 40, 0, 41, width, 50, 0, 71, 0, 42, 2.5, 3, font, 4, "");
   put(0, "ENDTAB", 0, "ENDSEC", 0, "SECTION", 2, "ENTITIES");
+  const entity = (type: string, layer: string, weight?: number) =>
+    put(0, type, 5, next(), 100, "AcDbEntity", 8, "BW-ISO-" + layer, ...(weight == null ? [] : [370, lineweight(weight)]));
+  const polyline = (points: Point[], closed: boolean, layer: string, weight: number) => {
+    entity("LWPOLYLINE", layer, weight);
+    put(100, "AcDbPolyline", 90, points.length, 70, closed ? 1 : 0);
+    for (const q of points) put(10, q[0], 20, -q[1]);
+  };
+  const hatch = (layer: string, boundary: Array<string | number>, seed: Point) => {
+    entity("HATCH", layer);
+    put(100, "AcDbHatch", 10, 0, 20, 0, 30, 0, 210, 0, 220, 0, 230, 1, 2, "SOLID", 70, 1, 71, 0, 91, 1, ...boundary);
+    put(97, 0, 75, 0, 76, 1, 98, 1, 10, seed[0], 20, -seed[1]);
+  };
+  /** One TEXT per line, stacked and slanted like the stroke lettering; middle/end text keeps its anchor as the alignment point. */
+  const text = (at: Point, value: string, size: number, layer: string, rotation = 0, oblique = 0, anchor = "start") => {
+    const angle = (rotation * Math.PI) / 180,
+      cos = Math.cos(angle),
+      sin = Math.sin(angle),
+      slant = Math.tan((oblique * Math.PI) / 180);
+    value.split(/\r?\n/).forEach((line, row) => {
+      const content = dxfText(line);
+      if (!content.trim()) return;
+      const v = row * LINE_SPACING * size,
+        base: Point = [at[0] - v * slant * cos + v * sin, at[1] + v * slant * sin + v * cos],
+        shift = anchor === "middle" ? 0.5 : anchor === "end" ? 1 : 0,
+        width = measureText(line, size, cad ? 1 : 1 / ROMANS_WIDTH_FACTOR) * shift,
+        start: Point = [base[0] - width * cos, base[1] + width * sin];
+      entity("TEXT", layer, Math.max(0.35, size * 0.1));
+      put(100, "AcDbText", 10, start[0], 20, -start[1], 30, 0, 40, size, 1, content);
+      if (rotation) put(50, ((rotation % 360) + 360) % 360);
+      if (cad) put(41, ROMANS_WIDTH_FACTOR);
+      if (oblique) put(51, Math.max(-85, Math.min(85, oblique)));
+      put(7, cad ? "ROMANS" : "STANDARD");
+      if (shift) put(72, shift === 1 ? 2 : 1, 11, base[0], 21, -base[1], 31, 0);
+      put(100, "AcDbText", 73, 0);
+    });
+  };
   for (const p of drawing.primitives) {
-    put(
-      0,
-      p.type === "line" ? "LINE" : p.type === "circle" ? "CIRCLE" : "MTEXT",
-      5,
-      (handle++).toString(16),
-      100,
-      "AcDbEntity",
-      8,
-      "BW-ISO-" + p.layer,
-    );
-    if (p.type === "line")
+    if (p.type === "line") {
+      entity("LINE", p.layer, weightOf(p));
       put(100, "AcDbLine", 10, p.a[0], 20, -p.a[1], 30, 0, 11, p.b[0], 21, -p.b[1], 31, 0);
-    else if (p.type === "circle") put(100, "AcDbCircle", 10, p.p[0], 20, -p.p[1], 30, 0, 40, p.r);
+    } else if (p.type === "polyline") {
+      if (p.points.length < 2) continue;
+      polyline(p.points, !!(p.closed || p.fill), p.layer, weightOf(p));
+      if (p.fill && p.points.length > 2)
+        hatch(p.layer, [92, 3, 72, 0, 73, 1, 93, p.points.length, ...p.points.flatMap((q) => [10, q[0], 20, -q[1]])], [
+          p.points.reduce((s, q) => s + q[0], 0) / p.points.length,
+          p.points.reduce((s, q) => s + q[1], 0) / p.points.length,
+        ]);
+    } else if (p.type === "circle") {
+      entity("CIRCLE", p.layer, weightOf(p));
+      put(100, "AcDbCircle", 10, p.p[0], 20, -p.p[1], 30, 0, 40, p.r);
+      if (p.fill) hatch(p.layer, [92, 1, 93, 1, 72, 2, 10, p.p[0], 20, -p.p[1], 40, p.r, 50, 0, 51, 360, 73, 1], p.p);
+    } else if (p.type === "text") text(p.p, p.text, p.size, p.layer, p.rotation, p.oblique, p.anchor);
     else {
-      const content = p.text.replace(/\\/g, "\\\\").replace(/[{}]/g, "\\$&").replace(/\r?\n/g, "\\P");
-      const chunks = content.match(/.{1,240}/gu) ?? [""];
-      put(
-        100,
-        "AcDbMText",
-        10,
-        p.p[0],
-        20,
-        -p.p[1] + p.size,
-        30,
-        0,
-        40,
-        p.size,
-        41,
-        Math.max(1, p.text.length * p.size),
-        71,
-        1,
-      );
-      for (const [index, chunk] of chunks.entries()) put(index === chunks.length - 1 ? 1 : 3, chunk);
+      // DXF R2000 cannot embed a raster, so a logo is its frame and name for the drafter to re-attach.
+      const [x, y] = p.p,
+        name = doc.titleBlock?.logos.find((logo) => logo.dataUrl === p.href)?.name || "LOGO",
+        size = Math.max(1, Math.min(p.height * 0.3, (p.width * 0.85) / Math.max(1e-9, measureText(name, 1))));
+      polyline([[x, y], [x + p.width, y], [x + p.width, y + p.height], [x, y + p.height]], true, "TITLE", LAYER_WEIGHT.TITLE);
+      text([x + p.width / 2, y + (p.height + size) / 2], name, size, "TITLE", 0, 0, "middle");
     }
   }
   put(
