@@ -94,7 +94,8 @@ export function renderIso(
 /** The largest clear rectangle of the model area, left of the BOM and above the notes. */
 function openArea(viewport: Rect, exclusions: Rect[]): Rect {
   const [x0, y0, x1, y1] = viewport
-  const right = exclusions.filter(e => e[2] >= x1 - 5 && e[1] <= y0 + 50).reduce((x, e) => Math.min(x, e[0]), x1)
+  // Every bill-of-materials block hangs from the top border on the right.
+  const right = exclusions.filter(e => e[1] <= y0 + 50 && e[0] > (x0 + x1) / 3).reduce((x, e) => Math.min(x, e[0]), x1)
   const top = exclusions.filter(e => e[0] <= x0 + 50 && e[1] <= y0 + 5).reduce((y, e) => Math.max(y, e[3]), y0)
   return [x0 + SIZE.tier, Math.max(y0 + SIZE.tier, top * 0.5 + y0 * 0.5), right - SIZE.tier, y1 - SIZE.tier]
 }

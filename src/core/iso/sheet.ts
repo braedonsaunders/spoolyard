@@ -194,7 +194,7 @@ export function drawSheet(input: {
       Math.min(most, Math.max(least, ...[header, ...values].map(v => Math.max(...wrapText(up(v), BOM_CAP, Infinity).map(l => measureText(l, BOM_CAP))) / kx + 14)))
     // A wide QTY or ND widens its column rather than wrapping.
     const columns = compact
-      ? [BOM_COLUMNS[0], fitted(rows.map(r => r.qtyText), 'QTY', 78, BOM_COLUMNS[1]), fitted(rows.map(r => r.nd), 'ND', 73, BOM_COLUMNS[2])]
+      ? [BOM_COLUMNS[0], fitted(rows.map(r => r.qtyText), 'QTY', 78, BOM_COLUMNS[1]), fitted(rows.flatMap(r => r.nd.split(' ')), 'ND', 73, BOM_COLUMNS[2])]
       : [BOM_COLUMNS[0], fitted(rows.map(r => r.qtyText), 'QTY', BOM_COLUMNS[1], BOM_COLUMNS[1] * 1.5),
         // Words never split, so the ND column is as wide as its longest word ("1/2"X1/4""); bolt sizes still wrap.
         fitted(rows.flatMap(r => r.nd.split(' ')), 'ND', BOM_COLUMNS[2], BOM_COLUMNS[2] * 1.8)]
@@ -246,8 +246,12 @@ export function drawSheet(input: {
   }
   let bom: BomBlock[] | null = layoutBom(1)
   if (bom && bom.length > 1) {
-    const compact = layoutBom(1, true)
-    if (compact && compact.length < bom.length) bom = compact
+    // Before splitting the table, narrow QTY and ND and, if that is nearly enough, letter the table a little smaller.
+    for (const f of [1, 0.97, 0.94, 0.91]) {
+      const compact = layoutBom(f, true)
+      if (compact && compact.length === 1) { bom = compact; break }
+      if (f === 1 && compact && compact.length < bom.length) bom = compact
+    }
   }
   for (let f = 1; !bom && f > 0.2; f *= 0.9) bom = layoutBom(f)
   bom ??= layoutBom(0.2)
