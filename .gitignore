@@ -4,4 +4,4 @@ release/
 .DS_Store
 *.log
 .playwright-cli/
-output/playwright/
+output/
