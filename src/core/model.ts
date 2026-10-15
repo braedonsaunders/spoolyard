@@ -40,6 +40,15 @@ export interface CatalogItem {
   material?: string
   manufacturer?: string
   takeoutMissing?: boolean
+  /** Verbatim drawing BOM text; otherwise composed from description, material, schedule and rating. */
+  bomDescription?: string
+  faceToFace?: number
+  flangeThickness?: number
+  lengthThroughHub?: number
+  thickness?: number
+  boltCount?: number
+  boltDiameter?: number
+  boltLength?: number
 }
 export interface PipeSize {
   nps: number
@@ -96,6 +105,78 @@ export interface PipeNode {
   component?: string
   /** Deflection of a measured/custom bend; standard elbows use their catalogue angle. */
   bendAngle?: number
+  /** Open-end callout, e.g. "CONT'D ON\nDWG# ISO-201-2", optionally followed by plant coordinates. */
+  continuation?: { text: string; coordinates?: boolean }
+  elevationCallout?: boolean
+  tiePoint?: { id: string; label?: string }
+  /** Valve operator orientation, e.g. "OPERATOR SOUTH"; the valve tag is `tag`. */
+  operator?: string
+  /** Sheet label for supports and annotations, e.g. "U-BOLT", "HANGER", "CLOSED". */
+  calloutText?: string
+  /** Mating flange makeup per flanged port, keyed by pipe id. */
+  portFlanges?: Record<string, PortFlange>
+  /** What a pipe-end flange joint to equipment supplies. */
+  jointSupply?: { gasket: boolean; bolts: boolean }
+}
+export interface PortFlange {
+  /** Mating flange component code, or 'NONE' when the mate is not supplied. */
+  component?: string
+  gasket?: boolean
+  bolts?: boolean
+}
+export interface TitleBlockRevision {
+  rev: string
+  date: string
+  description: string
+  designedBy: string
+  checkedBy: string
+  disciplineLead: string
+  projectLeader: string
+  approvedBy: string
+}
+export interface TitleBlock {
+  referenceDrawings: string[]
+  designedBy: string
+  date: string
+  checkedBy: string
+  projectLeader: string
+  disciplineLeader: string
+  approvedBy: string
+  /** [pressure, temperature] as written on the sheet. */
+  conditions: { design: [string, string]; operating: [string, string]; test: [string, string] }
+  insulationThickness: string
+  insulationCladding: string
+  tracing: string
+  pipeSpec: string
+  specRevision: string
+  designCode: string
+  product: string
+  refArea: string
+  lineNumber: string
+  projectNumber: string
+  revisions: TitleBlockRevision[]
+  logos: Array<{ name: string; dataUrl: string }>
+}
+export interface SheetInfo {
+  drawingNumber?: string
+  lineNumber?: string
+  revision?: string
+}
+export interface DrawingStyle {
+  layout: 'scale' | 'schematic'
+  weldNumbers: boolean
+  lettering: 'cad' | 'sans'
+}
+/** Plant east, north and elevation (mm) of the model origin. */
+export interface PlantCoordinates {
+  origin: Vec3
+}
+export interface SheetNote {
+  id: string
+  spool: string
+  text: string
+  /** Sheet units. */
+  at: [number, number]
 }
 export type EndPrep = 'BW' | 'SW' | 'THD' | 'FL' | 'PLAIN'
 export interface PipeRun {
@@ -140,6 +221,12 @@ export interface IsoDocument {
   weldStart: number
   weldPrefix: string
   weldNumbering?: 'numeric' | 'alphabetic'
+  titleBlock?: TitleBlock
+  /** Per-spool sheet identity; a spool is one issued sheet. */
+  sheets?: Record<string, SheetInfo>
+  style?: DrawingStyle
+  coordinates?: PlantCoordinates
+  sheetNotes?: SheetNote[]
 }
 export interface RunResult {
   run: PipeRun
@@ -331,8 +418,66 @@ export function newIso(): IsoDocument {
     nodes: [],
     runs: [],
     weldStart: 1,
-    weldPrefix: 'W'
+    weldPrefix: 'W',
+    style: { layout: 'schematic', weldNumbers: false, lettering: 'cad' },
+    titleBlock: { ...emptyTitleBlock(), designCode: 'ASME B31.3' }
   }
+}
+export function emptyTitleBlock(): TitleBlock {
+  return {
+    referenceDrawings: [],
+    designedBy: '',
+    date: '',
+    checkedBy: '',
+    projectLeader: '',
+    disciplineLeader: '',
+    approvedBy: '',
+    conditions: { design: ['', ''], operating: ['', ''], test: ['', ''] },
+    insulationThickness: '',
+    insulationCladding: '',
+    tracing: '',
+    pipeSpec: '',
+    specRevision: '',
+    designCode: '',
+    product: '',
+    refArea: '',
+    lineNumber: '',
+    projectNumber: '',
+    revisions: [],
+    logos: []
+  }
+}
+/** The title block to print; older drawings fill it from their original header fields. */
+export function titleBlockOf(doc: IsoDocument): TitleBlock {
+  const block = doc.titleBlock ?? emptyTitleBlock()
+  return {
+    ...block,
+    designedBy: block.designedBy || doc.drawnBy,
+    checkedBy: block.checkedBy || doc.checkedBy,
+    projectNumber: block.projectNumber || doc.project,
+    pipeSpec: block.pipeSpec || [...new Set(doc.runs.map(r => r.specId))].join(', '),
+    revisions: block.revisions.length || !doc.revision ? block.revisions : [{
+      rev: doc.revision, date: block.date, description: '', designedBy: block.designedBy || doc.drawnBy,
+      checkedBy: block.checkedBy || doc.checkedBy, disciplineLead: '', projectLeader: '', approvedBy: ''
+    }]
+  }
+}
+export function styleOf(doc: IsoDocument): DrawingStyle {
+  return doc.style ?? { layout: 'scale', weldNumbers: true, lettering: 'sans' }
+}
+/** Drawing number, line and revision printed on one spool's sheet. */
+export function sheetInfoOf(doc: IsoDocument, spool: string): Required<SheetInfo> {
+  const own = (spool && doc.sheets?.[spool]) || {}
+  const spools = [...new Set(doc.runs.map(r => r.spool))]
+  return {
+    drawingNumber: own.drawingNumber || (spools.length > 1 && spool ? `${doc.drawing}-${spools.indexOf(spool) + 1}` : doc.drawing),
+    lineNumber: own.lineNumber ?? (doc.titleBlock?.lineNumber || ''),
+    revision: own.revision || doc.titleBlock?.revisions.at(-1)?.rev || doc.revision
+  }
+}
+/** Plant east, north and elevation of a model point. */
+export function plantCoordinate(doc: IsoDocument, p: Vec3): Vec3 {
+  return add(doc.coordinates?.origin ?? [0, 0, 0], p)
 }
 export function getNode(doc: IsoDocument, key: string): PipeNode {
   const node = doc.nodes.find(n => n.id === key)
@@ -1070,6 +1215,8 @@ export function parseIsoJson(raw: string): IsoDocument {
     typeof v === 'number' && Number.isFinite(v) && v >= 0
   const finite = (v: unknown) =>
     typeof v === 'number' && Number.isFinite(v) && Math.abs(v) < 1e10
+  const isPlain = (v: unknown): v is Record<string, any> =>
+    typeof v === 'object' && v !== null && !Array.isArray(v)
   const optionalNumbers = (o: object, keys: string[]) =>
     keys.every(k => {
       const v = (o as Record<string, unknown>)[k]
@@ -1194,7 +1341,70 @@ export function parseIsoJson(raw: string): IsoDocument {
         Object.values(n.portTakeouts).some(v => !nonnegative(v)))
     )
       throw new Error('Invalid port takeout.')
+    if (
+      (n.continuation != null && (!isPlain(n.continuation) || !isString(n.continuation.text, 600) ||
+        (n.continuation.coordinates != null && typeof n.continuation.coordinates !== 'boolean'))) ||
+      (n.elevationCallout != null && typeof n.elevationCallout !== 'boolean') ||
+      (n.tiePoint != null && (!isPlain(n.tiePoint) || !isString(n.tiePoint.id, 40) ||
+        (n.tiePoint.label != null && !isString(n.tiePoint.label, 120)))) ||
+      (n.operator != null && !isString(n.operator, 120)) ||
+      (n.calloutText != null && !isString(n.calloutText, 300)) ||
+      (n.jointSupply != null && (!isPlain(n.jointSupply) ||
+        typeof n.jointSupply.gasket !== 'boolean' || typeof n.jointSupply.bolts !== 'boolean')) ||
+      (n.portFlanges != null && (!isPlain(n.portFlanges) || Object.keys(n.portFlanges).length > 8 ||
+        !Object.values(n.portFlanges).every(f => isPlain(f) &&
+          (f.component == null || isString(f.component, 60)) &&
+          (f.gasket == null || typeof f.gasket === 'boolean') &&
+          (f.bolts == null || typeof f.bolts === 'boolean'))))
+    )
+      throw new Error('Invalid component callout.')
   }
+  const strings = (v: unknown, count: number, max = 200) =>
+    Array.isArray(v) && v.length <= count && v.every(s => isString(s, max))
+  const t = d.titleBlock
+  if (
+    t != null &&
+    (!isPlain(t) ||
+      !strings(t.referenceDrawings, 5) ||
+      !['designedBy', 'date', 'checkedBy', 'projectLeader', 'disciplineLeader', 'approvedBy', 'insulationThickness',
+        'insulationCladding', 'tracing', 'pipeSpec', 'specRevision', 'designCode', 'product', 'refArea', 'lineNumber',
+        'projectNumber'].every(k => isString(t[k as keyof TitleBlock], 200)) ||
+      !isPlain(t.conditions) ||
+      !(['design', 'operating', 'test'] as const).every(k => Array.isArray(t.conditions[k]) && t.conditions[k].length === 2 && strings(t.conditions[k], 2, 40)) ||
+      !Array.isArray(t.revisions) || t.revisions.length > 20 ||
+      !t.revisions.every(r => isPlain(r) && ['rev', 'date', 'description', 'designedBy', 'checkedBy', 'disciplineLead',
+        'projectLeader', 'approvedBy'].every(k => isString(r[k as keyof TitleBlockRevision], 200))) ||
+      !Array.isArray(t.logos) || t.logos.length > 2 ||
+      !t.logos.every(l => isPlain(l) && isString(l.name, 200) && isString(l.dataUrl, 2_100_000) &&
+        /^data:image\/(png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(l.dataUrl)))
+  )
+    throw new Error('Invalid title block.')
+  if (
+    d.style != null &&
+    (!isPlain(d.style) || !['scale', 'schematic'].includes(d.style.layout) ||
+      typeof d.style.weldNumbers !== 'boolean' || !['cad', 'sans'].includes(d.style.lettering))
+  )
+    throw new Error('Invalid drawing style.')
+  if (
+    d.sheets != null &&
+    (!isPlain(d.sheets) || Object.keys(d.sheets).length > 1000 ||
+      !Object.entries(d.sheets).every(([k, s]) => isString(k) && isPlain(s) &&
+        ['drawingNumber', 'lineNumber', 'revision'].every(f => s[f as keyof SheetInfo] == null || isString(s[f as keyof SheetInfo], 120))))
+  )
+    throw new Error('Invalid sheet information.')
+  if (
+    d.coordinates != null &&
+    (!isPlain(d.coordinates) || !Array.isArray(d.coordinates.origin) || d.coordinates.origin.length !== 3 ||
+      !d.coordinates.origin.every(finite))
+  )
+    throw new Error('Invalid plant coordinates.')
+  if (
+    d.sheetNotes != null &&
+    (!Array.isArray(d.sheetNotes) || d.sheetNotes.length > 500 ||
+      !d.sheetNotes.every(s => isPlain(s) && isString(s.id) && !!s.id && isString(s.spool) && isString(s.text, 2000) &&
+        Array.isArray(s.at) && s.at.length === 2 && s.at.every(finite)))
+  )
+    throw new Error('Invalid sheet note.')
   const specs = new Set<string>(),
     catalogs = new Set<string>()
   for (const s of d.specs) {
@@ -1248,7 +1458,7 @@ export function parseIsoJson(raw: string): IsoDocument {
         !nonnegative(f.takeout) ||
         !isString(f.description) ||
         !isString(f.source) ||
-        ['component', 'rating', 'schedule', 'partCode', 'material', 'manufacturer'].some(
+        ['component', 'rating', 'schedule', 'partCode', 'material', 'manufacturer', 'bomDescription'].some(
           k => f[k as keyof CatalogItem] != null && !isString(f[k as keyof CatalogItem])
         ) ||
         (f.shopField != null && !['S', 'F'].includes(f.shopField)) ||
@@ -1257,7 +1467,14 @@ export function parseIsoJson(raw: string): IsoDocument {
           'weightKg',
           'areaM2',
           'unitCost',
-          'laborHours'
+          'laborHours',
+          'faceToFace',
+          'flangeThickness',
+          'lengthThroughHub',
+          'thickness',
+          'boltCount',
+          'boltDiameter',
+          'boltLength'
         ])
       )
         throw new Error('Invalid catalogue fitting.')
