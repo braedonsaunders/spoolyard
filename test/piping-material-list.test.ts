@@ -124,3 +124,26 @@ test('a break flange pair welded straight to a fitting is one joint', async () =
   assert.equal(list.find(r => /^GASKET/.test(r.description))!.qtyText, '1');
   assert.equal(list.find(r => /^STUD BOLT/.test(r.description))!.qtyText, '4');
 });
+
+test('uncut pieces list by length, pipes can carry their own text, and held item numbers stay put', async () => {
+  const { holdItemNumbers } = await import('../src/core/material-list.ts');
+  const doc = newIso(); doc.units = 'imperial'; doc.specs = [lapJointSpec()];
+  const elbow = appendRun(doc, null, [inch(246), 0, 0], 'S1', 2, 'S-1', '10');
+  const end = appendRun(doc, elbow.id, [0, inch(20), 0], 'S1', 2, 'S-1', '10');
+  const pipes = () => sheetMaterials(doc, 'S-1').filter(r => r.category === 'pipe').map(r => [r.qtyText, r.description.replace(/^PIPE, WELDED, .* BE/, 'PIPE')]);
+  // A full random length is used as it comes: 246 - 3 (elbow) = 243 in, no cut.
+  assert.deepEqual(pipes(), [[`20'-3"`, 'PIPE'], [`1'-5"`, 'PIPE - CUT TO 1\'-5"']]);
+  // The second piece runs on through the drawing break as one length, in its own wording.
+  doc.runs[1].uncut = true; doc.runs[1].description = 'pipe, erw, pe';
+  assert.deepEqual(pipes(), [[`20'-3"`, 'PIPE'], [`1'-5"`, 'PIPE, ERW, PE']]);
+  // Hold the item numbers, then add a cap: it takes the next number instead of renumbering the elbow.
+  holdItemNumbers(doc, 'S-1');
+  const before = sheetMaterials(doc, 'S-1').map(r => r.description);
+  applyComponent(doc, end, 'W-CAP');
+  const after = sheetMaterials(doc, 'S-1').map(r => r.description);
+  assert.deepEqual(after.slice(0, before.length), before);
+  assert.match(after.at(-1)!, /CAP/);
+  holdItemNumbers(doc, 'S-1', false);
+  assert.equal(doc.sheets, undefined);
+  assert.match(sheetMaterials(doc, 'S-1')[2].description, /CAP/);
+});

@@ -28,7 +28,11 @@ export interface MaterialRow {
   memberIds: string[]
   /** Pipe cut length per piece, for pipe rows. */
   cut?: number
+  /** Stable identity of the row, for holding item numbers as issued. */
+  key: string
 }
+/** A full mill random length (20 ft, 6 m) is used as it comes, not cut. */
+const RANDOM_LENGTH = { imperial: 240 * 25.4 - 1, mm: 6000 - 1 }
 const KERF = 3.175
 const compose = (...parts: Array<string | undefined>) =>
   parts.map(p => p?.trim()).filter(Boolean).join(', ').toUpperCase()
@@ -99,12 +103,12 @@ export function routeOrder(doc: IsoDocument, runs: PipeRun[], startSize?: number
 /** The bill of materials printed on one sheet (spool); IDs start at 1 and match the sheet's tags. */
 export function sheetMaterials(doc: IsoDocument, spool = ''): MaterialRow[] {
   const runs = doc.runs.filter(r => !r.connector && (!spool || r.spool === spool))
-  const rows = new Map<string, Omit<MaterialRow, 'id'> & { size: number; flangeRank: number; first: number; pieces: number[] }>()
+  const rows = new Map<string, Omit<MaterialRow, 'id'> & { size: number; flangeRank: number; first: number; pieces: number[]; uncut?: boolean }>()
   let seq = 0
-  const add = (key: string, row: Omit<MaterialRow, 'id' | 'qtyText' | 'memberIds'> & { size: number; flangeRank?: number }, member: string, qty: number) => {
+  const add = (key: string, row: Omit<MaterialRow, 'id' | 'qtyText' | 'memberIds' | 'key'> & { size: number; flangeRank?: number; uncut?: boolean }, member: string, qty: number) => {
     const found = rows.get(key)
     if (found) { found.qty += qty; found.memberIds.push(member); return found }
-    const created = { ...row, qtyText: '', flangeRank: row.flangeRank ?? 0, first: seq++, memberIds: [member], qty, pieces: [] as number[] }
+    const created = { ...row, key, qtyText: '', flangeRank: row.flangeRank ?? 0, first: seq++, memberIds: [member], qty, pieces: [] as number[] }
     rows.set(key, created)
     return created
   }
@@ -116,12 +120,14 @@ export function sheetMaterials(doc: IsoDocument, spool = ''): MaterialRow[] {
   const sizes = [...new Set(spoolRuns.filter(r => !r.connector).map(r => r.nps))].sort((a, b) => a - b)
   for (const run of sizes.flatMap(nps => routeOrder(doc, spoolRuns, nps).filter(r => !r.connector && r.nps === nps))) {
     const spec = getSpec(doc, run.specId), size = spec.sizes.find(s => s.nps === run.nps), cut = runResult(doc, run).cut
-    const base = size?.bomDescription?.toUpperCase() ??
+    const base = run.description?.toUpperCase() ?? size?.bomDescription?.toUpperCase() ??
       compose(size?.description ?? 'PIPE', size?.material ?? spec.material, schedule(size?.schedule ?? spec.schedule))
     const known = Number.isFinite(cut) && cut > 0
     const piece = known ? doc.units === 'mm' ? Math.round(cut) : Math.round(cut / 25.4 * 16) : NaN
-    const row = add(JSON.stringify(['pipe', spec.id, run.nps, base, known ? piece : run.id]),
-      { category: 'pipe', nd: sizeText(run.nps), description: base, qty: 0, size: run.nps, cut: known ? cut : NaN }, run.id, 0)
+    // A piece running on through a drawing break, or a full random length, is listed by length without a cut.
+    const uncut = run.uncut || (known && cut >= RANDOM_LENGTH[doc.units])
+    const row = add(JSON.stringify(['pipe', spec.id, run.nps, base, known ? piece : run.id, ...(uncut ? [run.id] : [])]),
+      { category: 'pipe', nd: sizeText(run.nps), description: base, qty: 0, size: run.nps, cut: known ? cut : NaN, uncut }, run.id, 0)
     row.pieces.push(cut)
   }
   for (const node of doc.nodes) {
@@ -179,17 +185,37 @@ export function sheetMaterials(doc: IsoDocument, spool = ''): MaterialRow[] {
       : a.category === 'flange' ? a.flangeRank - b.flangeRank || a.size - b.size || appear(a) - appear(b)
         : a.category === 'bolt' ? a.size - b.size
           : a.size - b.size || appear(a) - appear(b) || a.first - b.first))
+  // Item numbers held as issued keep their place; anything new follows in the usual order.
+  // A pipe row is known by its first piece, so a changed cut keeps its number.
+  for (const row of rows.values()) if (row.category === 'pipe') row.key = 'pipe:' + row.memberIds[0]
+  const held = sheetHeldOrder(doc, spool)
+  if (held.length) {
+    const at = (key: string) => { const i = held.indexOf(key); return i < 0 ? Infinity : i }
+    sorted.sort((a, b) => at(a.key) - at(b.key))
+  }
   return sorted.map((row, index) => {
-    const { size, flangeRank, first, pieces, ...rest } = row
+    const { size, flangeRank, first, pieces, uncut, ...rest } = row
     if (row.category !== 'pipe') return { ...rest, id: index + 1, qtyText: String(row.qty) }
     const n = pieces.length, cut = pieces[0], known = Number.isFinite(cut) && cut > 0
     const total = known ? n * cut + (n - 1) * KERF : NaN
     return {
       ...rest, id: index + 1, qty: total, cut,
       qtyText: purchaseLength(total, doc.units),
-      description: `${row.description} - CUT TO ${known ? draftLength(cut, doc.units) : '(PENDING)'}${n > 1 ? ` (TOTAL OF ${n} PIECES)` : ''}`
+      description: uncut ? row.description
+        : `${row.description} - CUT TO ${known ? draftLength(cut, doc.units) : '(PENDING)'}${n > 1 ? ` (TOTAL OF ${n} PIECES)` : ''}`
     }
   })
+}
+/** The item order a sheet holds as issued, if any. */
+const sheetHeldOrder = (doc: IsoDocument, spool: string) => (spool && doc.sheets?.[spool]?.bomOrder) || []
+/** Hold a sheet's item numbers as they are now, or release them (`hold` false). */
+export function holdItemNumbers(doc: IsoDocument, spool: string, hold = true) {
+  const sheets = (doc.sheets ??= {}), info = { ...sheets[spool] }
+  if (hold) info.bomOrder = sheetMaterials(doc, spool).map(r => r.key)
+  else delete info.bomOrder
+  if (Object.keys(info).length) sheets[spool] = info
+  else delete sheets[spool]
+  if (!Object.keys(sheets).length) delete doc.sheets
 }
 /** The BOM ID that tags a pipe, node or joint part on a sheet. */
 export const materialId = (rows: MaterialRow[], member: string) => rows.find(r => r.memberIds.includes(member))?.id

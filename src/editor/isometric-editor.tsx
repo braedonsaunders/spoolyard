@@ -1845,6 +1845,42 @@ export function IsometricEditor({
                             if (e.key === 'Escape') { e.currentTarget.value = e.currentTarget.defaultValue; e.currentTarget.blur(); }
                           }} />
                       </Field>}
+                      {!selectedRun.connector && (
+                        <>
+                          <Field label="Bill of materials text">
+                            <input
+                              aria-label="Pipe BOM description"
+                              key={selection + "-description"}
+                              defaultValue={selectedRun.description ?? ""}
+                              placeholder="As the specification"
+                              onBlur={(e) => {
+                                const v = e.target.value.trim();
+                                if (v !== (selectedRun.description ?? ""))
+                                  commit((d) => {
+                                    const run = d.runs.find((r) => r.id === selection)!;
+                                    if (v) run.description = v.slice(0, 300);
+                                    else delete run.description;
+                                  });
+                              }}
+                              onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                            />
+                          </Field>
+                          <label className="iso-check">
+                            <input
+                              type="checkbox"
+                              checked={!!selectedRun.uncut}
+                              onChange={(e) =>
+                                commit((d) => {
+                                  const run = d.runs.find((r) => r.id === selection)!;
+                                  if (e.target.checked) run.uncut = true;
+                                  else delete run.uncut;
+                                })
+                              }
+                            />
+                            List by length without a cut (runs on through a drawing break)
+                          </label>
+                        </>
+                      )}
                       {(["spool", "line", "heat"] as const).map((k) => (
                         <Field key={k} label={k}>
                           <input

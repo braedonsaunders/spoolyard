@@ -178,6 +178,8 @@ export interface SheetInfo {
   drawingNumber?: string
   lineNumber?: string
   revision?: string
+  /** Item numbers held as issued: material row keys in ID order. New items follow, in the usual order. */
+  bomOrder?: string[]
 }
 export interface DrawingStyle {
   layout: 'scale' | 'schematic'
@@ -214,6 +216,13 @@ export interface PipeRun {
   toTag?: string
   rootGap?: number
   endPrep: EndPrep
+  /**
+   * Listed by length, without a cut: the piece runs on through a drawing break as one length, or is a full random
+   * length used as it comes.
+   */
+  uncut?: boolean
+  /** Bill-of-materials text for this pipe when it differs from its size's text in the specification. */
+  description?: string
 }
 export interface IsoDocument {
   schema: 'bidwright-piping'
@@ -483,7 +492,7 @@ export function styleOf(doc: IsoDocument): DrawingStyle {
   return doc.style ?? { layout: 'scale', weldNumbers: true, lettering: 'sans' }
 }
 /** Drawing number, line and revision printed on one spool's sheet. */
-export function sheetInfoOf(doc: IsoDocument, spool: string): Required<SheetInfo> {
+export function sheetInfoOf(doc: IsoDocument, spool: string): Required<Omit<SheetInfo, 'bomOrder'>> {
   const own = (spool && doc.sheets?.[spool]) || {}
   const spools = [...new Set(doc.runs.map(r => r.spool))]
   return {
@@ -1456,7 +1465,8 @@ export function parseIsoJson(raw: string): IsoDocument {
     d.sheets != null &&
     (!isPlain(d.sheets) || Object.keys(d.sheets).length > 1000 ||
       !Object.entries(d.sheets).every(([k, s]) => isString(k) && isPlain(s) &&
-        ['drawingNumber', 'lineNumber', 'revision'].every(f => s[f as keyof SheetInfo] == null || isString(s[f as keyof SheetInfo], 120))))
+        ['drawingNumber', 'lineNumber', 'revision'].every(f => s[f as keyof SheetInfo] == null || isString(s[f as keyof SheetInfo], 120)) &&
+        (s.bomOrder == null || (Array.isArray(s.bomOrder) && s.bomOrder.length <= 500 && s.bomOrder.every(k => isString(k, 2000))))))
   )
     throw new Error('Invalid sheet information.')
   if (
@@ -1558,7 +1568,8 @@ export function parseIsoJson(raw: string): IsoDocument {
         !['BW', 'SW', 'THD', 'FL', 'PLAIN'].includes(String(r[key as keyof PipeRun]))
       )
         throw new Error('Invalid end preparation.')
-    for (const key of ['connector', 'fromField', 'toField'])
+    if (r.description != null && !isString(r.description, 300)) throw new Error('Invalid pipe description.')
+    for (const key of ['connector', 'fromField', 'toField', 'uncut'])
       if (
         r[key as keyof PipeRun] != null &&
         typeof r[key as keyof PipeRun] !== 'boolean'

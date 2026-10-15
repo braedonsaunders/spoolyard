@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { Plus, Trash2, Upload } from "lucide-react";
 import { cn } from "./cn";
+import { holdItemNumbers } from "../core/material-list";
 import {
   clone,
   lengthInputValue,
@@ -116,7 +117,7 @@ export function sheetSpools(doc: IsoDocument) {
 export function defaultSheetInfo(doc: IsoDocument, spool: string) {
   return sheetInfoOf({ ...doc, sheets: undefined }, spool);
 }
-export function setSheetInfo(d: IsoDocument, spool: string, key: keyof SheetInfo, value: string) {
+export function setSheetInfo(d: IsoDocument, spool: string, key: Exclude<keyof SheetInfo, 'bomOrder'>, value: string) {
   const v = limit(value.trim(), SHEET_LIMIT, "Sheet text"),
     sheets = (d.sheets ??= {}),
     info: SheetInfo = { ...sheets[spool] };
@@ -545,7 +546,7 @@ export function SheetSettings({
         {spools.map((s) => {
           const own = doc.sheets?.[s] ?? {},
             auto = defaultSheetInfo(doc, s);
-          const cell = (key: keyof SheetInfo, label: string) =>
+          const cell = (key: Exclude<keyof SheetInfo, 'bomOrder'>, label: string) =>
             text(label, own[key] ?? "", (d, v) => setSheetInfo(d, s, key, v), { placeholder: auto[key], max: SHEET_LIMIT });
           return (
             <div key={s} className={cn("iso-sheet-card", s === spool && "current")} aria-current={s === spool || undefined}>
@@ -558,6 +559,14 @@ export function SheetSettings({
                 {cell("lineNumber", "Line No.")}
                 {cell("revision", "Rev.")}
               </div>
+              <label className="iso-check">
+                <input
+                  type="checkbox"
+                  checked={!!own.bomOrder}
+                  onChange={(e) => edit((d) => holdItemNumbers(d, s, e.target.checked))}
+                />
+                Hold item numbers as issued (new items are numbered after them)
+              </label>
             </div>
           );
         })}
