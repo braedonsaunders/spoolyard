@@ -143,3 +143,16 @@ test('PCF preserves per-pipe gap overrides and endpoint tags and preparations',(
  assert.equal(restored.runs[0].rootGap,5);assert.equal(restored.runs[0].toTag,'FW-1');assert.equal(restored.runs[0].toField,true);
  assert.equal(restored.runs[1].fromPrep,'SW');assert.equal(runResult(restored,restored.runs[0]).cut,runResult(d,d.runs[0]).cut);
 });
+
+test('a pipe bend takes its takeout from its radius and the deflection the pipes make', async () => {
+  const { appendRun: append, newIso: fresh, takeout: allowance, getNode: node } = await import('../src/core/model.ts');
+  const doc = fresh();
+  const bend = append(doc, null, [1000, 0, 0], doc.specs[0].id, 2, 'S', 'L');
+  append(doc, bend.id, [0, 1000, 0], doc.specs[0].id, 2, 'S', 'L');
+  Object.assign(node(doc, bend.id), { kind: 'elbow90', component: 'PIPEBEND', bendRadius: 152.4 });
+  // 90°: the tangent equals the radius.
+  assert.ok(Math.abs(allowance(doc, node(doc, bend.id), doc.runs[0].id)! - 152.4) < 1e-9);
+  // 45°: R · tan(22.5°).
+  node(doc, doc.runs[1].to).position = [1000 + 1000 / Math.SQRT2, 1000 / Math.SQRT2, 0];
+  assert.ok(Math.abs(allowance(doc, node(doc, bend.id), doc.runs[1].id)! - 152.4 * Math.tan(Math.PI / 8)) < 1e-9);
+});

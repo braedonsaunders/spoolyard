@@ -114,6 +114,8 @@ export interface PipeNode {
   component?: string
   /** Deflection of a measured/custom bend; standard elbows use their catalogue angle. */
   bendAngle?: number
+  /** Centreline radius of a pipe bend: its takeout is the radius times the tangent of half the deflection. */
+  bendRadius?: number
   /** Open-end callout, e.g. "CONT'D ON\nDWG# ISO-201-2", optionally followed by plant coordinates. */
   continuation?: { text: string; coordinates?: boolean }
   elevationCallout?: boolean
@@ -532,8 +534,17 @@ export function takeout(
   const item = nodeItem(doc, node), run = doc.runs.find(r => r.id === runId)
   const own = node.branchEdgeId === runId
     ? node.branchTakeout ?? (item?.takeoutMissing ? undefined : item?.branchTakeout)
-    : node.takeout ?? (item?.takeoutMissing ? undefined : lateralLongSide(doc, node, runId, item) ?? item?.takeout)
+    : node.takeout ?? bendTakeout(doc, node) ?? (item?.takeoutMissing ? undefined : lateralLongSide(doc, node, runId, item) ?? item?.takeout)
   return own == null || !run ? own : own + flangedAllowance(doc, node, run)
+}
+/** Tangent length of a pipe bend of known radius: R · tan(θ/2) for the deflection θ the pipes make. */
+export function bendTakeout(doc: IsoDocument, node: PipeNode): number | undefined {
+  if (!(node.bendRadius! > 0)) return undefined
+  const legs = connected(doc, node.id).map(r => sub(getNode(doc, r.from === node.id ? r.to : r.from).position, node.position))
+  if (legs.length !== 2) return undefined
+  const [a, b] = legs, cos = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) / ((length(a) * length(b)) || 1)
+  const deflection = Math.PI - Math.acos(Math.max(-1, Math.min(1, cos)))
+  return node.bendRadius! * Math.tan(deflection / 2)
 }
 /** A lateral's run is longer on the side its branch leans toward. */
 function lateralLongSide(doc: IsoDocument, node: PipeNode, runId: string, item?: CatalogItem): number | undefined {
@@ -627,7 +638,7 @@ export function setAutoFitting(doc: IsoDocument, nodeId: string): void {
   const changeKind = (kind: Kind) => {
     if (node.kind === kind) return
     node.kind = kind
-    for (const key of ['catalogId', 'component', 'takeout', 'branchTakeout', 'portTakeouts', 'branchEdgeId', 'description', 'bendAngle'] as const) delete node[key]
+    for (const key of ['catalogId', 'component', 'takeout', 'branchTakeout', 'portTakeouts', 'branchEdgeId', 'description', 'bendAngle', 'bendRadius'] as const) delete node[key]
   }
   const choose = (kind: Kind, header: PipeRun, smallerNps?: number, code?: string) => {
     const spec = getSpec(doc, header.specId), existing = fitting(doc, node)
@@ -1382,7 +1393,8 @@ export function parseIsoJson(raw: string): IsoDocument {
         'unitCost',
         'laborHours',
         'quantity',
-        'bendAngle'
+        'bendAngle',
+        'bendRadius'
       ])
     )
       throw new Error('Invalid piping connection.')

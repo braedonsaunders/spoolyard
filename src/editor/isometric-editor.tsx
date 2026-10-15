@@ -2069,6 +2069,23 @@ export function IsometricEditor({
                       {missingTakeoutNodes.some(n => n.id === selectedNode.id) && <p className="iso-help iso-takeout-help">
                         This fitting has no known takeout. Enter the centre-to-pipe-end distance below to calculate the pipe cuts. Use the individual port takeouts in Fabrication details if they differ.
                       </p>}
+                      {/BEND/.test(selectedNode.component ?? "") && (
+                        <LengthInput
+                          label="Bend radius"
+                          aria="Bend radius"
+                          mm={selectedNode.bendRadius}
+                          units={doc.units}
+                          allowEmpty
+                          onError={setError}
+                          onCommit={(value) =>
+                            commit((d) => {
+                              const n = getNode(d, selection);
+                              if (value) n.bendRadius = value;
+                              else delete n.bendRadius;
+                            })
+                          }
+                        />
+                      )}
                       <LengthInput
                         label="Measured takeout"
                         aria="Measured takeout"
