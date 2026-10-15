@@ -167,21 +167,21 @@ export function drawDimensions(ctx: IsoContext) {
     if (total < 1) return
     const owner = leg.runs[0].id
     const comps = [0, 1, 2].filter(i => Math.abs(d[i]) > 0.5)
-    const pageSpan = Math.hypot(...sub2(end.page, start.page)), k = pageSpan / total
-    const step = (from: Point, i: number): Point => {
-      const axis3: Vec3 = [0, 0, 0]
-      axis3[i] = Math.sign(d[i])
-      return add2(from, scale2(ctx.axis(axis3), Math.abs(d[i]) * k * Math.hypot(...ctx.axis(axis3))))
-    }
+    // Page units per millimetre along the axes: the drawn leg over the length of its projected vector.
+    const unitAxis = (i: number): Point => { const v: Vec3 = [0, 0, 0]; v[i] = 1; return ctx.axis(v) }
+    const projected = comps.reduce<Point>((sum, i) => add2(sum, scale2(unitAxis(i), d[i])), [0, 0])
+    const pageSpan = Math.hypot(...sub2(end.page, start.page)), k = pageSpan / (Math.hypot(...projected) || total)
+    const step = (from: Point, i: number): Point => add2(from, scale2(unitAxis(i), d[i] * k))
     // A plane offset is one right triangle; a rolling offset is a horizontal triangle (the travel in plan) and a
     // vertical one (the rise), drawn as the reference sheets do.
     const horizontal = comps.filter(i => i !== 2), rises = comps.includes(2)
     const first = horizontal[0] ?? 2
     const corner = step(start.page, first)
     const plan = horizontal.length === 2 ? step(corner, horizontal[1]) : corner
-    const legs: Array<[Point, Point, number]> = [[start.page, corner, Math.abs(d[first])]]
-    if (horizontal.length === 2) legs.push([corner, plan, Math.abs(d[horizontal[1]])])
-    if (rises && horizontal.length) legs.push([plan, end.page, Math.abs(d[2])])
+    // Each leg, the length along its axis, and the axis its lettering stands on (the triangle's other axis).
+    const legs: Array<[Point, Point, number, number]> = [[start.page, corner, Math.abs(d[first]), horizontal[1] ?? 2]]
+    if (horizontal.length === 2) legs.push([corner, plan, Math.abs(d[horizontal[1]]), horizontal[0]])
+    if (rises && horizontal.length) legs.push([plan, end.page, Math.abs(d[2]), horizontal[0]])
     for (const [a, b] of legs) line(a, b, 'DIM', owner)
     const triangles: Array<{ apex: Point; leg: Point; far: Point; angle: number; plane: 'H' | 'V' }> = []
     if (horizontal.length === 2)
@@ -204,7 +204,7 @@ export function drawDimensions(ctx: IsoContext) {
       let sweep = a2 - a1
       if (sweep > Math.PI) sweep -= 2 * Math.PI
       if (sweep < -Math.PI) sweep += 2 * Math.PI
-      const r = Math.min(34, Math.hypot(...sub2(t.leg, t.apex)) * 0.45)
+      const r = Math.min(34, Math.hypot(...sub2(t.leg, t.apex)) * 0.45) * (t.plane === 'H' && triangles.length > 1 ? 1.7 : 1)
       poly(Array.from({ length: 9 }, (_, i) => add2(t.apex, [Math.cos(a1 + sweep * i / 8) * r, Math.sin(a1 + sweep * i / 8) * r] as Point)), 'DIM', owner)
       const mid = a1 + sweep / 2, label = angleText(Math.round(t.angle), t.plane)
       const labelAt = add2(t.apex, [Math.cos(mid) * (r + 4), Math.sin(mid) * (r + 4)] as Point)
@@ -216,7 +216,14 @@ export function drawDimensions(ctx: IsoContext) {
       }, { q: spots[0], c: Infinity }).q
       emitters(ctx).text([at[0], at[1] + SIZE.text / 2], label, SIZE.text, 'DIM', owner, { anchor: 'middle' })
     }
-    // The true length of a plane offset is dimensioned along the pipe, on the side away from the triangle.
+    // The true length is dimensioned along the pipe, on the side away from the construction.
+    if (comps.length === 3) {
+      const along = unit2(sub2(end.page, start.page)), mid = lerp2(start.page, end.page, 0.5)
+      let ext: Point = [along[1], -along[0]]
+      const bulk = legs.reduce<Point>((sum, [a, b]) => add2(sum, sub2(lerp2(a, b, 0.5), mid)), [0, 0])
+      if (dot2(ext, bulk) > 0) ext = scale2(ext, -1)
+      dimension(start, end, total, ext, SIZE.tier, leg.runs.length === 1 ? leg.runs[0] : undefined, owner)
+    }
     if (comps.length === 2) {
       const normal: Vec3 = [0, 0, 0]
       normal[[0, 1, 2].find(i => !comps.includes(i)) ?? 2] = 1
@@ -228,8 +235,9 @@ export function drawDimensions(ctx: IsoContext) {
       dimension(start, end, total, ext, SIZE.tier, leg.runs.length === 1 ? leg.runs[0] : undefined, owner)
     }
     const centre = lerp2(start.page, end.page, 0.5)
-    for (const [p, q, mm] of legs) {
-      const dir = unit2(sub2(q, p)), out = unit2(sub2(lerp2(p, q, 0.5), centre))
+    for (const [p, q, mm, standing] of legs) {
+      const dir = unit2(sub2(q, p)), away = sub2(lerp2(p, q, 0.5), centre)
+      const out = dot2(unitAxis(standing), away) >= 0 ? unitAxis(standing) : scale2(unitAxis(standing), -1)
       const t = planeText(dir, out), up = uprightOf(t)
       arrow(p, scale2(dir, -1), 'DIM', owner); arrow(q, dir, 'DIM', owner)
       // Leg text goes outside the triangle when its reading side faces in.

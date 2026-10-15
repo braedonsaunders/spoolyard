@@ -90,7 +90,9 @@ export function layoutSheet(doc: IsoDocument, runs: PipeRun[], nodes: PipeNode[]
         const pieces = order.slice(1).map((id, i) => length(sub(position(id), position(order[i]))))
         const weights = pieces.map(p => leg.runs[0].connector ? p : schematicLength(p))
         const total = weights.reduce((x, y) => x + y, 0) || 1
-        const drawn = (leg.runs[0].connector ? Math.max(60, schematicLength(mm) * 0.5) : schematicLength(mm) * (1 + 0.3 * (pieces.length - 1))) * span / mm
+        // Offsets get extra room for their triangles, angles and leg dimensions.
+        const d3 = sub(b, a), skew = Math.max(...d3.map(Math.abs)) / mm < 0.9999 ? 1.5 : 1
+        const drawn = (leg.runs[0].connector ? Math.max(60, schematicLength(mm) * 0.5) : schematicLength(mm) * (1 + 0.3 * (pieces.length - 1)) * skew) * span / mm
         let along = 0
         order.slice(1).forEach((id, i) => {
           along += weights[i]
