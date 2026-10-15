@@ -154,3 +154,35 @@ test('a lateral takes its long run dimension on the side its branch leans toward
   assert.equal(runResult(doc, after).takeouts[0], 215.9);
   assert.deepEqual(validateIso(doc), []);
 });
+
+test('a pipe flanged at one end only loses the flange allowance at that end alone', () => {
+  const bend = () => {
+    const doc = straight();
+    appendRun(doc, doc.runs[0].to, [0, 1000, 0], 'A', 2, 'SP-1', 'L-1');
+    return doc;
+  };
+  const bare = bend(), open = runResult(bare, bare.runs[1]).cut, plain = runResult(bare, bare.runs[0]).cut;
+  const cases: Array<[string, number, RegExp[]]> = [
+    ['FLG-RFWN', 63.5, [/FLANGE RF WN/]],
+    ['FLG-RFLJ', NaN, [/FLANGE RF LAP-JOINT/, /STUB END/]],
+    ['FLG-RFSO', NaN, [/SLIP-ON FLANGE RF/]]
+  ];
+  for (const [code, hub, parts] of cases) {
+    const doc = bend(), pipe = doc.runs[1];
+    const end = placeComponentOnPipe(doc, pipe.id, type(code), 1);
+    assert.equal(end.id, pipe.to, code);
+    const cut = runResult(doc, pipe).cut, elbowSide = runResult(doc, doc.runs[0]).cut;
+    // Only this pipe's flanged end changes; the plain end is still cut to the elbow.
+    assert.ok(cut < open && cut > open - 160, `${code}: ${cut} vs ${open}`);
+    if (Number.isFinite(hub)) assert.ok(Math.abs(open - cut - hub) < 1e-9, code);
+    assert.equal(elbowSide, plain, code);
+    const rows = bom(doc);
+    for (const part of parts) assert.equal(rows.filter(r => part.test(r.description)).reduce((n, r) => n + r.qty, 0), 1, `${code} ${part}`);
+    assert.equal(rows.find(r => /GASKET/.test(r.description))!.qty, 1, code);
+    assert.equal(rows.find(r => /STUD BOLTS/.test(r.description))!.qty, 4, code);
+    // Gasket and bolts supplied with the mating flange on another drawing leave only the flange.
+    getNode(doc, end.id).jointSupply = { gasket: false, bolts: false };
+    assert.ok(!bom(doc).some(r => /GASKET|STUD/.test(r.description)), code);
+    assert.equal(validateIso(doc).length, 0, code);
+  }
+});
