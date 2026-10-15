@@ -1405,3 +1405,23 @@
 .iso-sheet.panning:active {
   cursor: grabbing;
 }
+/* Paper shows the issued sheet: black linework and lettering, as printed. */
+.iso-sheet:not(.model-space) .iso-primitive,
+.iso-sheet:not(.model-space) .iso-cad-text {
+  stroke: #111;
+}
+.iso-sheet:not(.model-space) .iso-text,
+.iso-sheet:not(.model-space) .iso-fill {
+  fill: #111;
+}
+.iso-sheet:not(.model-space) .iso-primitive.selected,
+.iso-sheet:not(.model-space) .iso-cad-text.selected {
+  stroke: #008dbc;
+}
+.iso-sheet:not(.model-space) .iso-text.selected,
+.iso-sheet:not(.model-space) .iso-fill.selected {
+  fill: #008dbc;
+}
+.iso-title-hotspot {
+  cursor: pointer;
+}

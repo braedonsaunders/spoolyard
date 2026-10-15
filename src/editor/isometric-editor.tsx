@@ -37,6 +37,7 @@ import {
 } from "lucide-react";
 import { cn } from "./cn";
 import { SheetLayer } from "./sheet-layer";
+import { NodeCallouts } from "./node-callouts";
 import {
   appendRun,
   applyComponent,
@@ -60,6 +61,7 @@ import {
   round,
   runResult,
   setAutoFitting,
+  styleOf,
   removeComponent,
   resizeRun,
   resizeRunToCut,
@@ -608,20 +610,8 @@ export function IsometricEditor({
     heldFit.current = d.fit;
     return d;
   }, [doc, filter, surface, view, holding]);
-  // On paper the header and title-block text is replaced by inline inputs.
-  const sheetPrimitives = useMemo(
-    () =>
-      drawing.primitives.filter(
-        (p) =>
-          !(
-            surface === "paper" &&
-            p.type === "text" &&
-            !p.owner &&
-            ((p.p[0] < 740 && p.p[1] < 100) || (p.p[0] < 700 + dx && p.p[1] >= 650))
-          ),
-      ),
-    [drawing, surface, dx],
-  );
+  const sheetPrimitives = drawing.primitives;
+  const sheetStyle = styleOf(doc), notToScale = surface === "paper" && sheetStyle.layout === "schematic";
   const pick = (p: Point) =>
     routing && grid.ortho !== false ? pickOrthoPoint(drawing, p, anchor, grid) : pickGridPoint(drawing, p, anchor, grid);
   const viewportWidth = surface === "grid" ? 850 * stageSize.width / stageSize.height : W;
@@ -995,48 +985,6 @@ export function IsometricEditor({
         : next,
     );
   }, [lengthEdit, doc, zoom, pan, view, surface, filter]);
-  const titleInput = (
-    key: "title" | "drawing" | "revision" | "customer" | "project" | "drawnBy" | "checkedBy" | "notes",
-    x: number,
-    y: number,
-    w: number,
-    h: number,
-    label: string,
-    size = 12,
-  ) => {
-    const labelled = y >= 650;
-    const props = {
-      className: "iso-paper-input",
-      "aria-label": label,
-      defaultValue: doc[key],
-      placeholder: label,
-      style: { fontSize: size, height: labelled ? "calc(100% - 10px)" : "100%" },
-      onBlur: (e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-        if (e.target.value !== doc[key])
-          commit((d) => {
-            d[key] = e.target.value;
-          });
-      },
-      onKeyDown: (e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-        if (e.key === "Enter" && key !== "notes") e.currentTarget.blur();
-      },
-    };
-    return (
-      <foreignObject
-        key={key + "-" + x + "-" + y}
-        x={x}
-        y={y}
-        width={w}
-        height={h}
-        onPointerDown={(e) => e.stopPropagation()}
-        onPointerUp={(e) => e.stopPropagation()}
-      >
-        {labelled && <div className="iso-paper-label">{label}</div>}
-        {key === "notes" ? <textarea key={doc[key]} {...props} /> : <input key={doc[key]} {...props} />}
-      </foreignObject>
-    );
-  };
-
   return (
     <section className="iso-editor" aria-label="Piping isometric editor">
       {chrome === "full" && (
@@ -1386,6 +1334,12 @@ export function IsometricEditor({
                     </option>
                   ))}
                 </select>
+                <select aria-label="Sheet scale" value={sheetStyle.layout} disabled={surface === "grid"}
+                  title="Production isometrics are drawn not to scale so short pieces stay readable"
+                  onChange={(e) => commit((d) => { d.style = { ...styleOf(d), layout: e.target.value as "scale" | "schematic" }; })}>
+                  <option value="schematic">Not to scale</option>
+                  <option value="scale">To scale</option>
+                </select>
                 <select aria-label="Visible spool" value={filter} onChange={(e) => setFilter(e.target.value)}>
                   <option value="">All spools</option>
                   {[...new Set(doc.runs.map((r) => r.spool))].map((s) => (
@@ -1556,7 +1510,7 @@ export function IsometricEditor({
                       ))}
                     </g>
                   )}
-                  {surface === "paper" && grid.visible && (
+                  {surface === "paper" && grid.visible && !notToScale && (
                     <g dangerouslySetInnerHTML={{ __html: gridSvg(drawing, GRID_ORIGIN, grid, doc.units) }} />
                   )}
                   <SheetLayer
@@ -1630,18 +1584,9 @@ export function IsometricEditor({
                     </g>
                   )}
                   {surface === "paper" && (
-                    <>
-                      {titleInput("title", 40, 25, 660, 30, "Drawing title", 22)}
-                      {titleInput("drawing", 40, 56, 240, 22, "Drawing number")}
-                      {titleInput("revision", 300, 56, 150, 22, "Revision")}
-                      {titleInput("customer", 40, 80, 320, 22, "Customer")}
-                      {titleInput("project", 375, 80, 325, 22, "Project")}
-                      {titleInput("drawing", 48, 655, 330, 24, "Drawing number")}
-                      {titleInput("revision", 490 + dx, 655, 180, 24, "Revision")}
-                      {titleInput("drawnBy", 48, 680, 300, 22, "Drawn by")}
-                      {titleInput("checkedBy", 365 + dx / 2, 680, 300, 22, "Checked by")}
-                      {titleInput("notes", 48, 713, 630 + dx, 75, "Drawing notes")}
-                    </>
+                    // The title block and notes open Drawing setup, where every field is edited.
+                    <rect x={0} y={drawing.area[3]} width={W} height={850 - drawing.area[3]} fill="transparent"
+                      className="iso-title-hotspot" aria-label="Edit title block" onClick={() => setTab("sheet")} />
                   )}
                   {!doc.runs.length && (
                     <g pointerEvents="none">
@@ -2131,6 +2076,7 @@ export function IsometricEditor({
                             ))}
                         </select>
                       </Field>
+                      <NodeCallouts doc={doc} nodeId={selectedNode.id} commit={commit} />
                       {missingTakeoutNodes.some(n => n.id === selectedNode.id) && <p className="iso-help iso-takeout-help">
                         This fitting has no known takeout. Enter the centre-to-pipe-end distance below to calculate the pipe cuts. Use the individual port takeouts in Fabrication details if they differ.
                       </p>}
@@ -2441,8 +2387,8 @@ export function IsometricEditor({
                 ? "Click to add pipe from the highlighted connection · Esc finishes this run"
                 : "Click the grid to start a run on " + spool + " · or click a connection to continue from it"
               : surface === "paper"
-                ? "Click the title block to edit · Scroll to zoom"
-                : "Infinite model space · Drag with Pan or middle mouse"}
+                ? "Click the title block to edit · Drag empty space to pan · Scroll to zoom"
+                : "Infinite model space · Drag empty space to pan · Scroll to zoom"}
         </span>
         <span className={issues.length ? "warning" : "valid"}>
           {issues.length ? issues.length + " checks" : "Dimensions checked"}

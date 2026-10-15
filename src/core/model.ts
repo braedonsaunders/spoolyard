@@ -1158,7 +1158,10 @@ export function bom(
       heat: '',
       spool: joint.spool,
       line: joint.line
-    }, JSON.stringify([item?.id ?? fallback, description ?? '']), joint.id)
+    }, description
+      ? JSON.stringify([item?.id ?? fallback, description])
+      // Supplied flanges merge with the same flange drawn as a node.
+      : JSON.stringify([item?.id ?? fallback, item?.takeout, item?.branchTakeout, item?.weightKg, item?.areaM2, item?.unitCost, item?.laborHours, null]), joint.id)
   for (const joint of flangedJoints(doc)) {
     for (const flange of joint.flanges.filter(f => f.implicit)) supplied(flange.item, flange.code, 1, joint)
     for (const stub of joint.stubEnds) supplied(stub, 'STUB END', 1, joint)

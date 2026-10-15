@@ -1,5 +1,5 @@
 import { COMPONENT_TYPE_BY_CODE } from './components'
-import { bolting, ratingClass, standardRow } from './standards'
+import { bolting, ratingClass, standardRow, stubEnd as standardStub } from './standards'
 import {
   add, connected, fitting, getNode, getSpec, length, mul, sub,
   type CatalogItem, type EndPrep, type IsoDocument, type Kind, type PipeNode, type PipeRun, type PipeSpec, type Vec3
@@ -171,7 +171,10 @@ export interface FlangedJoint {
 }
 function jointBolts(spec: PipeSpec, nps: number, face: 'RF' | 'FF', makeup: 'flange-pair' | 'lj-pair' | 'lug-valve-side' | 'wafer-valve'): JointBolts | null {
   const row = spec.fittings.find(f => f.kind === 'bolt' && f.nps === nps) ?? catalogRow(spec, 'BOLT-RF', nps)
-  const std = bolting(nps, specRating(spec), face, makeup)
+  // Lap-joint studs pass through both stub-end laps and the gasket as specified.
+  const stub = stubEnd(spec, nps), short = stub?.component === 'STUB-END-SHORT'
+  const lap = stub?.thickness ?? standardStub(nps, short, spec.sizes.find(s => s.nps === nps)?.schedule ?? spec.schedule)?.lapThickness
+  const std = bolting(nps, specRating(spec), face, makeup, makeup === 'lj-pair' ? { lap, gasket: gasketThickness(gasketRow(spec, nps, face)) } : {})
   // A specification's stud row describes flange pairs; lug and through-bolts for valves come from the standard.
   const own = makeup === 'flange-pair' || makeup === 'lj-pair'
   const count = (own ? row?.boltCount : undefined) ?? std?.count, diameter = (own ? row?.boltDiameter : undefined) ?? std?.diameter,

@@ -103,7 +103,7 @@ export function sheetMaterials(doc: IsoDocument, spool = ''): MaterialRow[] {
     const label = node.description ?? COMPONENT_TYPE_BY_CODE[code]?.label ?? node.kind
     const description = node.description ? node.description.toUpperCase() : rowDescription(item, label)
     const category = categoryOf(node.kind, code)
-    add(JSON.stringify([category, item?.id ?? code, description, nps, small, node.takeout, node.branchTakeout]), {
+    add(JSON.stringify([category, item?.id ?? code, description, sizeText(nps, small), node.takeout ?? null, node.branchTakeout ?? null]), {
       category, nd: sizeText(nps, node.kind === 'tee' && small === nps ? undefined : small), description, qty: 0, size: nps,
       flangeRank: FLANGE_ORDER.findIndex(r => r.test(code)) + 1 || 9
     }, node.id, node.quantity ?? (pair ? 2 : 1))
@@ -112,7 +112,7 @@ export function sheetMaterials(doc: IsoDocument, spool = ''): MaterialRow[] {
   function addJoint(joint: FlangedJoint) {
     for (const flange of joint.flanges.filter(f => f.implicit)) {
       const description = rowDescription(flange.item, COMPONENT_TYPE_BY_CODE[flange.code]?.label ?? 'FLANGE')
-      add(JSON.stringify(['flange', flange.item?.id ?? flange.code, description, joint.nps]), {
+      add(JSON.stringify(['flange', flange.item?.id ?? flange.code, description, sizeText(joint.nps), null, null]), {
         category: 'flange', nd: sizeText(joint.nps), description, qty: 0, size: joint.nps,
         flangeRank: FLANGE_ORDER.findIndex(r => r.test(flange.code)) + 1 || 9
       }, joint.id + '#flange', 1)

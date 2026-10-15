@@ -114,3 +114,14 @@ test('three pipes without a straight run explain the problem instead of asking f
   assert.doesNotMatch(issues, /Select the branch/);
   void insertComponent;
 });
+
+test('the same flange drawn as a node and supplied with a valve is one BOM line', async () => {
+  const { sheetMaterials } = await import('../src/core/material-list.ts');
+  const doc = straight();
+  placeComponentOnPipe(doc, doc.runs[0].id, type('GATE-FL'), 0.5);
+  placeComponentOnPipe(doc, doc.runs[0].id, type('FLG-RFWN'), 0);
+  assert.equal(bom(doc).filter(r => /FLANGE RF WN/.test(r.description)).length, 1);
+  assert.equal(bom(doc).find(r => /FLANGE RF WN/.test(r.description))!.qty, 3);
+  const flanges = sheetMaterials(doc, 'SP-1').filter(r => r.category === 'flange');
+  assert.deepEqual(flanges.map(r => r.qty), [3]);
+});
