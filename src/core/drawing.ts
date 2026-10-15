@@ -13,20 +13,39 @@ import {
 } from './model'
 import { gridSvg, type GridSettings } from './grid'
 import { symbolStrokes } from './symbols'
+import { strokeTextPath } from './stroke-font'
 export type Point = [number, number]
+/**
+ * Sheet primitives in sheet units (the sheet is 850 units tall). `weight` is the stroke width in sheet units;
+ * without it each layer has its drafting default (LAYER_WEIGHT).
+ */
 export type Primitive =
-  | { type: 'line'; a: Point; b: Point; layer: string; owner?: string }
-  | { type: 'circle'; p: Point; r: number; layer: string; owner?: string }
+  | { type: 'line'; a: Point; b: Point; layer: string; owner?: string; weight?: number }
+  | { type: 'polyline'; points: Point[]; closed?: boolean; fill?: boolean; layer: string; owner?: string; weight?: number }
+  | { type: 'circle'; p: Point; r: number; fill?: boolean; layer: string; owner?: string; weight?: number }
   | {
       type: 'text'
+      /** Baseline point at the anchor. */
       p: Point
       text: string
+      /** Cap height. */
       size: number
       layer: string
       owner?: string
       /** Set on a pipe dimension so the editor can edit that length in place. */
       role?: 'overall' | 'cut'
+      /** Degrees counter-clockwise on the page. */
+      rotation?: number
+      /** Slant in degrees, positive leaning right; isometric lettering uses the same angle as the rotation. */
+      oblique?: number
+      anchor?: 'start' | 'middle' | 'end'
     }
+  | { type: 'image'; p: Point; width: number; height: number; href: string; layer: string; owner?: string }
+/** Default stroke widths in sheet units. */
+export const LAYER_WEIGHT: Record<string, number> = {
+  BORDER: 2, TITLE: 0.8, BOM: 0.8, NOTES: 0.8, PIPE: 2.6, WELD: 1, SYMBOL: 1.2, DIM: 0.6, LEADER: 0.6, TAG: 0.8, TEXT: 0.8, HATCH: 0.5, GRID: 0.6
+}
+export const weightOf = (p: Primitive) => ('weight' in p && p.weight) || LAYER_WEIGHT[p.layer] || 0.8
 export interface Drawing {
   width: number
   height: number
@@ -38,6 +57,8 @@ export interface Drawing {
   positions: Map<string, Point>
   project: (p: Vec3) => Point
   view: 'iso' | 'plan' | 'front' | 'side'
+  /** CAD lettering draws text with the single-stroke ROMANS font in every output. */
+  lettering?: 'cad' | 'sans'
 }
 export const escape = (v: unknown) =>
   String(v ?? '').replace(
@@ -541,11 +562,23 @@ export function drawingSvg(
 ): string {
   const shape = (p: Primitive) => {
     const attrs = `data-owner="${escape(p.owner ?? '')}" class="${p.layer.toLowerCase()}${p.owner === selected ? ' selected' : ''}"`
+    if (p.type === 'image')
+      return `<image ${attrs} x="${p.p[0]}" y="${p.p[1]}" width="${p.width}" height="${p.height}" href="${escape(p.href)}" preserveAspectRatio="xMidYMid meet"/>`
+    const width = weightOf(p)
     if (p.type === 'line')
-      return `<line ${attrs} x1="${p.a[0]}" y1="${p.a[1]}" x2="${p.b[0]}" y2="${p.b[1]}" stroke-width="${p.layer === 'PIPE' ? 2.2 : p.layer === 'SYMBOL' ? 1.6 : 0.75}"/>`
+      return `<line ${attrs} x1="${p.a[0]}" y1="${p.a[1]}" x2="${p.b[0]}" y2="${p.b[1]}" stroke-width="${width}"/>`
+    if (p.type === 'polyline') {
+      const points = p.points.map(q => q.join(',')).join(' ')
+      return `<${p.closed || p.fill ? 'polygon' : 'polyline'} ${attrs} points="${points}" stroke-width="${width}" fill="${p.fill ? 'currentColor' : 'none'}" stroke-linejoin="round"/>`
+    }
     if (p.type === 'circle')
-      return `<circle ${attrs} cx="${p.p[0]}" cy="${p.p[1]}" r="${p.r}" fill="white"/>`
-    return `<text ${attrs} x="${p.p[0]}" y="${p.p[1]}" font-size="${p.size}">${escape(p.text)}</text>`
+      return `<circle ${attrs} cx="${p.p[0]}" cy="${p.p[1]}" r="${p.r}" stroke-width="${width}" fill="${p.fill ? 'currentColor' : 'white'}"/>`
+    if (d.lettering === 'cad')
+      return `<path ${attrs} d="${strokeTextPath(p.text, { at: p.p, size: p.size, rotation: p.rotation, oblique: p.oblique, anchor: p.anchor })}" fill="none" stroke-width="${Math.max(0.35, p.size * 0.1)}" stroke-linecap="round" stroke-linejoin="round" data-text="${escape(p.text)}"/>`
+    const transform = p.rotation || p.oblique
+      ? ` transform="translate(${p.p[0]} ${p.p[1]}) rotate(${-(p.rotation ?? 0)}) skewX(${p.oblique ?? 0}) translate(${-p.p[0]} ${-p.p[1]})"` : ''
+    const anchor = p.anchor && p.anchor !== 'start' ? ` text-anchor="${p.anchor}"` : ''
+    return `<text ${attrs} x="${p.p[0]}" y="${p.p[1]}" font-size="${p.size / 0.72}"${anchor}${transform}>${escape(p.text)}</text>`
   }
   const hits = interactive
     ? [...d.positions]
