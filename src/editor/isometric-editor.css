@@ -695,6 +695,11 @@
   border-color: #19856222;
   background: #19856207;
 }
+.iso-validation.empty {
+  border-color: rgb(var(--ch-border));
+  background: transparent;
+  opacity: 0.7;
+}
 .iso-validation p {
   margin-top: 6px;
 }

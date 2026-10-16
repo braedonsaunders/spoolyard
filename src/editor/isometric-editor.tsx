@@ -37,7 +37,7 @@ import {
 } from "lucide-react";
 import { cn } from "./cn";
 import { SheetLayer } from "./sheet-layer";
-import { NodeCallouts } from "./node-callouts";
+import { ECCENTRIC, NodeCallouts } from "./node-callouts";
 import { SheetSettings } from "./sheet-settings";
 import {
   appendRun,
@@ -48,6 +48,7 @@ import {
   getNode,
   getSpec,
   defaultEndPrep,
+  fitting,
   id,
   insertComponent,
   lengthInputValue,
@@ -68,6 +69,8 @@ import {
   type IsoDocument,
   type CatalogItem,
   type Kind,
+  type PipeNode,
+  type PipeRun,
   type EndPrep,
   type Vec3,
 } from "../core/model";
@@ -95,10 +98,33 @@ import { COMPONENT_TYPES, type ComponentType } from "../core/components";
 import { SpecManager, rowComponent } from "./spec-manager";
 import { defaultNps, loadLibrarySpec, loadSpecIndex, newIsoWithDefaultSpec, type LibrarySpecSummary } from "./library";
 import { SpoolyardMark } from "./mark";
-import { ComponentLibrary, ComponentPalette } from "./component-palette";
+import { ComponentLibrary, ComponentPalette, inches, sizeLabel } from "./component-palette";
 import { ComponentGlyph } from "./component-glyph";
 import { pipeAtPoint, type PipeHit } from "./pipe-hit";
-import { componentTrack, endCapable, legPoint, moveComponentAlongPipe, pipeLeg, placeComponentOnPipe, type ComponentTrack } from "../core/component-position";
+import {
+  canRouteFrom,
+  componentFaces,
+  componentTrack,
+  continueFlow,
+  isSquareTurn,
+  placeAtTurn,
+  directionName,
+  endCapable,
+  legPoint,
+  moveComponentAlongPipe,
+  pipeLeg,
+  placeComponentOnPipe,
+  placementStep,
+  reduceAtJoint,
+  routeError,
+  setLineFlow,
+  sized,
+  sizeChoices,
+  snapAlongLeg,
+  snapNearFace,
+  type ComponentTrack,
+} from "../core/component-position";
+import { nodeItem } from "../core/joints";
 import "./isometric-editor.css";
 
 export type SaveStatus = "opening" | "saved" | "unsaved" | "saving" | "error";
@@ -154,6 +180,13 @@ const labels: Record<string, string> = {
   gasket: "Gasket",
   bolt: "Bolts",
   end: "Open end",
+};
+/** The last open pipe end: where typed routing carries on after opening, undo or delete. */
+const lastOpenEnd = (d: IsoDocument) => [...d.nodes].reverse().find((n) => n.kind === "end" && connected(d, n.id).length === 1)?.id ?? "";
+/** Why a pipe cannot start from a connection that has no free end. */
+const noFreeEnd = (d: IsoDocument, nodeId: string) => {
+  const node = getNode(d, nodeId), name = COMPONENT_TYPES.find((t) => t.code === node.component)?.label ?? labels[node.kind] ?? "connection";
+  return `The ${name.toLowerCase()} has no free end to route from. Select an open end, or click a pipe with the Pipe tool to branch from it.`;
 };
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -328,6 +361,9 @@ export function IsometricEditor({
     [specBusy, setSpecBusy] = useState(""),
     [armed, setArmed] = useState<{ type: ComponentType; row?: CatalogItem } | null>(null);
   const [insertHover, setInsertHover] = useState<PipeHit | null>(null);
+  // A Pipe-tool start not in the drawing yet: a new run's first point, or the point on a pipe a branch will leave.
+  const [pending, setPending] = useState<{ position: Vec3; runId?: string; fraction?: number } | null>(null);
+  const exportMenu = useRef<HTMLDetailsElement>(null);
   const [zoom, setZoom] = useState(1),
     [pan, setPan] = useState<Point>([0, 0]),
     [cursor, setCursor] = useState<Vec3 | null>(null);
@@ -361,10 +397,17 @@ export function IsometricEditor({
   const latest = useRef(doc);
   latest.current = doc;
   const activeSpec = doc.specs.find(s => s.id === spec) ?? doc.specs[0];
+  // Routing from a connection keeps its end preparation (an olet's socket, say) rather than the size's default.
+  const connectionPrep = useRef<{ prep: EndPrep; spec: string; nps: number } | null>(null);
+  const routeWith = (prep: EndPrep, specId: string, size: number) => {
+    connectionPrep.current = { prep, spec: specId, nps: size };
+    setRoutingPrep(prep);
+  };
   useEffect(() => {
     if (activeSpec.id !== spec) setSpec(activeSpec.id);
     if (!activeSpec.sizes.some(size => size.nps === nps)) setNps(defaultNps(activeSpec));
-    setRoutingPrep(defaultEndPrep(activeSpec, nps));
+    const kept = connectionPrep.current;
+    setRoutingPrep(kept && kept.spec === spec && kept.nps === nps ? kept.prep : defaultEndPrep(activeSpec, nps));
   }, [spec, activeSpec.id, nps, ready]);
   const persistence = usePipingSave(doc, ready, onSave, isNew);
   const save = () => {
@@ -398,7 +441,7 @@ export function IsometricEditor({
         setDoc(loaded);
         setSpec(loaded.specs[0].id);
         setNps(loaded.runs.at(-1)?.nps ?? defaultNps(loaded.specs[0]));
-        setStart(loaded.nodes.at(-1)?.id ?? "");
+        setStart(lastOpenEnd(loaded));
         setSpan(loaded.units === "imperial" ? "10'" : "1000");
         setReady(true);
       })
@@ -441,7 +484,8 @@ export function IsometricEditor({
     setUndoCount(undo.current.length);
     setRedoCount(redo.current.length);
     setSelection("");
-    setStart(next.nodes.at(-1)?.id ?? "");
+    setStart(lastOpenEnd(next));
+    setPending(null);
   };
   const remove = () =>
     commit((d) => {
@@ -456,15 +500,33 @@ export function IsometricEditor({
       }
       d.nodes = d.nodes.filter((n) => n.associatedRunId || connected(d, n.id).length);
       setSelection("");
-      setStart(d.nodes.at(-1)?.id ?? "");
+      setStart(lastOpenEnd(d));
+      setPending(null);
     });
   const activateTool = (next: string) => {
     setArmed(null);
     setInsertHover(null);
     setCursor(null);
+    setPending(null);
     setTool(next);
     if (next === "pipe") setView("iso");
   };
+  const closeExport = () => {
+    if (!exportMenu.current?.open) return false;
+    exportMenu.current.open = false;
+    return true;
+  };
+  useEffect(() => {
+    closeExport();
+  }, [tab]);
+  useEffect(() => {
+    // The Export menu closes on a click anywhere else.
+    const outside = (e: globalThis.PointerEvent) => {
+      if (!exportMenu.current?.contains(e.target as Node)) closeExport();
+    };
+    document.addEventListener("pointerdown", outside);
+    return () => document.removeEventListener("pointerdown", outside);
+  }, []);
   useEffect(() => {
     const changed = () => setFullscreen(!!document.fullscreenElement);
     document.addEventListener("fullscreenchange", changed);
@@ -492,6 +554,7 @@ export function IsometricEditor({
   }, [tab]);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && closeExport()) return;
       if (e.key === "Escape" && document.fullscreenElement) {
         void document.exitFullscreen().catch(() => undefined);
         return;
@@ -510,8 +573,10 @@ export function IsometricEditor({
           return;
         }
         // First Esc finishes the run in progress; the next click starts a new one. A second Esc leaves the Pipe tool.
-        if (tool === "pipe" && start) setStart("");
-        else setTool("select");
+        if (tool === "pipe" && (start || pending)) {
+          setStart("");
+          setPending(null);
+        } else setTool("select");
         setCursor(null);
       } else if (e.key === "Delete" || e.key === "Backspace") {
         e.preventDefault();
@@ -579,18 +644,22 @@ export function IsometricEditor({
   // Paper follows the chosen sheet size so the editor matches the exported PDF exactly.
   const W = surface === "paper" ? sheetWidth(doc) : 1100,
     dx = W - 1100;
-  const routing = doc.nodes.some((n) => n.id === start);
+  const startNode = doc.nodes.find((n) => n.id === start);
+  // A Pipe-tool click routes on only from a start the user chose: the connection they picked, the end they just
+  // routed to, or a pending start. The last open end left over from opening, undo or delete is not one.
+  const routing = !!pending || (!!startNode && selection === start);
   const spools = [...new Set([...doc.runs.map((r) => r.spool), spool])].sort();
   const newSpool = () => {
     const numbers = spools.map((s) => Number(/(\d+)$/.exec(s)?.[1] ?? 0));
     setSpool("SP-" + String(Math.max(0, ...numbers) + 1).padStart(3, "0"));
     setStart("");
     setSelection("");
+    setPending(null);
     setTool("pipe");
     setView("iso");
   };
   const grid = doc.grid ?? defaultGrid(),
-    anchor = doc.nodes.find((n) => n.id === start)?.position ?? ([0, 0, 0] as Vec3);
+    anchor = pending?.position ?? startNode?.position ?? ([0, 0, 0] as Vec3);
   // While a run is being drawn on paper, hold the sheet's fit so the next click point stays put;
   // it re-fits once the run is finished, or if the new pipe would leave the drawing area.
   const heldFit = useRef<SheetFit | null>(null);
@@ -621,8 +690,21 @@ export function IsometricEditor({
   }, [doc, filter, surface, view, holding]);
   const sheetPrimitives = drawing.primitives;
   const sheetStyle = styleOf(doc), notToScale = surface === "paper" && sheetStyle.layout === "schematic";
+  // A pending start is not in the drawing: off its pipes a not-to-scale sheet is drawn at one scale, so the route from
+  // it is measured at that scale from where the start is drawn, not from whichever connection is nearest.
+  const routeDrawing = useMemo((): Drawing => {
+    if (!pending) return drawing;
+    const far: Vec3 = [1e9, 1e9, 1e9], base = drawing.project(far), origin = drawing.project(pending.position);
+    return {
+      ...drawing,
+      project: (p: Vec3): Point => {
+        const q = drawing.project([0, 1, 2].map((i) => far[i] + p[i] - pending.position[i]) as Vec3);
+        return [origin[0] + q[0] - base[0], origin[1] + q[1] - base[1]];
+      },
+    };
+  }, [drawing, pending]);
   const pick = (p: Point) =>
-    routing && grid.ortho !== false ? pickOrthoPoint(drawing, p, anchor, grid) : pickGridPoint(drawing, p, anchor, grid);
+    routing && grid.ortho !== false ? pickOrthoPoint(routeDrawing, p, anchor, grid) : pickGridPoint(routeDrawing, p, anchor, grid);
   const viewportWidth = surface === "grid" ? 850 * stageSize.width / stageSize.height : W;
   const viewportX = W / 2 - viewportWidth / 2 / zoom + pan[0];
   const viewportY = 425 - 425 / zoom + pan[1];
@@ -662,23 +744,47 @@ export function IsometricEditor({
   const selectedRun = doc.runs.find((r) => r.id === selection),
     selectedNode = doc.nodes.find((n) => n.id === selection);
   const selectedTrack = selectedNode ? componentTrack(doc, selectedNode.id) : null;
+  const selectedTurn = !!selectedNode && isSquareTurn(doc, selectedNode.id);
+  const selectedFaces = useMemo(() => (selectedTrack && selectedNode ? componentFaces(doc, selectedNode.id) : null), [doc, selectedNode, selectedTrack]);
   const pendingCuts = cuts.filter(c => !Number.isFinite(c.cut) || c.cut <= 0);
   const missingTakeoutNodes = doc.nodes.filter(node => cuts.some(c =>
     (c.run.from === node.id || c.run.to === node.id) && takeout(doc, node, c.run.id) == null));
   const selectedEdges = selectedNode ? connected(doc, selectedNode.id) : [];
   const selectedHeader = selectedEdges.reduce<typeof selectedEdges[number] | undefined>((largest, run) => !largest || run.nps > largest.nps ? run : largest, undefined)
     ?? doc.runs.find(r => r.id === selectedNode?.associatedRunId);
-  const selectConnection = (key: string) => {
+  const selectConnection = (key: string, d = doc) => {
     setStart(key);
     setSelection(key);
-    const run = connected(doc, key)[0];
+    setPending(null);
+    const node = d.nodes.find((n) => n.id === key), run = connected(d, key)[0], host = d.runs.find((r) => r.id === node?.associatedRunId);
     if (run) {
       setSpool(run.spool);
       setLine(run.line);
       setSpec(run.specId);
       setNps(run.nps);
-      setRoutingPrep(prepAt(run, run.from === key ? 0 : 1));
+      routeWith(prepAt(run, run.from === key ? 0 : 1), run.specId, run.nps);
+    } else if (host && node?.kind === "olet") {
+      // An olet's branch is routed at the olet's size, with its socket, thread or butt weld.
+      const size = fitting(d, node)?.nps ?? nodeItem(d, node)?.nps ?? host.nps;
+      setSpool(host.spool);
+      setLine(host.line);
+      setSpec(host.specId);
+      setNps(size);
+      routeWith(branchPrep(node.component, prepAt(host, 0)), host.specId, size);
     }
+  };
+  const branchPrep = (code: string | undefined, header: EndPrep): EndPrep => {
+    const prep = COMPONENT_TYPES.find((t) => t.code === code)?.endPrep;
+    return prep && prep !== "PLAIN" && prep !== "FL" ? prep : header;
+  };
+  /** Start the branch of a tee or olet just placed: the Pipe tool routes from it at the branch size and its end. */
+  const routeBranch = (d: IsoDocument, nodeId: string, nps: number) => {
+    selectConnection(nodeId, d);
+    const node = getNode(d, nodeId), host = connected(d, nodeId)[0] ?? d.runs.find((r) => r.id === node.associatedRunId)!;
+    setNps(nps);
+    routeWith(branchPrep(node.component, prepAt(host, host.from === nodeId ? 0 : 1)), host.specId, nps);
+    setTool("pipe");
+    setView("iso");
   };
   useEffect(() => {
     if (tab !== "3d" || !three.current) return;
@@ -725,12 +831,22 @@ export function IsometricEditor({
   const add = (delta: Vec3) =>
     commit((d) => {
       let from = d.nodes.some((n) => n.id === start) ? start : null;
-      if (!from && d.nodes.length) {
+      if (pending?.runId) {
+        // A branch's tee goes into its pipe once the branch has somewhere to go.
+        from = insertComponent(d, pending.runId, "tee", pending.fraction!).id;
+      } else if (pending) {
+        const origin = { id: id(), kind: "end" as const, position: pending.position };
+        d.nodes.push(origin);
+        from = origin.id;
+      } else if (!from && d.nodes.length) {
         // A new run typed by length starts beside the existing work rather than on top of it.
         const origin = { id: id(), kind: "end" as const, position: [Math.max(...d.nodes.map((n) => n.position[0])) + 1000, 0, 0] as Vec3 };
         d.nodes.push(origin);
         from = origin.id;
       }
+      if (from && !pending && !canRouteFrom(d, from)) throw new Error(noFreeEnd(d, from));
+      const problem = from && routeError(d, from, delta);
+      if (problem) throw new Error(problem);
       const node = appendRun(
         d,
         from,
@@ -741,8 +857,12 @@ export function IsometricEditor({
         line,
         routingPrep,
       );
+      // Routed on at another size, the line gets a reducer at the joint; it carries its flow on.
+      if (from) reduceAtJoint(d, from);
+      continueFlow(d, d.runs.at(-1)!.id);
       setStart(node.id);
       setSelection(node.id);
+      setPending(null);
     });
   const point = (event: PointerEvent): Point | null => {
     const matrix = svg.current?.getScreenCTM();
@@ -762,24 +882,36 @@ export function IsometricEditor({
     // A dimension also identifies its pipe, even when its label is offset from the centreline.
     return nearest ?? (owner ? pipeAtPoint(doc, drawing, [event.clientX, event.clientY], toScreen, owner, 32) : null);
   };
-  const insertFitting = (runId: string, type: ComponentType, row?: CatalogItem, position = fraction / 100) => {
+  const insertFitting = (runId: string, type: ComponentType, row?: CatalogItem, position = fraction / 100, clicked = false) => {
     const before = latest.current;
+    let placed: PipeNode | undefined;
     commit((d) => {
-      const node = placeComponentOnPipe(d, runId, type, position, row);
-      setSelection(node.id);
+      placed = placeComponentOnPipe(d, runId, type, position, row);
+      if (clicked) snapNearFace(d, placed.id);
+      setSelection(placed.id);
     });
-    if (latest.current !== before) {
-      setArmed(null);
-      setInsertHover(null);
+    if (latest.current === before) return;
+    setArmed(null);
+    setInsertHover(null);
+    // A tee or olet is placed to take a branch: route it straight away, at the branch size.
+    if (placed && (type.kind === "tee" || type.kind === "olet") && canRouteFrom(latest.current, placed.id)) {
+      const branch = type.kind === "olet" ? row?.nps : row?.smallerNps ?? row?.nps;
+      routeBranch(latest.current, placed.id, branch ?? latest.current.runs.find((r) => r.id === runId)!.nps);
     }
   };
+  // The size a reducer, tee or olet is placed at, on the pipe the palette is showing.
+  const paletteSpec = doc.specs.find((s) => s.id === (selectedRun?.specId ?? spec)) ?? doc.specs[0];
+  const paletteNps = selectedRun?.nps ?? nps;
+  const armedChoices = armed && sized(armed.type) ? sizeChoices(paletteSpec, armed.type, paletteNps) : [];
   const chooseComponent = (type: ComponentType, row?: CatalogItem) => {
     setTool("insert");
     setTab("draw");
     setError("");
     setInsertHover(null);
-    const key = row?.id ?? type.code;
-    setArmed((current) => (current && (current.row?.id ?? current.type.code) === key ? null : { type, row }));
+    setPending(null);
+    const choices = sized(type) ? sizeChoices(paletteSpec, type, paletteNps) : [];
+    const chosen = row ?? (choices.find((c) => type.kind === "tee" && c.to === paletteNps) ?? choices[0])?.row;
+    setArmed((current) => (current && current.type.code === type.code && current.row?.id === chosen?.id ? null : { type, row: chosen }));
   };
   const chooseSpec = async (value: string, runId = "") => {
     const use = (d: IsoDocument, id: string) => {
@@ -823,22 +955,42 @@ export function IsometricEditor({
     const target = event.target as Element,
       owner = target.closest("[data-owner]")?.getAttribute("data-owner"),
       node = target.closest("[data-node]")?.getAttribute("data-node");
+    if (armed && tool === "insert" && armed.type.angle) {
+      // An angle or relief valve goes at a square turn: click the elbow it replaces.
+      const turn = node ?? (owner && doc.nodes.some((n) => n.id === owner) ? owner : undefined);
+      if (turn && isSquareTurn(doc, turn)) {
+        if (commit((d) => setSelection(placeAtTurn(d, turn, armed.type, undefined, armed.row).id))) {
+          setArmed(null);
+          setInsertHover(null);
+        }
+      } else setError(`${armed.type.label} has an angle body. Click a 90° elbow to put it there.`);
+      return;
+    }
     if (armed && tool === "insert") {
       const hit = insertionTarget(event);
       if (hit) {
         // Flanges, blinds and caps dropped on an open pipe end become that end.
         const run = doc.runs.find(r => r.id === hit.runId)!, endNode = hit.end == null ? undefined : getNode(doc, hit.end === 0 ? run.from : run.to);
         const onEnd = endNode && endCapable(armed.type) && endNode.kind === "end" && connected(doc, endNode.id).length === 1;
-        insertFitting(hit.runId, armed.type, armed.row, onEnd ? hit.end! : hit.fraction);
+        const at = onEnd ? { runId: hit.runId, fraction: hit.end! } : snapAlongLeg(doc, hit.runId, hit.fraction);
+        const choices = sized(armed.type) ? sizeChoices(getSpec(doc, run.specId), armed.type, run.nps) : [];
+        if (choices.length && !choices.some((c) => c.row.id === armed.row?.id)) {
+          // The size was chosen for another pipe: offer this pipe's sizes and ask again.
+          setSelection(run.id);
+          setArmed({ type: armed.type, row: choices[0].row });
+          setError(`The size shown was for a ${inches(paletteNps)} pipe. Choose the size for this ${inches(run.nps)} pipe, then click it again.`);
+          return;
+        }
+        insertFitting(at.runId, armed.type, armed.row, at.fraction, !onEnd);
       }
       else setError("No pipe at that point. Click a straight pipe or its dimension label to place " + armed.type.label + ".");
       return;
     }
+    if (tool === "pipe") {
+      routeClick(event, node);
+      return;
+    }
     if (node) {
-      if (tool === 'pipe' && routing && node !== start) {
-        add(sub(getNode(doc, node).position, anchor));
-        return;
-      }
       selectConnection(node);
       return;
     }
@@ -846,22 +998,70 @@ export function IsometricEditor({
       setSelection(owner);
       return;
     }
-    if (tool !== "pipe") {
-      setSelection("");
-      return;
-    }
+    setSelection("");
+  };
+  /** The point on a pipe the Pipe tool is over, where a click starts a branch. */
+  const branchTarget = (event: PointerEvent): PipeHit | null => {
+    const matrix = svg.current?.getScreenCTM();
+    if (!matrix) return null;
+    const hit = pipeAtPoint(doc, drawing, [event.clientX, event.clientY], ([x, y]) => {
+      const screen = new DOMPoint(x, y).matrixTransform(matrix);
+      return [screen.x, screen.y];
+    });
+    return hit && hit.end == null ? hit : null;
+  };
+  /** A branch from a point on a pipe, at the pipe's size; its tee goes in once the branch is routed. */
+  const startBranch = ({ runId, fraction: at }: { runId: string; fraction: number }) => {
+    const run = doc.runs.find((r) => r.id === runId)!;
+    const a = getNode(doc, run.from).position, b = getNode(doc, run.to).position;
+    setPending({ position: a.map((v, i) => v + (b[i] - v) * at) as Vec3, runId, fraction: at });
+    setStart("");
+    setSelection("");
+    setSpool(run.spool);
+    setLine(run.line);
+    setSpec(run.specId);
+    setNps(run.nps);
+    routeWith(prepAt(run, 0), run.specId, run.nps);
+    setError("");
+    setArmed(null);
+    setTool("pipe");
+    setView("iso");
+  };
+  // Clicks place at whole millimetres or sixteenths along the straight, as previewed.
+  const snapHit = (hit: PipeHit): PipeHit => (hit.end == null ? { ...hit, ...snapAlongLeg(doc, hit.runId, hit.fraction) } : hit);
+  /**
+   * A Pipe-tool click: a connection with a free end starts a run from it; a pipe starts a branch from that point; open
+   * sheet starts a new run or, with a run in progress, routes the pipe there. A fitting with no free end, or the title block, asks instead.
+   */
+  const routeClick = (event: PointerEvent, node?: string | null) => {
     try {
       const p = point(event);
       if (!p) return;
+      if (node) {
+        if (routing && node !== start) add(sub(getNode(doc, node).position, anchor));
+        else if (canRouteFrom(doc, node)) selectConnection(node);
+        else
+          setError(noFreeEnd(doc, node));
+        return;
+      }
+      const hit = branchTarget(event);
+      if (hit) {
+        startBranch(snapAlongLeg(doc, hit.runId, hit.fraction));
+        return;
+      }
+      const [x0, y0, x1, y1] = drawing.area;
+      if (surface === "paper" && !(p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1)) {
+        setError("Click inside the drawing area to route a pipe, or on a pipe to branch from it.");
+        return;
+      }
       const destination = pick(p);
-      if (!doc.nodes.some((n) => n.id === start)) {
-        commit((d) => {
-          const node = { id: id(), kind: "end" as const, position: destination };
-          d.nodes.push(node);
-          setStart(node.id);
-          setSelection(node.id);
-        });
-      } else add(sub(destination, anchor));
+      if (routing) add(sub(destination, anchor));
+      else {
+        setPending({ position: destination });
+        setStart("");
+        setSelection("");
+        setError("");
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -893,7 +1093,7 @@ export function IsometricEditor({
       commit((d) => Object.assign(d, next));
       setSpec(next.specs[0].id);
       setNps(defaultNps(next.specs[0]));
-      setStart(next.nodes.at(-1)?.id ?? "");
+      setStart(lastOpenEnd(next));
       setSelection("");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -1070,13 +1270,13 @@ export function IsometricEditor({
         <button title="Import PCF, piping JSON or legacy DXF" onClick={() => importInput.current?.click()}>
           <Upload size={14} /> Import
         </button>
-        <details className="iso-export-menu">
+        <details className="iso-export-menu" ref={exportMenu}>
           <summary>
             <Download size={14} /> Export <ChevronDown size={12} />
           </summary>
           <div>
             {["PDF", "DWG", "DXF", "PCF", "SVG", "JSON", "bom", "cut", "weld"].map((format) => (
-              <button key={format} disabled={!!busy || !ready} onClick={() => void runExport(format)}>
+              <button key={format} disabled={!!busy || !ready} onClick={() => { closeExport(); void runExport(format); }}>
                 {format === "PDF"
                   ? "PDF drawing package"
                   : format === "bom"
@@ -1147,7 +1347,7 @@ export function IsometricEditor({
                 >
                   {activeSpec.sizes.map((s) => (
                     <option value={s.nps} key={s.nps}>
-                      {s.nps}″
+                      {inches(s.nps)}
                     </option>
                   ))}
                 </select>
@@ -1244,12 +1444,30 @@ export function IsometricEditor({
               <strong>Insert</strong>
               <small>
                 {armed
-                  ? "Click a pipe to place " + armed.type.label + ". Esc cancels."
+                  ? (armed.type.angle ? "Click a 90° elbow to put " : "Click a pipe to place ") + armed.type.label + (armed.type.angle ? " there" : "") + ". Esc cancels."
                   : "Choose a component, then click where it belongs on the pipe. Drag it or enter a distance to adjust it."}
               </small>
+              {armed && armedChoices.length > 0 && (
+                <Field label={armed.type.kind === "reducer" ? "Size · reduce or expand" : armed.type.kind === "olet" ? "Header × branch" : "Run × branch"}>
+                  <select
+                    aria-label="Component size"
+                    value={armed.row?.id ?? ""}
+                    onChange={(e) => {
+                      const row = armedChoices.find((c) => c.row.id === e.target.value)?.row;
+                      setArmed({ type: armed.type, row });
+                    }}
+                  >
+                    {armedChoices.map((c) => (
+                      <option key={c.row.id} value={c.row.id}>
+                        {sizeLabel(armed.type, c, paletteNps)}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              )}
               {armed && selectedRun && !selectedRun.connector && (
                 <>
-                  <Field label="Position along straight (%)">
+                  <Field label="Centre along straight (%)">
                     <input
                       type="number"
                       min="1"
@@ -1266,7 +1484,7 @@ export function IsometricEditor({
                   }}>
                     Place at this distance
                   </button>
-                  <Field label="Distance from start of straight">
+                  <Field label="Centre from start of straight">
                     <input
                       aria-label="Component distance from pipe start"
                       key={selection + "-" + fraction}
@@ -1296,9 +1514,9 @@ export function IsometricEditor({
             </div>
             {doc.specs[0] && (
               <ComponentPalette
-                spec={doc.specs.find((s) => s.id === (selectedRun?.specId ?? spec)) ?? doc.specs[0]}
-                nps={selectedRun?.nps ?? nps}
-                armedKey={armed ? (armed.row?.id ?? armed.type.code) : ""}
+                spec={paletteSpec}
+                nps={paletteNps}
+                armed={armed ? { code: armed.type.code, rowId: armed.row?.id } : undefined}
                 onInsert={chooseComponent}
               />
             )}
@@ -1362,7 +1580,7 @@ export function IsometricEditor({
               </button>}
               {armed && tab === "draw" && (
                 <div className="iso-place-hint" role="status">
-                  {insertHover ? "Click to place " : "Click a pipe to place "}{armed.type.label}
+                  {insertHover ? "Click to place " : armed.type.angle ? "Click a 90° elbow to place " : "Click a pipe to place "}{armed.type.label}
                   <button type="button" onClick={() => { setArmed(null); setInsertHover(null); }}>
                     Cancel
                   </button>
@@ -1440,7 +1658,8 @@ export function IsometricEditor({
                             const dx = b[0] - a[0], dy = b[1] - a[1];
                             const t = ((origin[0] + p[0] - state.point[0] - a[0]) * dx + (origin[1] + p[1] - state.point[1] - a[1]) * dy) / (dx * dx + dy * dy || 1);
                             const margin = 0.0001 * track.length;
-                            const distance = Math.max(Math.max(track.min, Math.min(sa, sb)) + margin, Math.min(Math.min(track.max, Math.max(sa, sb)) - margin, sa + (sb - sa) * t));
+                            const step = placementStep(doc.units), along = Math.round((sa + (sb - sa) * t) / step) * step;
+                            const distance = Math.max(Math.max(track.min, Math.min(sa, sb)) + margin, Math.min(Math.min(track.max, Math.max(sa, sb)) - margin, along));
                             state.destination = track.from.map((v, i) => v + u[i] * distance) as Vec3;
                           } else state.destination = pickGridPoint(
                               drawing,
@@ -1469,10 +1688,14 @@ export function IsometricEditor({
                       return;
                     }
                     if (armed && tool === "insert") {
-                      setInsertHover(insertionTarget(e));
+                      const hit = armed.type.angle ? null : insertionTarget(e);
+                      setInsertHover(hit && snapHit(hit));
                       return;
                     }
                     if (tool === "pipe") {
+                      // Over a pipe, a click branches from it: show where the tee goes instead of a route.
+                      const over = (e.target as Element).closest("[data-node]") ? null : branchTarget(e);
+                      setInsertHover(over && snapHit(over));
                       try {
                         const p = point(e);
                         if (p) setCursor(pick(p));
@@ -1493,6 +1716,7 @@ export function IsometricEditor({
                         commit((d) => {
                           if (state.track) {
                             moveComponentAlongPipe(d, state.id, Math.hypot(...sub(state.destination, state.track.from)));
+                            snapNearFace(d, state.id);
                             return;
                           }
                           getNode(d, state.id).position = state.destination;
@@ -1538,7 +1762,7 @@ export function IsometricEditor({
                     editing={lengthEdit}
                     onEditLength={openLength}
                   />
-                  {armed && insertHover && (() => {
+                  {(armed || tool === "pipe") && insertHover && (() => {
                     const run = doc.runs.find(r => r.id === insertHover.runId);
                     if (!run) return null;
                     const a = drawing.positions.get(run.from), b = drawing.positions.get(run.to);
@@ -1559,41 +1783,45 @@ export function IsometricEditor({
                         fill="transparent"
                         className="iso-node-hit"
                       />
-                      {key === start && (
+                      {key === start && !pending && (tool !== "pipe" || routing) && (
                         <circle cx={p[0]} cy={p[1]} r={5} className="iso-anchor" pointerEvents="none" />
                       )}
                     </g>
                   ))}
+                  {pending && (
+                    <circle cx={drawing.project(pending.position)[0]} cy={drawing.project(pending.position)[1]} r={5}
+                      className="iso-anchor" pointerEvents="none" />
+                  )}
                   {cursor && nodeDrag.current && (
                     <circle
-                      cx={drawing.project(cursor)[0]}
-                      cy={drawing.project(cursor)[1]}
+                      cx={routeDrawing.project(cursor)[0]}
+                      cy={routeDrawing.project(cursor)[1]}
                       r={8}
                       className="iso-anchor"
                       opacity=".6"
                       pointerEvents="none"
                     />
                   )}
-                  {cursor && tool === "pipe" && (
+                  {cursor && tool === "pipe" && !insertHover && (
                     <g pointerEvents="none">
                       {routing && (
                         <line
-                          x1={drawing.project(anchor)[0]}
-                          y1={drawing.project(anchor)[1]}
-                          x2={drawing.project(cursor)[0]}
-                          y2={drawing.project(cursor)[1]}
+                          x1={routeDrawing.project(anchor)[0]}
+                          y1={routeDrawing.project(anchor)[1]}
+                          x2={routeDrawing.project(cursor)[0]}
+                          y2={routeDrawing.project(cursor)[1]}
                           className="iso-route-preview"
                         />
                       )}
                       <circle
-                        cx={drawing.project(cursor)[0]}
-                        cy={drawing.project(cursor)[1]}
+                        cx={routeDrawing.project(cursor)[0]}
+                        cy={routeDrawing.project(cursor)[1]}
                         r={4}
                         className="iso-anchor"
                       />
                       <text
-                        x={drawing.project(cursor)[0] + 12}
-                        y={drawing.project(cursor)[1] - 12}
+                        x={routeDrawing.project(cursor)[0] + 12}
+                        y={routeDrawing.project(cursor)[1] - 12}
                         className="iso-route-label"
                       >
                         {routing ? formatLength(Math.hypot(...sub(cursor, anchor)), doc.units) : "Start " + spool}
@@ -1821,11 +2049,30 @@ export function IsometricEditor({
                         >
                           {getSpec(doc, selectedRun.specId).sizes.map((s) => (
                             <option key={s.nps} value={s.nps}>
-                              {s.nps}″
+                              {inches(s.nps)}
                             </option>
                           ))}
                         </select>
                       </Field>
+                      {!selectedRun.connector && (() => {
+                        const along = sub(getNode(doc, selectedRun.to).position, getNode(doc, selectedRun.from).position);
+                        return (
+                          <>
+                            <Field label="Flow">
+                              <select
+                                aria-label="Flow direction"
+                                value={selectedRun.flow ?? ""}
+                                onChange={(e) => commit((d) => setLineFlow(d, selection, (e.target.value || undefined) as PipeRun["flow"]))}
+                              >
+                                <option value="">Not set</option>
+                                <option value="forward">Flows {directionName(along)}</option>
+                                <option value="reverse">Flows {directionName(along.map((v) => -v) as Vec3)}</option>
+                              </select>
+                            </Field>
+                            <p className="iso-help">Set along the line through its fittings and the runs of its tees; each branch is set on its own.</p>
+                          </>
+                        );
+                      })()}
                       <div className="iso-property-summary">
                         <span>
                           Overall
@@ -1962,21 +2209,13 @@ export function IsometricEditor({
                       <div className="iso-inspector-section">
                         <strong>On this pipe</strong>
                         <p className="iso-help">
-                          Choose a component in Insert to place it here. Elbows are added when the run changes
-                          direction. Tees are added with Branch.
+                          Choose a component in Insert to place it here, tees and olets included. Elbows are added
+                          when the run changes direction. With the Pipe tool, click a pipe to branch from it.
                         </p>
-                        {!selectedRun.connector && <button className="iso-primary" onClick={() => commit(d => {
-                          const leg = pipeLeg(d, selection), target = leg && legPoint(d, selection, leg.length * fraction / 100);
-                          const junction = insertComponent(d, target?.runId ?? selection, 'tee', target?.fraction ?? 0.5);
-                          setStart(junction.id);
-                          setSelection(junction.id);
-                          setSpool(selectedRun.spool);
-                          setLine(selectedRun.line);
-                          setSpec(selectedRun.specId);
-                          setNps(selectedRun.nps);
-                          setTool('pipe');
-                          setView('iso');
-                        })}>Branch from this pipe</button>}
+                        {!selectedRun.connector && <button className="iso-primary" onClick={() => {
+                          const leg = pipeLeg(doc, selection), target = leg && legPoint(doc, selection, leg.length * fraction / 100);
+                          startBranch(target ?? { runId: selection, fraction: 0.5 });
+                        }}>Branch from this pipe</button>}
                       </div>
                     </>
                   )}
@@ -1984,10 +2223,16 @@ export function IsometricEditor({
                     <>
                       {selectedTrack && <div className="iso-inspector-section">
                         <strong>Position along pipe</strong>
-                        <LengthInput label="Distance from start" aria="Component distance from start"
-                          mm={round(selectedTrack.distance, 3)} units={doc.units} onError={setError}
-                          onCommit={value => value != null && commit(d => moveComponentAlongPipe(d, selection, value))} />
-                        <Field label="Position (%)">
+                        {/* The distance is given to what the sheet dimensions: flanged faces and reducer ends, else the centre. */}
+                        <LengthInput label={selectedFaces ? "Near face from start of straight" : "Centre from start of straight"}
+                          aria="Component distance from start"
+                          mm={round(selectedFaces ? selectedFaces[0] : selectedTrack.distance, 3)} units={doc.units} onError={setError}
+                          onCommit={value => value != null && commit(d => moveComponentAlongPipe(d, selection, value + (selectedFaces ? selectedTrack.distance - selectedFaces[0] : 0)))} />
+                        {selectedFaces && <p className="iso-help">
+                          The sheet dimensions this {selectedNode.kind === "reducer" ? "reducer to its ends" : "component to its mating flange faces, across the gaskets"}:
+                          {" "}{formatLength(selectedFaces[1] - selectedFaces[0], doc.units)} face to face, centre {formatLength(selectedTrack.distance, doc.units)} from the start.
+                        </p>}
+                        <Field label="Centre position (%)">
                           <input aria-label="Component position percent" type="number" min="0.01" max="99.99" step="any"
                             key={selection + '-' + selectedTrack.distance}
                             defaultValue={round(selectedTrack.distance / selectedTrack.length * 100)}
@@ -2019,23 +2264,36 @@ export function IsometricEditor({
                               const n = getNode(d, selection),
                                 t = COMPONENT_TYPES.find((x) => x.code === e.target.value);
                               if (!t) return;
+                              // An angle or relief valve takes the turn's place; an elbow put back is a turn again.
+                              if (t.angle) {
+                                placeAtTurn(d, n.id, t, n.branchEdgeId);
+                                return;
+                              }
+                              if (COMPONENT_TYPES.find((x) => x.code === n.component)?.angle) delete n.branchEdgeId;
                               const edge = d.runs.find(r => r.id === selectedHeader?.id);
+                              // A reducer or tee keeps its sizes when its type changes, concentric to eccentric say.
+                              const smaller = n.kind === "reducer" ? Math.min(...connected(d, n.id).map((r) => r.nps))
+                                : n.kind === "tee" ? d.runs.find((r) => r.id === n.branchEdgeId)?.nps : undefined;
                               const row = edge
                                 ? getSpec(d, edge.specId).fittings.find(
-                                    (f) => rowComponent(f)?.code === t.code && f.nps === edge.nps,
+                                    (f) => rowComponent(f)?.code === t.code && f.nps === edge.nps &&
+                                      (smaller == null || (f.smallerNps ?? f.nps) === smaller),
                                   )
                                 : undefined;
                               applyComponent(d, n, t.code, row);
+                              if (!ECCENTRIC.test(t.code)) delete n.flat;
                             })
                           }
                         >
                           {!selectedNode.component && <option value="">{labels[selectedNode.kind]}</option>}
                           {COMPONENT_TYPES.filter((t) =>
-                            selectedNode.kind === "end"
-                              ? t.kind === "cap" || t.kind === "flange"
-                              : t.kind === selectedNode.kind ||
-                                (["elbow90", "elbow45"].includes(selectedNode.kind) &&
-                                  ["elbow90", "elbow45"].includes(t.kind)),
+                            selectedTurn
+                              ? ["elbow90", "elbow45"].includes(t.kind) || !!t.angle
+                              : selectedNode.kind === "end"
+                                ? t.kind === "cap" || t.kind === "flange"
+                                : (t.kind === selectedNode.kind && !t.angle) ||
+                                  (["elbow90", "elbow45"].includes(selectedNode.kind) &&
+                                    ["elbow90", "elbow45"].includes(t.kind)),
                           ).map((t) => (
                             <option value={t.code} key={t.code}>
                               {t.label}
@@ -2043,6 +2301,24 @@ export function IsometricEditor({
                           ))}
                         </select>
                       </Field>
+                      {selectedTurn && COMPONENT_TYPES.find((t) => t.code === selectedNode.component)?.angle && (
+                        <Field label="Outlet">
+                          <select
+                            aria-label="Angle body outlet"
+                            value={selectedNode.branchEdgeId ?? ""}
+                            onChange={(e) => commit((d) => {
+                              const n = getNode(d, selection);
+                              placeAtTurn(d, n.id, COMPONENT_TYPES.find((t) => t.code === n.component)!, e.target.value);
+                            })}
+                          >
+                            {selectedEdges.map((r) => (
+                              <option key={r.id} value={r.id}>
+                                {inches(r.nps)} pipe going {directionName(sub(getNode(doc, r.from === selectedNode.id ? r.to : r.from).position, selectedNode.position))}
+                              </option>
+                            ))}
+                          </select>
+                        </Field>
+                      )}
                       <Field label="Catalogue">
                         <select
                           value={selectedNode.catalogId ?? ""}
@@ -2052,6 +2328,7 @@ export function IsometricEditor({
                               const row = d.specs.flatMap(s => s.fittings).find(f => f.id === e.target.value);
                               if (row?.component) applyComponent(d, node, row.component, row);
                               else node.catalogId = e.target.value || undefined;
+                              if (!ECCENTRIC.test(node.component ?? "")) delete node.flat;
                             })
                           }
                         >
@@ -2067,7 +2344,7 @@ export function IsometricEditor({
                             )
                             .map((f) => (
                               <option key={f.id} value={f.id}>
-                                {[f.smallerNps ? f.nps + "×" + f.smallerNps + "″" : "", f.rating, f.schedule, f.description]
+                                {[f.smallerNps ? inches(f.nps) + " × " + inches(f.smallerNps) : "", f.rating, f.schedule, f.description]
                                   .filter(Boolean)
                                   .join(" · ")}
                               </option>
@@ -2169,15 +2446,20 @@ export function IsometricEditor({
                           }
                         />
                       </Field>
-                      <button
+                      {/* Only a connection with a free end can be routed from; an in-line valve has none. */}
+                      {canRouteFrom(doc, selectedNode.id) && <button
                         className="iso-primary"
                         onClick={() => {
                           selectConnection(selection);
+                          setPending(null);
                           setTool("pipe");
+                          setView("iso");
                         }}
                       >
-                        Continue / branch here
-                      </button>
+                        {selectedNode.kind === "olet" || (selectedNode.kind === "tee" && selectedEdges.length === 2)
+                          ? "Route the branch from here"
+                          : selectedEdges.length > 1 ? "Branch here" : "Continue from here"}
+                      </button>}
                     </>
                   )}
                   <details className="iso-offset">
@@ -2206,9 +2488,9 @@ export function IsometricEditor({
                   </details>
                 </>
               )}
-              <div className={cn("iso-validation", issues.length ? "warning" : "valid")}>
+              <div className={cn("iso-validation", issues.length ? "warning" : doc.runs.length ? "valid" : "empty")}>
                 <strong>
-                  {issues.length ? issues.length + " fabrication checks" : "Ready for fabrication review"}
+                  {issues.length ? issues.length + " fabrication checks" : doc.runs.length ? "Ready for fabrication review" : "Nothing to check yet · draw a pipe"}
                 </strong>
                 {issues.slice(0, 8).map((issue, i) => (
                   <p key={i}>{typeof issue === "string" ? issue : JSON.stringify(issue)}</p>
@@ -2404,15 +2686,19 @@ export function IsometricEditor({
           {busy
             ? "Preparing " + busy + "…"
             : tool === "pipe"
-              ? start
-                ? "Click to add pipe from the highlighted connection · Esc finishes this run"
-                : "Click the grid to start a run on " + spool + " · or click a connection to continue from it"
+              ? insertHover
+                ? "Click to branch from this pipe with a tee"
+                : pending?.runId
+                  ? "Click where the branch goes · Esc cancels it"
+                  : routing
+                    ? "Click to add pipe from the highlighted connection · Esc finishes this run"
+                    : "Click an open end to continue from it, a pipe to branch from it, or open sheet to start a run on " + spool
               : surface === "paper"
                 ? "Click the title block to edit · Drag empty space to pan · Scroll to zoom"
                 : "Infinite model space · Drag empty space to pan · Scroll to zoom"}
         </span>
-        <span className={issues.length ? "warning" : "valid"}>
-          {issues.length ? issues.length + " checks" : "Dimensions checked"}
+        <span className={issues.length ? "warning" : doc.runs.length ? "valid" : undefined}>
+          {issues.length ? issues.length + " checks" : doc.runs.length ? "Dimensions checked" : "No pipe drawn"}
         </span>
       </footer>
       <input

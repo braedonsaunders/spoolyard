@@ -139,6 +139,8 @@ export interface PipeNode {
    * the dimension.
    */
   jointSupply?: { gasket: boolean; bolts: boolean; flange?: boolean; mate?: 'flange' | 'lug'; measuredTo?: 'mate' | 'flange' }
+  /** Flat side of an eccentric reducer: flat on top (FOT) or flat on bottom (FOB). */
+  flat?: 'top' | 'bottom'
 }
 export interface PortFlange {
   /** Mating flange component code, or 'NONE' when the mate is not supplied. */
@@ -1470,6 +1472,7 @@ export function parseIsoJson(raw: string): IsoDocument {
           (f.bolts == null || typeof f.bolts === 'boolean'))))
     )
       throw new Error('Invalid component callout.')
+    if (n.flat != null && n.flat !== 'top' && n.flat !== 'bottom') throw new Error('Invalid eccentric flat side.')
   }
   const strings = (v: unknown, count: number, max = 200) =>
     Array.isArray(v) && v.length <= count && v.every(s => isString(s, max))
