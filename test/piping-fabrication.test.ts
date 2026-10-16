@@ -246,6 +246,23 @@ test('a reducer fits either way round, and one between equal sizes is reported',
   assert.match(validateIso(doc).join(), /joins two pipes of the same size/);
 });
 
+test('supports the specification supplies are listed last in the BOM; a drawn-only support is not, unless asked', () => {
+  const doc = newIso(); doc.specs = [clone(specA)];
+  appendRun(doc, null, [3000, 0, 0], 'A', 6, 'SP', 'L');
+  const shoe = attachComponent(doc, doc.runs[0].id, 'support', 0.3);
+  applyComponent(doc, shoe, 'SHOE', row(doc, 'SHOE', 6));
+  const ubolt = attachComponent(doc, doc.runs[0].id, 'support', 0.7);
+  ubolt.component = 'U-BOLT';
+  let rows = sheetMaterials(doc, 'SP');
+  assert.deepEqual(rows.filter(r => r.category === 'support').map(r => [r.nd, r.description]), [['6"', 'PIPE SHOE WELDED, CS']]);
+  assert.equal(rows.at(-1)!.category, 'support');
+  assert.ok(bom(doc).some(r => r.description === row(doc, 'SHOE', 6).description));
+  assert.ok(!bom(doc).some(r => /U-bolt/i.test(r.description)));
+  shoe.inBom = false; ubolt.inBom = true;
+  rows = sheetMaterials(doc, 'SP');
+  assert.deepEqual(rows.filter(r => r.category === 'support').map(r => r.description), ['U-BOLT, CS']);
+});
+
 test('a slip-on flange sets the pipe back a wall and 1/16" from its face', () => {
   assert.equal(standardRow('FLG-RFSO', 2, '150#', undefined, 'STD')!.takeout, 3.91 + 1.59);
   assert.equal(standardRow('FLG-RFSO', 2, '150#', undefined, '10S')!.takeout, 2.77 + 1.59);

@@ -145,6 +145,8 @@ export interface PipeNode {
   calloutText?: string
   /** Dimension this support's location along its pipe. */
   dimensioned?: boolean
+  /** List this support as material in the bill of materials; by default a support from a specification row is listed. */
+  inBom?: boolean
   /** Mating flange makeup per flanged port, keyed by pipe id. */
   portFlanges?: Record<string, PortFlange>
   /**
@@ -1052,6 +1054,8 @@ function slipOn(doc: IsoDocument, n: PipeNode, run: PipeRun): { setBack: number;
   const setBack = mate.item?.takeout ?? 0
   return { setBack, hub: mate.item?.lengthThroughHub ?? flange(run.nps, mate.item?.rating ?? getSpec(doc, run.specId).rating)?.soLength ?? setBack }
 }
+/** A support is material when it says so, or when the specification supplies it as a row (welded shoes, guides). */
+export const supportListed = (doc: IsoDocument, n: PipeNode) => n.inBom ?? !!fitting(doc, n)
 /** Plain-language name of a node for fabrication checks, e.g. "flanged ball valve HV-101". */
 function itemName(doc: IsoDocument, n: PipeNode): string {
   const type = COMPONENT_TYPES.find(t => t.code === (n.component ?? fitting(doc, n)?.component))
@@ -1273,7 +1277,7 @@ export function bom(
     n => n.kind !== 'end' && n.kind !== 'weld' && n.kind !== 'annotation'
   )) {
     const edges = connected(doc, n.id), edge = edges[0] ?? doc.runs.find(r => r.id === n.associatedRunId)
-    if (!edge) continue
+    if (!edge || (n.kind === 'support' && !supportListed(doc, n))) continue
     const s = getSpec(doc, edge.specId),
       f = nodeItem(doc, n),
       code = n.component ?? f?.component,
@@ -1559,6 +1563,7 @@ export function parseIsoJson(raw: string): IsoDocument {
         (n.continuation.coordinates != null && typeof n.continuation.coordinates !== 'boolean'))) ||
       (n.elevationCallout != null && typeof n.elevationCallout !== 'boolean') ||
       (n.dimensioned != null && typeof n.dimensioned !== 'boolean') ||
+      (n.inBom != null && typeof n.inBom !== 'boolean') ||
       (n.tiePoint != null && (!isPlain(n.tiePoint) || !isString(n.tiePoint.id, 40) ||
         (n.tiePoint.label != null && !isString(n.tiePoint.label, 120)))) ||
       (n.operator != null && !isString(n.operator, 120)) ||

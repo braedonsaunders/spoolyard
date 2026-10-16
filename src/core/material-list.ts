@@ -1,18 +1,18 @@
 import { COMPONENT_TYPE_BY_CODE } from './components'
 import { flangedJoints, isFlangePair, nodeCode, nodeItem, type FlangedJoint } from './joints'
 import { boltSizeText, compose, draftLength, purchaseLength, schedule, sizeText } from './format'
-import { connected, flatSideText, getNode, getSpec, nippleDescription, runResult, type CatalogItem, type IsoDocument, type PipeNode, type PipeRun } from './model'
+import { connected, flatSideText, getNode, getSpec, nippleDescription, runResult, supportListed, type CatalogItem, type IsoDocument, type PipeNode, type PipeRun } from './model'
 
 export type MaterialCategory =
   | 'pipe' | 'cap' | 'nipple' | 'bend' | 'elbow90' | 'elbow45' | 'stub' | 'reducer' | 'tee' | 'olet' | 'regulator'
-  | 'reducing-coupling' | 'union' | 'flange' | 'bolt' | 'gasket' | 'valve' | 'other'
+  | 'reducing-coupling' | 'union' | 'flange' | 'bolt' | 'gasket' | 'valve' | 'other' | 'support'
 /**
  * Issued order (AutoCAD Plant 3D groups): pipe; fittings by type (caps; nipples and full couplings; bends; elbows; stub
  * ends; reducers; tees and laterals; regulators; reducing couplings; unions); olets; flanges, bolting, gaskets, valves;
- * specialty items last.
+ * specialty items; pipe supports that are material last.
  */
 const ORDER: MaterialCategory[] = ['pipe', 'cap', 'nipple', 'bend', 'elbow90', 'elbow45', 'stub', 'reducer', 'tee', 'regulator',
-  'reducing-coupling', 'union', 'olet', 'flange', 'bolt', 'gasket', 'valve', 'other']
+  'reducing-coupling', 'union', 'olet', 'flange', 'bolt', 'gasket', 'valve', 'other', 'support']
 /** 90° and 45° elbows share a place in the list and follow the order they appear along the line. */
 const rank = (c: MaterialCategory) => c === 'elbow45' ? ORDER.indexOf('elbow90') : ORDER.indexOf(c)
 const FLANGE_ORDER = [/SO$/, /WN$/, /LJ$/, /SW$/, /SC$/, /BL$/]
@@ -59,6 +59,7 @@ function categoryOf(kind: PipeNode['kind'], code = ''): MaterialCategory {
     case 'bolt': return 'bolt'
     case 'gasket': return 'gasket'
     case 'valve': return 'valve'
+    case 'support': return 'support'
     default: return 'other'
   }
 }
@@ -135,7 +136,7 @@ export function sheetMaterials(doc: IsoDocument, spool = ''): MaterialRow[] {
     row.pieces.push(cut)
   }
   for (const node of doc.nodes) {
-    if (['end', 'weld', 'annotation', 'support'].includes(node.kind)) continue
+    if (['end', 'weld', 'annotation'].includes(node.kind) || (node.kind === 'support' && !supportListed(doc, node))) continue
     const edges = connected(doc, node.id), host = edges[0] ?? doc.runs.find(r => r.id === node.associatedRunId)
     if (!host || (spool && !(edges.length ? edges : [host]).some(r => r.spool === spool))) continue
     const item = nodeItem(doc, node), code = nodeCode(doc, node) ?? item?.component ?? ''
