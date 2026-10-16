@@ -7,8 +7,8 @@ import { measureText } from '../stroke-font'
 import { segmentPoly, textPoly, type Poly } from './placement'
 import { add2, dot2, isAxial, lerp2, planeText, scale2, sub2, unit2, unit3, uprightOf } from './plane'
 
-/** A point a leg is measured to; `along` is its distance from the leg's first node. */
-interface Station { model: Vec3; page: Point; along: number; node?: string; end?: boolean }
+/** A point a leg is measured to; `along` is its distance from the leg's first node, `of` the valve whose face it is. */
+interface Station { model: Vec3; page: Point; along: number; node?: string; end?: boolean; of?: string }
 interface Span { a: Station; b: Station; mm: number; approximate?: boolean }
 interface Leg { runs: PipeRun[]; nodes: string[]; dir3: Vec3; dir: Point }
 
@@ -104,7 +104,7 @@ function measureAlong(ctx: IsoContext, leg: Leg) {
 function stations(ctx: IsoContext, leg: Leg, vents: Set<string>): Station[] {
   const out: Station[] = []
   const along = measureAlong(ctx, leg), own = new Set(leg.runs.map(r => r.id))
-  const at = (model: Vec3, page: Point, node?: string, end = false) => out.push({ model, page, node, along: along(model), end })
+  const at = (model: Vec3, page: Point, node?: string, end = false, of?: string) => out.push({ model, page, node, along: along(model), end, ...(of ? { of } : {}) })
   leg.nodes.forEach((id, i) => {
     const node = getNode(ctx.doc, id), page = ctx.pos.get(id)!
     let end = i === 0 || i === leg.nodes.length - 1
@@ -128,7 +128,7 @@ function stations(ctx: IsoContext, leg: Leg, vents: Set<string>): Station[] {
         const gap = Math.min(j.gasket?.thickness ?? 0, distance(j.position, far))
         const face: Vec3 = [0, 1, 2].map(k => j.position[k] + out3[k] / l * gap) as Vec3
         const dir = run.from === id ? g.dir : scale2(g.dir, -1)
-        at(face, add2(page, scale2(dir, Math.max(0, e - SIZE.flangeThickness - 0.4))))
+        at(face, add2(page, scale2(dir, Math.max(0, e - SIZE.flangeThickness - 0.4))), undefined, false, id)
       }
       return
     }
@@ -183,9 +183,10 @@ function locations(ctx: IsoContext, leg: Leg, points: Station[], vents: Set<stri
     const run = ctx.doc.runs.find(r => r.id === getNode(ctx.doc, s.node!).associatedRunId)
     return run ? [run.from, run.to] : []
   }
-  const onPiece = (p: Station, s: Station) => !!p.node && hostEnds(s).includes(p.node)
+  const onPiece = (p: Station, s: Station) => { const id = p.node ?? p.of; return !!id && hostEnds(s).includes(id) }
   if (chain.length) {
-    // The chain starts from a fitting at an end of the first or last support's own pipe piece, else from the leg's end
+    // Supports all on one pipe piece are located from its nearer end: a fitting, a valve face or the end of the leg. A
+    // chain across joints starts from a fitting at an end of its first or last support's piece, else from the leg's end
     // there, else from the nearest fitting across joints, whichever lies nearer its support.
     const first = chain[0], last = chain.at(-1)!
     const before = points.filter(p => p.along < first.along - 0.5).reverse(), after = points.filter(p => p.along > last.along + 0.5)
@@ -194,7 +195,9 @@ function locations(ctx: IsoContext, leg: Leg, points: Station[], vents: Set<stri
       if (b && (!a || first.along - b.along <= a.along - last.along)) return { anchor: b, order: chain }
       return a ? { anchor: a, order: [...chain].reverse() } : undefined
     }
-    const start = choose((p, s) => fitting(p) && onPiece(p, s)) ?? choose((p, s) => !!p.end && onPiece(p, s)) ?? choose(fitting) ?? choose(() => true)
+    const single = new Set(chain.map(s => getNode(ctx.doc, s.node!).associatedRunId)).size === 1
+    const start = (single ? choose((p, s) => (fitting(p) || !!p.end || !!p.of) && onPiece(p, s)) : undefined) ??
+      choose((p, s) => fitting(p) && onPiece(p, s)) ?? choose((p, s) => !!p.end && onPiece(p, s)) ?? choose(fitting) ?? choose(() => true)
     if (start) start.order.reduce((from, s) => { span(from, s); return s }, start.anchor)
   }
   // An approximate location is given from a fitting at an end of its pipe piece, else the nearest fitting or station.

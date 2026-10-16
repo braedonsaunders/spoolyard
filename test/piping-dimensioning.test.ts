@@ -87,6 +87,15 @@ test('supports are located by default, chained support to support from a fitting
   assert.ok(dims(d).includes('500') && !dims(d).includes('3500'));
 });
 
+test('a support is located from the nearer end of its pipe piece, a flange face as well as a fitting', () => {
+  const d = doc();
+  const elbow = run(d, null, [0, 1000, 0]);
+  const end = run(d, elbow.id, [3000, 0, 0]);
+  applyComponent(d, end, 'FLG-RFWN', row(d, 'FLG-RFWN'));
+  attachComponent(d, d.runs[1].id, 'support', 2600 / 3000);
+  assert.ok(dims(d).includes('400') && !dims(d).includes('2600'), dims(d).join(' '));
+});
+
 test('an approximate location is dimensioned from the nearest fitting and marked (±)', () => {
   const d = doc();
   const elbow = run(d, null, [0, 1000, 0]);
