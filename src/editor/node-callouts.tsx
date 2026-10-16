@@ -78,6 +78,16 @@ export function NodeCallouts({ doc, nodeId, commit }: { doc: IsoDocument; nodeId
                   onChange={(e) => edit((n) => { n.continuation = { ...n.continuation!, coordinates: e.target.checked }; })} />
                 Show plant coordinates (E/N/EL)
               </label>
+              {node.kind === "flange" && type?.endPrep !== "FL" && (
+                <Row label="Coordinate at">
+                  <select aria-label="Continuation coordinate face" value={node.continuation.coordinateFace ?? ""}
+                    onChange={(e) => edit((n) => { n.continuation = { ...n.continuation!, coordinateFace: e.target.value as "flange" | "mate" || undefined }; })}>
+                    <option value="">The dimension end point</option>
+                    <option value="flange">This flange's face</option>
+                    <option value="mate">The mating face across the gasket</option>
+                  </select>
+                </Row>
+              )}
             </>
           )}
         </>

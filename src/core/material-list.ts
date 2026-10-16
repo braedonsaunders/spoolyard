@@ -116,7 +116,7 @@ export function sheetMaterials(doc: IsoDocument, spool = ''): MaterialRow[] {
   // Fittings joined without pipe are walked through but are not pieces to cut.
   const spoolRuns = doc.runs.filter(r => !spool || r.spool === spool)
   const route = routeOrder(doc, spoolRuns), appears = new Map<string, number>()
-  route.forEach((r, i) => { for (const id of [r.from, r.to]) if (!appears.has(id)) appears.set(id, i) })
+  route.forEach((r, i) => { for (const id of [r.id, r.from, r.to]) if (!appears.has(id)) appears.set(id, i) })
   // Pipe pieces are listed size by size, each size in order along the line from an open end of that size.
   const sizes = [...new Set(spoolRuns.filter(r => !r.connector).map(r => r.nps))].sort((a, b) => a - b)
   for (const run of sizes.flatMap(nps => routeOrder(doc, spoolRuns, nps).filter(r => !r.connector && r.nps === nps))) {
@@ -188,8 +188,8 @@ export function sheetMaterials(doc: IsoDocument, spool = ''): MaterialRow[] {
       const description = b.kind === 'lug' ? (/STUD/.test(own) ? own.replace(/STUD/g, 'LUG') : 'LUG BOLTS, ' + own) : own
       // ASME bolting is sized in inches on metric drawings too.
       const nd = boltSizeText(b.diameter, b.length)
-      // Bolting lists by diameter, then length.
-      part(JSON.stringify(['bolt', b.kind, description, nd]), { category: 'bolt', nd, description, qty: 0, size: Math.round(b.diameter / 25.4 * 16) * 1e4 + b.length }, joint.id + '#bolts', b.count, joint.supplied.bolts)
+      // Bolting follows joint size, then the joints' order along the line.
+      part(JSON.stringify(['bolt', b.kind, description, nd]), { category: 'bolt', nd, description, qty: 0, size: joint.nps }, joint.id + '#bolts', b.count, joint.supplied.bolts)
     }
   }
   // Joint parts (`<node>[:<pipe>]#part`) come where their node does.
@@ -199,8 +199,7 @@ export function sheetMaterials(doc: IsoDocument, spool = ''): MaterialRow[] {
     rank(a.category) - rank(b.category) ||
     (a.category === 'pipe' ? a.size - b.size || a.first - b.first
       : a.category === 'flange' ? a.flangeRank - b.flangeRank || a.size - b.size || appear(a) - appear(b)
-        : a.category === 'bolt' ? a.size - b.size
-          : a.size - b.size || appear(a) - appear(b) || a.first - b.first))
+        : a.size - b.size || appear(a) - appear(b) || a.first - b.first))
   // Item numbers held as issued keep their place; anything new follows in the usual order.
   // A pipe row is known by its first piece, so a changed cut keeps its number.
   for (const row of rows.values()) if (row.category === 'pipe') row.key = 'pipe:' + row.memberIds[0]

@@ -414,7 +414,7 @@ export function drawSheet(input: {
     flush(`SPOOL ${up(spool)}`, 1617 + 14.5 + measureText('LINE No.', 13) / kx + 20, 1923.5, 1499, 11)
     flush(`SHEET ${sheetNo + 1} OF ${spools.length}`, 1923.5 + 14.5 + measureText('DRAWING No.', 13) / kx + 20, 2252.5, 1497, 11)
   }
-  if (styleOf(doc).layout === 'schematic') flush('SCALE: NTS', 2252.5 - 160, 2252.5, 1590, 10)
+  if (styleOf(doc).layout === 'schematic' && styleOf(doc).scaleNote !== false) flush('SCALE: NTS', 2252.5 - 160, 2252.5, 1590, 10)
 
   const viewport = rect([LEFT + GAP, TOP + GAP, RIGHT - GAP, TB - GAP])
   const clip = (r: SheetRect): SheetRect =>

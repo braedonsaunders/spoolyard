@@ -50,6 +50,24 @@ test('a gasket at the end of a leg is dimensioned and the overall takes it in', 
   assert.deepEqual(dims(d).sort(), ['1000', '1003', '3']);
 });
 
+test('a second component-face chain locates the body separately from its mating flange faces', () => {
+  const d = doc();
+  run(d, null, [4000, 0, 0]);
+  const valve = placeComponentOnPipe(d, d.runs[0].id, type('GATE-FL'), 0.5);
+  const half = row(d, 'GATE-FL').takeout;
+  const before = dims(d);
+  assert.ok(before.includes('4000'));
+  d.style!.componentFaces = true;
+  const values = dims(d).map(Number);
+  assert.ok(values.includes(Math.round(2 * half)), values.join(' '));
+  assert.ok(values.includes(Math.round(2 * half + 2 * 3.17)), values.join(' '));
+  assert.ok(!values.includes(4000), 'the second chain replaces the overall');
+  assert.deepEqual(getNode(d, valve.id).position, [2000, 0, 0]);
+  const saved = parseIsoJson(JSON.stringify(d));
+  assert.equal(saved.style!.componentFaces, true);
+  assert.deepEqual(dims(saved), dims(d));
+});
+
 test('a flange pair at a break is measured at the face on the pipe, whichever way the leg was drawn', () => {
   // 1000 of pipe from an open end to a flange, the gasket, and a flange welded straight to an elbow 100 on.
   const pipeFirst = doc();
@@ -147,6 +165,11 @@ test('a capped vent off an olet takes no dimensions; a screwed leg that turns do
   cap.kind = 'cap';
   // The olet is located on the pipe and its stub is not dimensioned.
   assert.deepEqual(dims(d).sort(), ['1000', '400']);
+  // A bought nipple is a pipe piece in the model, but remains part of the closed vent assembly.
+  d.runs[1].connector = false; d.runs[1].nipple = {};
+  assert.deepEqual(dims(d).sort(), ['1000', '400']);
+  const sizeLabels = createDrawing(d).primitives.filter(p => p.type === 'text' && p.text.endsWith(' NS'));
+  assert.equal(sizeLabels.length, 1, 'the header has a size label; the capped nipple vent has none');
   const turned = doc();
   run(turned, null, [1000, 0, 0]);
   const branch = attachComponent(turned, turned.runs[0].id, 'olet', 0.4);

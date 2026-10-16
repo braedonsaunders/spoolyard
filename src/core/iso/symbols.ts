@@ -1,6 +1,6 @@
 import type { Point } from '../drawing'
 import { COMPONENT_TYPE_BY_CODE } from '../components'
-import { isBlind, isLapJoint, nodeCode, nodeItem } from '../joints'
+import { boltedConnector, isBlind, isFlangePair, isLapJoint, nodeCode, nodeItem } from '../joints'
 import { connected, getNode, pipePrepAt, takeout, welds, type IsoDocument, type PipeNode, type PipeRun, type Vec3, type Weld } from '../model'
 import { measureText } from '../stroke-font'
 import { symbolStrokes } from '../symbols'
@@ -143,6 +143,7 @@ export function drawPipes(ctx: IsoContext) {
     else if (equipmentCode(code)) { const e = equipmentEnd(ctx, node); if (e) equipment.set(e.end.id, node) }
   }
   for (const g of ctx.geometry.values()) {
+    if (boltedConnector(ctx.doc, g.run)) continue
     const ea = ctx.extent.get(g.run.from) ?? 0, eb = ctx.extent.get(g.run.to) ?? 0
     if (g.length <= ea + eb) continue
     let pieces: Array<[number, number]> = [[ea, g.length - eb]]
@@ -255,8 +256,8 @@ export function drawPipes(ctx: IsoContext) {
           poly([fb(-1.2, -F), fb(-1.2 - t * 1.4, -F), fb(-1.2 - t * 1.4, F), fb(-1.2, F)], 'SYMBOL', owner, { closed: true, fill: true })
           return
         }
-        const pipes = edges.filter(r => !r.connector)
-        if (pipes.length === 2) { flangePair(at, along, across, owner, [-1, 1]); hache(f, 0, owner) }
+        const pair = isFlangePair(ctx.doc, node)
+        if (pair) { flangePair(at, along, across, owner, [-1, 1]); hache(f, 0, owner) }
         else {
           flangePair(at, along, across, owner, [1], 0)
           // The flange it bolts to, and the pipe beyond on the next drawing, are drawn thin; equipment is drawn as such.
@@ -270,7 +271,7 @@ export function drawPipes(ctx: IsoContext) {
           }
         }
         // Lap-joint flanges show the stub-end lap at the face.
-        if (isLapJoint(code)) for (const s of pipes.length === 2 ? [-1, 1] : [1]) line(f(s * 0.4, -SIZE.flange * 0.55), f(s * 0.4, SIZE.flange * 0.55), 'SYMBOL', owner, 1.2)
+        if (isLapJoint(code)) for (const s of pair ? [-1, 1] : [1]) line(f(s * 0.4, -SIZE.flange * 0.55), f(s * 0.4, SIZE.flange * 0.55), 'SYMBOL', owner, 1.2)
         return
       }
       case 'reducer': {

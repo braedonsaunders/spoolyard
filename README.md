@@ -38,7 +38,7 @@ where it powers piping isometrics in Files and Tools.
   - continuation callouts with plant coordinates, centreline elevations, tie points, valve operators and flow arrows;
   - hatched offset triangles with their angles, set and roll.
 
-  Drawings are laid out not to scale, so short pieces stay readable, and no label overlaps another. The next
+  Drawings are laid out not to scale, so short pieces stay readable, with automatic label placement. The next
   spool's parts are drawn thin beyond each break.
 - **Measured routing.** Click along the six iso directions with Ortho on, or type a length and pick East, North
   or Up. Bends and branches get the specification's elbows and tees automatically; rolling offsets route in XYZ.

@@ -1,6 +1,6 @@
 import type { GridSettings } from './grid'
 import { COMPONENT_TYPES } from './components'
-import { boltedDirect, breakOwner, defaultCode, flangedAllowance, flangedJoints, isFlangePair, matingFlange, pairFlangesOn, spansSpools, nippleEnds, nippleLength, nippleText, nodeItem, pipeEndPrep } from './joints'
+import { boltedConnector, boltedDirect, breakOwner, defaultCode, flangedAllowance, flangedJoints, isFlangePair, matingFlange, pairFlangesOn, spansSpools, nippleEnds, nippleLength, nippleText, nodeItem, pipeEndPrep } from './joints'
 import { boltSizeText } from './format'
 import { flange, pipeOd } from './standards'
 import { routeOrder } from './material-list'
@@ -141,7 +141,7 @@ export interface PipeNode {
   /** Centreline radius of a pipe bend: its takeout is the radius times the tangent of half the deflection. */
   bendRadius?: number
   /** Open-end callout, e.g. "CONT'D ON\nDWG# ISO-201-2", optionally followed by plant coordinates. */
-  continuation?: { text: string; coordinates?: boolean }
+  continuation?: { text: string; coordinates?: boolean; coordinateFace?: 'flange' | 'mate' }
   elevationCallout?: boolean
   tiePoint?: { id: string; label?: string }
   /** Valve operator orientation, e.g. "OPERATOR SOUTH"; the valve tag is `tag`. */
@@ -229,6 +229,10 @@ export interface DrawingStyle {
   lettering: 'cad' | 'sans'
   /** Centreline elevation at every change of level, not only where the drafter places one. */
   elevations?: boolean
+  /** A second dimension chain to component body faces, in addition to mating flange faces. */
+  componentFaces?: boolean
+  /** Print SCALE: NTS on schematic sheets. Omitted means shown. */
+  scaleNote?: boolean
 }
 /** Plant east, north and elevation (mm) of the model origin. */
 export interface PlantCoordinates {
@@ -1008,6 +1012,7 @@ export function welds(doc: IsoDocument): Weld[] {
     const reversed = r.to === last || (r.from !== last && (open(r.to) !== open(r.from) ? open(r.to) : met.has(r.to) && !met.has(r.from)))
     last = reversed ? r.from : r.to
     met.add(r.from).add(r.to)
+    if (boltedConnector(doc, r)) continue
     for (const [step, index] of (reversed ? [1, 0] : [0, 1]).entries()) {
       // Along the pipe, between its end welds, come the welds of whatever is attached to it.
       if (step === 1)
@@ -1611,7 +1616,8 @@ export function parseIsoJson(raw: string): IsoDocument {
       throw new Error('Invalid port takeout.')
     if (
       (n.continuation != null && (!isPlain(n.continuation) || !isString(n.continuation.text, 600) ||
-        (n.continuation.coordinates != null && typeof n.continuation.coordinates !== 'boolean'))) ||
+        (n.continuation.coordinates != null && typeof n.continuation.coordinates !== 'boolean') ||
+        (n.continuation.coordinateFace != null && !['flange', 'mate'].includes(n.continuation.coordinateFace)))) ||
       (n.elevationCallout != null && typeof n.elevationCallout !== 'boolean') ||
       (n.dimensioned != null && typeof n.dimensioned !== 'boolean') ||
       (n.approximate != null && typeof n.approximate !== 'boolean') ||
@@ -1660,7 +1666,9 @@ export function parseIsoJson(raw: string): IsoDocument {
     d.style != null &&
     (!isPlain(d.style) || !['scale', 'schematic'].includes(d.style.layout) ||
       typeof d.style.weldNumbers !== 'boolean' || !['cad', 'sans'].includes(d.style.lettering) ||
-      (d.style.elevations != null && typeof d.style.elevations !== 'boolean'))
+      (d.style.elevations != null && typeof d.style.elevations !== 'boolean') ||
+      (d.style.componentFaces != null && typeof d.style.componentFaces !== 'boolean') ||
+      (d.style.scaleNote != null && typeof d.style.scaleNote !== 'boolean'))
   )
     throw new Error('Invalid drawing style.')
   if (

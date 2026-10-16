@@ -544,6 +544,14 @@ export function SheetSettings({
           <input type="checkbox" checked={!!style.elevations} onChange={(e) => setStyle({ elevations: e.target.checked })} />
           Centreline elevations at every change of level
         </label>
+        <label className="iso-check">
+          <input type="checkbox" checked={!!style.componentFaces} onChange={(e) => setStyle({ componentFaces: e.target.checked })} />
+          Dimension component body faces in a second chain
+        </label>
+        <label className="iso-check">
+          <input type="checkbox" checked={style.scaleNote !== false} onChange={(e) => setStyle({ scaleNote: e.target.checked })} />
+          Print SCALE: NTS on not-to-scale sheets
+        </label>
       </Section>
 
       <Section title="Sheets" hint={String(spools.length)} open>

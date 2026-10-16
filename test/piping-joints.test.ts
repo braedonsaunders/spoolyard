@@ -1,10 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { appendRun, bom, clone, getNode, insertComponent, newIso, runResult, validateIso, welds, type PipeSpec } from '../src/core/model.ts';
-import { flangedJoints } from '../src/core/joints.ts';
+import { appendRun, applyComponent, bom, clone, getNode, insertComponent, newIso, parseIsoJson, runResult, validateIso, welds, type PipeSpec } from '../src/core/model.ts';
+import { continuationPoint, flangedJoints } from '../src/core/joints.ts';
 import { COMPONENT_TYPES } from '../src/core/components.ts';
 import { placeComponentOnPipe } from '../src/core/component-position.ts';
+import { createDrawing } from '../src/core/drawing.ts';
 
 const specA = JSON.parse(readFileSync(new URL('../public/library/specs/a.json', import.meta.url), 'utf8')) as PipeSpec;
 const straight = (length = 2000) => {
@@ -13,6 +14,37 @@ const straight = (length = 2000) => {
   return doc;
 };
 const type = (code: string) => COMPONENT_TYPES.find(t => t.code === code)!;
+
+test('a continuation coordinate can use either flange face without changing cuts or dimension points', () => {
+  const doc = straight(), run = doc.runs[0];
+  const end = placeComponentOnPipe(doc, run.id, type('FLG-RFWN'), 1);
+  end.continuation = { text: "CONT'D ON NEXT", coordinateFace: 'mate' };
+  const cut = runResult(doc, run).cut;
+  assert.deepEqual(continuationPoint(doc, end), [2003.17, 0, 0]);
+  assert.deepEqual(end.position, [2000, 0, 0]);
+  assert.equal(runResult(doc, run).cut, cut);
+  // When the dimension is already to the mate, do not add the gasket a second time.
+  end.jointSupply = { gasket: true, bolts: true, measuredTo: 'mate' };
+  assert.deepEqual(continuationPoint(doc, end), end.position);
+  end.continuation.coordinateFace = 'flange';
+  assert.deepEqual(continuationPoint(doc, end), [1996.83, 0, 0]);
+  const restored = parseIsoJson(JSON.stringify(doc));
+  assert.deepEqual(continuationPoint(restored, getNode(restored, end.id)), [1996.83, 0, 0]);
+  (end.continuation as any).coordinateFace = 'centre';
+  assert.throws(() => parseIsoJson(JSON.stringify(doc)), /Invalid/);
+});
+
+test('separately modelled flanges bolt together without phantom pipe or welds between their faces', () => {
+  const doc = straight(); doc.specs[0].rootGap = 0;
+  const f1 = getNode(doc, doc.runs[0].to);
+  const f2 = appendRun(doc, f1.id, [3.17, 0, 0], 'A', 2, 'SP-1', 'L-1');
+  const link = doc.runs.at(-1)!; link.connector = true;
+  appendRun(doc, f2.id, [1000, 0, 0], 'A', 2, 'SP-1', 'L-1');
+  for (const node of [f1, f2]) applyComponent(doc, node, 'FLG-RFWN', doc.specs[0].fittings.find(f => f.component === 'FLG-RFWN' && f.nps === 2)!);
+  assert.equal(welds(doc).length, 2, 'only the two pipe-to-flange welds');
+  assert.ok(welds(doc).every(w => w.runId !== link.id));
+  assert.ok(!createDrawing(doc).primitives.some(p => p.layer === 'PIPE' && p.owner === link.id));
+});
 
 test('a flanged valve brings two mating flanges, two gaskets and two stud-bolt sets', () => {
   const doc = straight();

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendRun, applyComponent, getNode, newIso, type PipeSpec } from '../src/core/model.ts';
+import { appendRun, applyComponent, getNode, newIso, takeout, welds, type PipeSpec } from '../src/core/model.ts';
 import { sheetMaterials } from '../src/core/material-list.ts';
 import { boltSizeText, coordinateText, draftLength, purchaseLength, sizeText } from '../src/core/format.ts';
 
@@ -102,6 +102,34 @@ test('break joints list only what this drawing supplies, and lug mates take lug 
   assert.equal(bolts.nd, `5/8"X2 3/4"`);
   assert.match(bolts.description, /LUG BOLT/);
   assert.equal(bolts.qtyText, '4');
+});
+
+test('stud and lug bolt rows follow the joints along the route, independent of bolt length', () => {
+  const doc = newIso(); doc.specs = [lapJointSpec()];
+  const end = appendRun(doc, null, [inch(30), 0, 0], 'S1', 2, 'S', '');
+  const start = getNode(doc, doc.runs[0].from);
+  for (const node of [start, end]) applyComponent(doc, node, 'FLG-RFLJ', doc.specs[0].fittings[2]);
+  end.jointSupply = { gasket: true, bolts: true, mate: 'lug' };
+  const bolts = () => sheetMaterials(doc, 'S').filter(r => r.category === 'bolt');
+  assert.deepEqual(bolts().map(r => r.nd), [`5/8"X3 1/4"`, `5/8"X2 3/4"`]);
+  // Reversing which end has the lug mate reverses the order, even though the bolt lengths are unchanged.
+  start.jointSupply = end.jointSupply; end.jointSupply = undefined;
+  assert.deepEqual(bolts().map(r => r.nd), [`5/8"X2 3/4"`, `5/8"X3 1/4"`]);
+});
+
+test('a lap stub welded straight to a tee has one weld at the tee face', () => {
+  const doc = newIso(); doc.specs = [lapJointSpec()];
+  const tee = appendRun(doc, null, [inch(5), 0, 0], 'S1', 2, 'S', '');
+  const stub = getNode(doc, doc.runs[0].from);
+  doc.runs[0].connector = true;
+  applyComponent(doc, stub, 'FLG-RFLJ', doc.specs[0].fittings[2]);
+  const row = { ...doc.specs[0].fittings[0], id: 'tee', component: 'W-TEE', kind: 'tee' as const, takeout: inch(2.5), branchTakeout: inch(2.5) };
+  doc.specs[0].fittings.push(row);
+  applyComponent(doc, tee, 'W-TEE', row);
+  stub.jointSupply = { flange: false, gasket: false, bolts: false };
+  assert.equal(takeout(doc, stub, doc.runs[0].id), inch(2.5));
+  assert.equal(welds(doc).length, 1);
+  assert.deepEqual(welds(doc)[0].position, [inch(2.5), 0, 0]);
 });
 
 test('a break flange pair welded straight to a fitting is one joint', async () => {

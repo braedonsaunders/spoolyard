@@ -60,7 +60,7 @@ const workPoint = (node: PipeNode) => /^(elbow|tee)/.test(node.kind)
  * also end at an instrument). Its parts give its length. Returns the node it stands on.
  */
 function closedStub(ctx: IsoContext, leg: Leg): PipeNode | undefined {
-  if (!leg.runs.every(r => r.connector)) return undefined
+  if (!leg.runs.every(r => r.connector || r.nipple)) return undefined
   const [a, b] = [leg.nodes[0], leg.nodes.at(-1)!].map(id => getNode(ctx.doc, id))
   const branch = (n: PipeNode) => !!n.associatedRunId || n.kind === 'tee'
   const [on, far] = branch(a) ? [a, b] : branch(b) ? [b, a] : []
@@ -107,7 +107,7 @@ function measureAlong(ctx: IsoContext, leg: Leg) {
  * The chain stations of a leg: its ends, fitting work points, flange faces, the mating faces of flanged valves,
  * reducer ends and branch connections.
  */
-function stations(ctx: IsoContext, leg: Leg, vents: Set<string>): Station[] {
+function stations(ctx: IsoContext, leg: Leg, vents: Set<string>, bodyFaces = false): Station[] {
   const out: Station[] = []
   const along = measureAlong(ctx, leg), own = new Set(leg.runs.map(r => r.id))
   const at = (model: Vec3, page: Point, node?: string, end = false, of?: string) => out.push({ model, page, node, along: along(model), end, ...(of ? { of } : {}) })
@@ -131,11 +131,20 @@ function stations(ctx: IsoContext, leg: Leg, vents: Set<string>): Station[] {
         if (!run || !g) continue
         const far = getNode(ctx.doc, run.from === id ? run.to : run.from).position
         const out3 = sub(far, node.position), l = length(out3) || 1
-        const gap = Math.min(j.gasket?.thickness ?? 0, distance(j.position, far))
+        const gap = bodyFaces ? 0 : Math.min(j.gasket?.thickness ?? 0, distance(j.position, far))
         const face: Vec3 = [0, 1, 2].map(k => j.position[k] + out3[k] / l * gap) as Vec3
         const dir = run.from === id ? g.dir : scale2(g.dir, -1)
-        at(face, add2(page, scale2(dir, Math.max(0, e - SIZE.flangeThickness - 0.4))), undefined, false, id)
+        const inset = bodyFaces && j.gasket?.thickness ? SIZE.flangeThickness : 0
+        at(face, add2(page, scale2(dir, Math.max(0, e - SIZE.flangeThickness - 0.4 - inset))), undefined, false, id)
       }
+      return
+    }
+    if (bodyFaces && end && node.kind === 'flange' && connected(ctx.doc, id).length === 1) {
+      const joint = ctx.joints.find(j => j.nodeId === id && j.kind === 'equipment')
+      const gap = joint?.supplied.gasket && node.jointSupply?.measuredTo !== 'mate' ? joint.gasket?.thickness ?? 0 : 0
+      const far = getNode(ctx.doc, leg.nodes[i === 0 ? 1 : i - 1]).position
+      const out3 = unit3(sub(node.position, far)), dir = i === 0 ? scale2(leg.dir, -1) : leg.dir
+      at(node.position.map((v, k) => v + out3[k] * gap) as Vec3, add2(page, scale2(dir, gap ? SIZE.flangeThickness : 0)), id, true)
       return
     }
     if (!end && node.kind === 'reducer' && !/CPLG/.test(code)) {
@@ -269,7 +278,12 @@ export function drawDimensions(ctx: IsoContext) {
     const open = [points[0], points.at(-1)!].every(p => !p.node || !workPoint(node(p.node)))
     const makeUp = leg.runs.length < 3 && leg.runs.every(r => r.connector)
     if (!overall.length && segments.length > 1 && (skewed || open && !makeUp)) overall = [across(segments)]
-    if (overall.length) tiers.push(overall)
+    const bodyPoints = ctx.style.componentFaces ? stations(ctx, leg, vents, true) : []
+    // Only add body-face spans that differ from the flange-face chain. This replaces its redundant overall.
+    const bodyChain = bodyPoints.slice(1).map((p, i) => ({ a: bodyPoints[i], b: p, mm: measure(bodyPoints[i], p) }))
+      .filter(s => s.mm > 0.5 && !segments.some(t => distance(s.a.model, t.a.model) < 0.001 && distance(s.b.model, t.b.model) < 0.001))
+    if (bodyChain.length && points.some(p => p.of)) tiers.push(bodyChain)
+    else if (overall.length) tiers.push(overall)
     // Extension lines run along an isometric axis across the leg: vertical for horizontal legs, horizontal for risers.
     // A level leg drawn upright on the page takes a level axis.
     const horizontal = Math.abs(leg.dir3[2]) < 0.7

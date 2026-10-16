@@ -1,7 +1,7 @@
 import type { Point } from '../drawing'
 import { COMPONENT_TYPE_BY_CODE } from '../components'
 import { coordinateText, draftLength, elevationText, sizeText } from '../format'
-import { nodeCode, type FlangedJoint } from '../joints'
+import { continuationPoint, nodeCode, type FlangedJoint } from '../joints'
 import { materialId } from '../material-list'
 import { connected, getNode, welds, type PipeNode, type PipeRun } from '../model'
 import { measureText, LINE_SPACING } from '../stroke-font'
@@ -204,7 +204,7 @@ export function drawAnnotations(ctx: IsoContext) {
       const n = getNode(ctx.doc, id)
       return n.kind === 'olet' || n.kind === 'tee' && n.branchEdgeId === run.id && connected(ctx.doc, id).some(r => r.id !== run.id && r.nps !== run.nps)
     }
-    if (leg.nodes.some(id => getNode(ctx.doc, id).kind === 'olet' || !!getNode(ctx.doc, id).associatedRunId) && leg.runs.every(r => r.connector)) continue
+    if (leg.nodes.some(id => getNode(ctx.doc, id).kind === 'olet' || !!getNode(ctx.doc, id).associatedRunId) && leg.runs.every(r => r.connector || r.nipple)) continue
     const branch = branchAt(leg.nodes[0], leg.runs[0]) || branchAt(leg.nodes.at(-1)!, leg.runs.at(-1)!)
     leg.runs.forEach((run, i) => {
       const changed = i > 0 && run.nps !== leg.runs[i - 1].nps
@@ -255,7 +255,7 @@ export function drawAnnotations(ctx: IsoContext) {
     if (!at) continue
     if (node.continuation) {
       const lines = node.continuation.text.split('\n').map(s => s.trim().toUpperCase()).filter(Boolean)
-      const point = node.position
+      const point = continuationPoint(ctx.doc, node)
       // Coordinates are plant data; without a plant origin there are none to give.
       if (node.continuation.coordinates !== false && ctx.doc.coordinates) lines.push(...coordinateText(ctx.doc, point))
       callout(at, lines, node.id)

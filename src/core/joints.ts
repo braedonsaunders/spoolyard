@@ -161,6 +161,11 @@ const across = (doc: IsoDocument, node: PipeNode, run: PipeRun) => getNode(doc, 
 /** Two flanged components (a check valve and a gate valve) bolted face to face: one gasket, one bolt set, no pipe. */
 export const boltedDirect = (doc: IsoDocument, node: PipeNode, run: PipeRun) =>
   !!run.connector && flangedPort(nodeCode(doc, node)) && flangedPort(nodeCode(doc, across(doc, node, run)))
+/** An explicit bolted face-to-face link contains neither pipe nor a weld. Stub ends remain welded parts. */
+export const boltedConnector = (doc: IsoDocument, run: PipeRun) => !!run.connector && [run.from, run.to].every(id => {
+  const node = getNode(doc, id), code = nodeCode(doc, node)
+  return flangedPort(code) || node.kind === 'flange' && !/^STUB-END/.test(code ?? '')
+})
 /** A flange joined directly to a flanged component (an imported assembly) is that component's mate. */
 const matesComponent = (doc: IsoDocument, node: PipeNode) => connected(doc, node.id).some(r =>
   r.connector && flangedPort(nodeCode(doc, across(doc, node, r))))
@@ -202,7 +207,12 @@ export const pairFlangesOn = (doc: IsoDocument, node: PipeNode, spool: string) =
 export function flangedAllowance(doc: IsoDocument, node: PipeNode, run: PipeRun): number {
   const code = nodeCode(doc, node)
   if (node.kind === 'flange' && !flangedPort(code)) {
-    if (run.connector) return 0
+    if (run.connector) {
+      const other = across(doc, node, run)
+      // A connector welded to a fitting still carries the flange's stub-end length. Connectors beyond the face
+      // (a continuation or a separately modelled bolted mate) do not.
+      if (other.kind === 'end' || other.kind === 'flange' || flangedPort(nodeCode(doc, other))) return 0
+    }
     const spec = getSpec(doc, run.specId), gasket = gasketThickness(gasketRow(spec, run.nps, faceOf(code, spec)))
     // A pair splits its gasket. A flange at a pipe end is measured to its own face, unless the drawing measures to
     // the face it bolts to (a nozzle, the next drawing's flange), with the gasket it brings inside the dimension.
@@ -218,6 +228,18 @@ export function flangedAllowance(doc: IsoDocument, node: PipeNode, run: PipeRun)
   return gasketThickness(gasketRow(spec, run.nps, faceOf(mate.code, spec))) + flangeLength(mate)
 }
 const faceOf = (code: string | undefined, spec: PipeSpec): 'RF' | 'FF' => /FF/.test(code ?? '') ? 'FF' : /RF/.test(code ?? '') ? 'RF' : specFace(spec)
+
+/** A continuation may report the mate's surveyed face while the fabrication dimensions end at this flange. */
+export function continuationPoint(doc: IsoDocument, node: PipeNode): Vec3 {
+  const face = node.continuation?.coordinateFace, edges = connected(doc, node.id), code = nodeCode(doc, node)
+  if (!face || node.kind !== 'flange' || flangedPort(code) || edges.length !== 1) return node.position
+  const run = edges[0], other = across(doc, node, run), direction = sub(node.position, other.position), span = length(direction)
+  if (!span) return node.position
+  const spec = getSpec(doc, run.specId), gap = gasketThickness(gasketRow(spec, run.nps, faceOf(code, spec)))
+  const atMate = node.jointSupply?.measuredTo === 'mate' && node.jointSupply.gasket !== false
+  const offset = (face === 'mate' ? gap : 0) - (atMate ? gap : 0)
+  return add(node.position, mul(direction, offset / span))
+}
 
 /** End preparation that governs welding and root gap at a pipe end, resolving flanged ports to their mate. */
 export function pipeEndPrep(doc: IsoDocument, run: PipeRun, index: number, prep: EndPrep): EndPrep {
