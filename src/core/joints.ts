@@ -177,15 +177,27 @@ export function isFlangePair(doc: IsoDocument, node: PipeNode): boolean {
   const edges = connected(doc, node.id)
   // A stub end welded between fittings is one part; only a stub-end node between two pipes stands for a pair.
   if (/^STUB-END/.test(code ?? '') && edges.some(r => r.connector)) return false
-  // Its sides are the pieces the joint bolts together: not a continuation point drawn beyond it, and not the other
-  // flange of the same joint drawn as its own node.
-  const sides = edges.filter(r => {
+  const sides = pairSides(doc, node)
+  return sides.length === 2 && sides.every(r => (r.from === node.id ? r.fromPrep : r.toPrep) !== 'FL') && !matesComponent(doc, node)
+}
+/**
+ * A flange pair's sides are the pieces the joint bolts together: not a continuation point drawn beyond it, and not the
+ * other flange of the same joint drawn as its own node.
+ */
+function pairSides(doc: IsoDocument, node: PipeNode): PipeRun[] {
+  return connected(doc, node.id).filter(r => {
     if (!r.connector) return true
     const other = across(doc, node, r)
     return other.kind !== 'end' && !(other.kind === 'flange' && !/^STUB-END/.test(nodeCode(doc, other) ?? ''))
   })
-  return sides.length === 2 && sides.every(r => (r.from === node.id ? r.fromPrep : r.toPrep) !== 'FL') && !matesComponent(doc, node)
 }
+/** A node whose pipes belong to more than one spool: a joint or component at a spool break. */
+export const spansSpools = (doc: IsoDocument, node: PipeNode) => new Set(connected(doc, node.id).map(r => r.spool)).size > 1
+/** The spool whose sheet lists a break's gasket, bolting and spanning component: as chosen, else its first pipe's. */
+export const breakOwner = (doc: IsoDocument, node: PipeNode) => node.jointSupply?.spool ?? connected(doc, node.id)[0]?.spool ?? ''
+/** Flanges of a pair on one spool's sheet: both, or at a spool break only the one on that sheet's pipe. */
+export const pairFlangesOn = (doc: IsoDocument, node: PipeNode, spool: string) =>
+  !spool || !spansSpools(doc, node) ? 2 : pairSides(doc, node).filter(r => r.spool === spool).length
 /** Length a flanged connection adds beyond a component's own face: gasket and the mating flange. */
 export function flangedAllowance(doc: IsoDocument, node: PipeNode, run: PipeRun): number {
   const code = nodeCode(doc, node)
@@ -235,6 +247,8 @@ export interface FlangedJoint {
   bolts: JointBolts | null
   /** What this drawing's material list provides; the rest is on another drawing or by others. */
   supplied: { flange: boolean; gasket: boolean; bolts: boolean }
+  /** The spool whose sheet lists the gasket and bolting (at a spool break, the break's owner). */
+  supplySpool: string
   /** The explicit flange node a callout names, when the flange is drawn as its own node. */
   flangeNodeId?: string
   /** The pipes whose stub ends this joint supplies, one tag each. */
@@ -266,14 +280,17 @@ export function flangedJoints(doc: IsoDocument, spool = ''): FlangedJoint[] {
     const edges = connected(doc, node.id), code = nodeCode(doc, node)
     if (!edges.length || (spool && !edges.some(r => r.spool === spool))) continue
     const host = edges.reduce((a, b) => a.nps >= b.nps ? a : b), spec = getSpec(doc, host.specId)
-    const base = { nps: host.nps, rating: specRating(spec), spool: host.spool, line: host.line, specId: spec.id }
+    // A joint at a spool break lists its gasket and bolting once, on the sheet that owns the break.
+    const owner = spansSpools(doc, node) ? breakOwner(doc, node) : host.spool, owned = !spool || owner === spool
+    const here = (r: PipeRun) => !spool || r.spool === spool
+    const base = { nps: host.nps, rating: specRating(spec), spool: host.spool, supplySpool: owner, line: host.line, specId: spec.id }
     if (node.kind === 'flange' && !flangedPort(code) && code && !/^ORFC|^ORIFICE/.test(code)) {
       if (matesComponent(doc, node) || stubOfFlange(doc, node)) continue
       const face = faceOf(code, spec), lj = isLapJoint(code)
       const item = nodeItem(doc, node), stub = lj && !/^STUB-END/.test(code) ? stubEnd(spec, host.nps) : undefined
       const pair = isFlangePair(doc, node)
       const own = node.jointSupply
-      const supply = pair ? { flange: true, gasket: true, bolts: true } : { flange: own?.flange !== false, gasket: own?.gasket !== false, bolts: own?.bolts !== false }
+      const supply = pair ? { flange: true, gasket: owned, bolts: owned } : { flange: own?.flange !== false, gasket: own?.gasket !== false, bolts: own?.bolts !== false }
       // A stub-end node is the welded part; its loose lap-joint flange is supplied with the joint.
       const stubNode = /^STUB-END/.test(code)
       const flange = stubNode
@@ -284,14 +301,16 @@ export function flangedJoints(doc: IsoDocument, spool = ''): FlangedJoint[] {
         if (!r.connector) return true
         const other = across(doc, node, r)
         return other.kind !== 'end' && other.kind !== 'flange'
-      }).slice(0, pair ? 2 : 1) : []
+      }).slice(0, pair ? 2 : 1).filter(here) : []
+      // A pair split by a spool break: each sheet has the flange on its own pipe.
+      const sides = pair ? (spool ? pairSides(doc, node).filter(here).length : 2) : 1
       const gasket = gasketRow(spec, host.nps, face)
       const lug = !pair && own?.mate === 'lug'
       const bolts = jointBolts(spec, host.nps, face, lug ? 'lug-valve-side' : lj ? 'lj-pair' : 'flange-pair')
       out.push({
         ...base, id: node.id, nodeId: node.id, runIds: edges.map(r => r.id), position: node.position, face,
         kind: pair ? 'flange-pair' : 'equipment',
-        flanges: pair ? [flange, flange] : supply.flange ? [flange] : [],
+        flanges: pair ? Array(sides).fill(flange) : supply.flange ? [flange] : [],
         stubEnds: stubRuns.map(() => stub!), stubRunIds: stubRuns.map(r => r.id),
         gasket: { item: gasket, thickness: gasketThickness(gasket) },
         bolts, supplied: supply, boltsUnknown: supply.bolts && !bolts,
@@ -303,6 +322,9 @@ export function flangedJoints(doc: IsoDocument, spool = ''): FlangedJoint[] {
     const wafer = code === 'BFLY-WAFER', lug = /^BFLY(-LUG)?$/.test(code!)
     const item = nodeItem(doc, node)
     for (const [index, run] of edges.entries()) {
+      // A port on another sheet's pipe is listed here only for the gasket and bolting this sheet owns.
+      const mine = here(run)
+      if (!mine && !owned) continue
       const mate = matingFlange(doc, node, run), runSpec = getSpec(doc, run.specId)
       const choice = node.portFlanges?.[run.id], face = faceOf(mate?.code ?? code, runSpec)
       const far = getNode(doc, run.from === node.id ? run.to : run.from).position
@@ -321,12 +343,12 @@ export function flangedJoints(doc: IsoDocument, spool = ''): FlangedJoint[] {
         ...base, nps: run.nps, spool: run.spool, line: run.line, specId: runSpec.id, rating: specRating(runSpec),
         id: `${node.id}:${run.id}`, nodeId: node.id, runIds: [run.id], face, kind: 'component-port',
         position: add(node.position, mul(toward, Math.min(faceDistance, span) / span)),
-        flanges: mate ? [{ code: mate.code, item: mate.item, implicit: true }]
+        flanges: !mine ? [] : mate ? [{ code: mate.code, item: mate.item, implicit: true }]
           : explicit ? [{ code: nodeCode(doc, other) ?? 'FLANGE', item: nodeItem(doc, other), implicit: false }] : [],
-        stubEnds: mate?.stub ? [mate.stub] : [], stubRunIds: mate?.stub ? [run.id] : [],
+        stubEnds: mine && mate?.stub ? [mate.stub] : [], stubRunIds: mine && mate?.stub ? [run.id] : [],
         gasket: { item: gasket, thickness: gasketThickness(gasket) },
-        bolts, supplied: { flange: !!mate || !!explicit, gasket: choice?.gasket !== false && !second, bolts: choice?.bolts !== false && physical },
-        boltsUnknown: choice?.bolts !== false && physical && !bolts,
+        bolts, supplied: { flange: mine && (!!mate || !!explicit), gasket: owned && choice?.gasket !== false && !second, bolts: owned && choice?.bolts !== false && physical },
+        boltsUnknown: owned && choice?.bolts !== false && physical && !bolts,
         ...(explicit ? { flangeNodeId: other.id } : {})
       })
     }

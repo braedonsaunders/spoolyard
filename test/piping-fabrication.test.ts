@@ -284,6 +284,30 @@ test('supports the specification supplies are listed last in the BOM; a drawn-on
   assert.deepEqual(rows.filter(r => r.category === 'support').map(r => r.description), ['U-BOLT, CS']);
 });
 
+test('a joint at a spool break is listed once: each sheet its own flange, the first sheet the gasket, bolts and valve', () => {
+  const type = (code: string) => COMPONENT_TYPES.find(t => t.code === code)!;
+  const count = (doc: IsoDocument, spool: string, category: string) =>
+    sheetMaterials(doc, spool).filter(r => r.category === category).reduce((n, r) => n + r.qty, 0);
+  const split = (code: string) => {
+    const doc = newIso(); doc.specs = [clone(specA)];
+    appendRun(doc, null, [2000, 0, 0], 'A', 4, 'S1', 'L');
+    const node = placeComponentOnPipe(doc, doc.runs[0].id, type(code), 0.5);
+    doc.runs.find(r => r.from === node.id)!.spool = 'S2';
+    return { doc, node };
+  };
+  const pair = split('FLG-RFWN');
+  assert.deepEqual(['flange', 'gasket', 'bolt'].map(c => [count(pair.doc, 'S1', c), count(pair.doc, 'S2', c)]), [[1, 1], [1, 0], [8, 0]]);
+  const rows = bom(pair.doc);
+  assert.deepEqual(rows.filter(r => /FLANGE RF WN/.test(r.description)).map(r => [r.spool, r.qty]), [['S1', 1], ['S2', 1]]);
+  assert.deepEqual(rows.filter(r => /GASKET|STUD/.test(r.description)).map(r => r.spool), ['S1', 'S1']);
+  // The joint's gasket and bolts can be put on the other sheet.
+  pair.node.jointSupply = { gasket: true, bolts: true, spool: 'S2' };
+  assert.deepEqual(['gasket', 'bolt'].map(c => [count(pair.doc, 'S1', c), count(pair.doc, 'S2', c)]), [[0, 1], [0, 8]]);
+  const valve = split('GATE-FL');
+  assert.deepEqual(['valve', 'flange', 'gasket', 'bolt'].map(c => [count(valve.doc, 'S1', c), count(valve.doc, 'S2', c)]), [[1, 0], [1, 1], [2, 0], [16, 0]]);
+  assert.deepEqual(bom(valve.doc).filter(r => /VALVE/.test(r.description)).map(r => [r.spool, r.qty]), [['S1', 1]]);
+});
+
 test('a slip-on flange sets the pipe back a wall and 1/16" from its face', () => {
   assert.equal(standardRow('FLG-RFSO', 2, '150#', undefined, 'STD')!.takeout, 3.91 + 1.59);
   assert.equal(standardRow('FLG-RFSO', 2, '150#', undefined, '10S')!.takeout, 2.77 + 1.59);

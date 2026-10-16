@@ -1,6 +1,6 @@
 import type { GridSettings } from './grid'
 import { COMPONENT_TYPES } from './components'
-import { boltedDirect, defaultCode, flangedAllowance, flangedJoints, isFlangePair, matingFlange, nippleEnds, nippleLength, nippleText, nodeItem, pipeEndPrep } from './joints'
+import { boltedDirect, breakOwner, defaultCode, flangedAllowance, flangedJoints, isFlangePair, matingFlange, pairFlangesOn, spansSpools, nippleEnds, nippleLength, nippleText, nodeItem, pipeEndPrep } from './joints'
 import { boltSizeText } from './format'
 import { flange, pipeOd } from './standards'
 import { routeOrder } from './material-list'
@@ -159,9 +159,10 @@ export interface PipeNode {
    * drawing: the flange itself (a lap-joint end keeps its stub end), the gasket and the bolting; whether the mate is a
    * flange (studs through both) or a lugged or tapped body such as a lug valve (lug bolts into it); and whether the end
    * point is this flange's own face (the default) or the face it bolts to, with the gasket this drawing supplies inside
-   * the dimension.
+   * the dimension. A joint or flanged component spanning a spool break is listed on `spool`'s sheet (by default the
+   * sheet of its first pipe); each sheet lists the flanges welded to its own pipes.
    */
-  jointSupply?: { gasket: boolean; bolts: boolean; flange?: boolean; mate?: 'flange' | 'lug'; measuredTo?: 'mate' | 'flange' }
+  jointSupply?: { gasket: boolean; bolts: boolean; flange?: boolean; mate?: 'flange' | 'lug'; measuredTo?: 'mate' | 'flange'; spool?: string }
   /** The side an eccentric reducer's flat faces: top (FOT) or bottom (FOB) on a level line, a compass side on a riser. */
   flatSide?: FlatSide
 }
@@ -1304,12 +1305,16 @@ export function bom(
       f = nodeItem(doc, n),
       code = n.component ?? f?.component,
       // A flange between two pieces is a bolted pair of flanges.
-      pair = isFlangePair(doc, n),
-      qty = n.quantity ?? (pair ? 2 : 1)
+      pair = isFlangePair(doc, n)
     // A flange the next drawing supplies is not listed here (its stub end is, with the joint).
     if (n.kind === 'flange' && !pair && n.jointSupply?.flange === false && !/^STUB-END/.test(code ?? '')) continue
     const kg = n.weightKg ?? f?.weightKg,
       area = n.areaM2 ?? f?.areaM2
+    // At a spool break each spool lists the flange on its own pipe; anything else spanning it, the owning spool.
+    const spools = !spansSpools(doc, n) ? [edge.spool] : pair ? [...new Set(edges.map(r => r.spool))] : [breakOwner(doc, n)]
+    for (const spool of spools) {
+    const at = edges.find(r => r.spool === spool) ?? edge, qty = n.quantity ?? (pair ? pairFlangesOn(doc, n, spools.length > 1 ? spool : '') : 1)
+    if (!qty && n.quantity == null) continue
     addRow(
       {
         description: [n.description ?? f?.description ?? COMPONENT_TYPES.find(t => t.code === code)?.label ?? n.kind, flatSideText(n)].filter(Boolean).join(', '),
@@ -1322,8 +1327,8 @@ export function bom(
         cost: (n.unitCost ?? f?.unitCost ?? 0) * qty,
         hours: (n.laborHours ?? f?.laborHours ?? 0) * qty,
         heat: n.heat ?? '',
-        spool: edge.spool,
-        line: edge.line
+        spool: at.spool,
+        line: at.line
       },
       JSON.stringify([
         n.catalogId ?? f?.id ?? '',
@@ -1339,9 +1344,10 @@ export function bom(
       ]),
       n.id
     )
+    }
   }
   // Flanged joints supply the mating flanges, stub ends, gaskets and bolting that are not drawn as nodes.
-  const supplied = (item: CatalogItem | undefined, fallback: string, qty: number, joint: ReturnType<typeof flangedJoints>[number], description?: string, perUnitKg?: number | null) =>
+  const supplied = (item: CatalogItem | undefined, fallback: string, qty: number, joint: ReturnType<typeof flangedJoints>[number], description?: string, perUnitKg?: number | null, spool = joint.spool) =>
     addRow({
       description: description ?? item?.description ?? fallback,
       spec: joint.specId,
@@ -1353,7 +1359,7 @@ export function bom(
       cost: (item?.unitCost ?? 0) * qty,
       hours: (item?.laborHours ?? 0) * qty,
       heat: '',
-      spool: joint.spool,
+      spool,
       line: joint.line
     }, description
       ? JSON.stringify([item?.id ?? fallback, description])
@@ -1361,14 +1367,15 @@ export function bom(
       : JSON.stringify([item?.id ?? fallback, item?.takeout, item?.branchTakeout, item?.weightKg, item?.areaM2, item?.unitCost, item?.laborHours, null]), joint.id)
   for (const joint of flangedJoints(doc)) {
     for (const flange of joint.flanges.filter(f => f.implicit)) supplied(flange.item, flange.code, 1, joint)
-    for (const stub of joint.stubEnds) supplied(stub, 'STUB END', 1, joint)
-    if (joint.gasket && joint.supplied.gasket) supplied(joint.gasket.item, 'GASKET', 1, joint)
+    joint.stubEnds.forEach((stub, i) =>
+      supplied(stub, 'STUB END', 1, joint, undefined, undefined, doc.runs.find(r => r.id === joint.stubRunIds[i])?.spool))
+    if (joint.gasket && joint.supplied.gasket) supplied(joint.gasket.item, 'GASKET', 1, joint, undefined, undefined, joint.supplySpool)
     if (joint.bolts && joint.supplied.bolts) {
       const b = joint.bolts, row = b.item
       const size = boltSizeText(b.diameter, b.length)
       supplied(row, 'STUD BOLTS', b.count, joint,
         `${b.kind === 'lug' ? 'LUG BOLTS' : row?.description ?? 'STUD BOLTS C/W 2 NUTS'} ${size}`,
-        row?.weightKg != null ? row.weightKg / (row.boltCount ?? b.count) : null)
+        row?.weightKg != null ? row.weightKg / (row.boltCount ?? b.count) : null, joint.supplySpool)
     }
   }
   return [...map.values()]
@@ -1595,7 +1602,8 @@ export function parseIsoJson(raw: string): IsoDocument {
         typeof n.jointSupply.gasket !== 'boolean' || typeof n.jointSupply.bolts !== 'boolean' ||
         (n.jointSupply.flange != null && typeof n.jointSupply.flange !== 'boolean') ||
         (n.jointSupply.mate != null && n.jointSupply.mate !== 'flange' && n.jointSupply.mate !== 'lug') ||
-        (n.jointSupply.measuredTo != null && n.jointSupply.measuredTo !== 'mate' && n.jointSupply.measuredTo !== 'flange'))) ||
+        (n.jointSupply.measuredTo != null && n.jointSupply.measuredTo !== 'mate' && n.jointSupply.measuredTo !== 'flange') ||
+        (n.jointSupply.spool != null && !isString(n.jointSupply.spool)))) ||
       (n.portFlanges != null && (!isPlain(n.portFlanges) || Object.keys(n.portFlanges).length > 8 ||
         !Object.values(n.portFlanges).every(f => isPlain(f) &&
           (f.component == null || isString(f.component, 60)) &&

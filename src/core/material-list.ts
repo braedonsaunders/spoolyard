@@ -1,5 +1,5 @@
 import { COMPONENT_TYPE_BY_CODE } from './components'
-import { flangedJoints, isFlangePair, nodeCode, nodeItem, type FlangedJoint } from './joints'
+import { breakOwner, flangedJoints, isFlangePair, nodeCode, nodeItem, pairFlangesOn, spansSpools, type FlangedJoint } from './joints'
 import { boltSizeText, compose, draftLength, purchaseLength, schedule, sizeText } from './format'
 import { connected, flatSideText, getNode, getSpec, nippleDescription, runResult, supportListed, type CatalogItem, type IsoDocument, type PipeNode, type PipeRun } from './model'
 
@@ -153,13 +153,16 @@ export function sheetMaterials(doc: IsoDocument, spool = ''): MaterialRow[] {
     const pair = isFlangePair(doc, node)
     // A flange the next drawing supplies is not listed here (its stub end is, with the joint).
     if (node.kind === 'flange' && !pair && node.jointSupply?.flange === false && !/^STUB-END/.test(code)) continue
+    // At a spool break a flange pair lists each sheet's own flange; anything else spanning it, the owning sheet.
+    const flanges = pair ? pairFlangesOn(doc, node, spool) : 0
+    if (pair ? !flanges : spool && spansSpools(doc, node) && breakOwner(doc, node) !== spool) continue
     const label = node.description ?? COMPONENT_TYPE_BY_CODE[code]?.label ?? node.kind
     const description = [node.description ? node.description.toUpperCase() : rowDescription(item, label), flatSideText(node)].filter(Boolean).join(', ')
     const category = categoryOf(node.kind, code)
     add(JSON.stringify([category, item?.id ?? code, description, sizeText(nps, small), node.takeout ?? null, node.branchTakeout ?? null]), {
       category, nd: sizeText(nps, node.kind === 'tee' && small === nps ? undefined : small), description, qty: 0, size: nps,
       flangeRank: FLANGE_ORDER.findIndex(r => r.test(code)) + 1 || 9
-    }, node.id, node.quantity ?? (pair ? 2 : 1))
+    }, node.id, node.quantity ?? (pair ? flanges : 1))
   }
   for (const joint of flangedJoints(doc, spool)) addJoint(joint)
   function addJoint(joint: FlangedJoint) {
