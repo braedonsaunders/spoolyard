@@ -102,6 +102,23 @@ test('viewport and exclusions stay inside the border and clear of the title bloc
   assert.equal(frame(document(), rows(7), 'front').primitives.filter(p => p.layer === 'TEXT').length, 0, 'no north symbol on an elevation');
 });
 
+test('the north arrow points along plant north as the view draws it, and turns with the model', async () => {
+  const { viewProject } = await import('../src/core/iso/layout.ts');
+  for (const [north, view] of [[0, 'iso'], [90, 'iso'], [45, 'iso'], [30, 'plan']] as const) {
+    const d = { ...document(), north };
+    const f = frame(d, rows(7), view);
+    const symbol = f.primitives.filter(p => p.layer === 'TEXT');
+    const arrow = symbol.find((p): p is Extract<Primitive, { type: 'polyline' }> => p.type === 'polyline' && !!p.fill && p.points.length === 3)!;
+    const ellipse = symbol.find((p): p is Extract<Primitive, { type: 'polyline' }> => p.type === 'polyline' && !p.fill)!;
+    const xs = ellipse.points.map(q => q[0]), ys = ellipse.points.map(q => q[1]);
+    const centre = [(Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2];
+    const tip = arrow.points[0], v = viewProject([0, 1, 0], view, north);
+    const along = Math.atan2(tip[1] - centre[1], tip[0] - centre[0]) - Math.atan2(v[1], v[0]);
+    assert.ok(Math.abs(Math.atan2(Math.sin(along), Math.cos(along))) < 0.05, `${view} ${north}°: the arrow points north`);
+    for (const p of symbol) assert.ok(inside(box(p), f.exclusions[0], 0.01), `${view} ${north}°: the symbol stays in its box`);
+  }
+});
+
 test('BOM rows grow with wrapped descriptions and centre ID, QTY and ND', () => {
   const long = 'GASKET, SPIRAL WOUND, 304 SS WINDING, GRAPHITE FILLER, CS OUTER RING, 304 SS INNER RING, ASME B16.20, 150 LB, 1/8" THK';
   const f = frame(document(), [row(1), row(2, long), row(3, 'BOLT SET, STUD BOLT, A193 B7 WITH 2 A194 2H NUTS', '5/8"X3 1/4"', '8')]);

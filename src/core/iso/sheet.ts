@@ -1,6 +1,7 @@
 import type { Point, Primitive } from '../drawing'
 import { sheetInfoOf, titleBlockOf, type IsoDocument } from '../model'
 import { measureText, strokeText } from '../stroke-font'
+import { viewProject } from './layout'
 
 export interface SheetRow { id: number; qtyText: string; nd: string; description: string }
 /** Rectangles are [x0, y0, x1, y1] in sheet units. */
@@ -55,9 +56,9 @@ const NOTE_WIDTH = 1.27
 const NOTE_CAP = 9.75, NOTE_PITCH = 16.6, NOTE_HEADER_X = 1621.4, NOTE_LABEL_X = 1629.7, NOTE_TEXT_X = 1661.5,
   NOTE_RIGHT = 2445, NOTE_BASELINE = TB - 11.5
 
-// North symbol: ellipse, tick lines on the iso diagonals and a filled upright N.
-const NORTH = { cx: 192, cy: 121.5, rx: 88, ry: 52.5, box: [104, 69, 280, 174] as SheetRect }
-const NORTH_TICKS: Array<[number, number, number, number]> = [[254, 84, 280, 69], [130, 84, 104, 69], [254, 159, 280, 174], [130, 159, 104, 174]]
+// North symbol: ellipse, a tick out from it on each of the plant's compass points as the view draws them (the iso
+// diagonals when north is not rotated), plant north an arrow, and a filled upright N.
+const NORTH = { cx: 192, cy: 121.5, rx: 88, ry: 52.5, box: [104, 69, 280, 174] as SheetRect, tick: 29, arrow: 15, barb: 5 }
 const NORTH_N: Point[] = [
   [147, 148.5], [147, 92.5], [161.9, 92.5], [221.25, 137], [221.25, 92.5], [235.25, 92.5], [235.25, 148.5], [220, 148.5],
   [161, 104.4], [161, 148.5]
@@ -145,14 +146,26 @@ export function drawSheet(input: {
   const northBox: SheetRect = [LEFT + ((NORTH.box[0] - LEFT) * st) / sx, TOP + ((NORTH.box[1] - TOP) * st) / sy,
     LEFT + ((NORTH.box[2] - LEFT) * st) / sx, TOP + ((NORTH.box[3] - TOP) * st) / sy]
   if (north) {
-    // Drawn at its own proportions from the frame corner.
-    const at = (x: number, y: number): Point => [X(LEFT) + (x - LEFT) * st, Y(TOP) + (y - TOP) * st]
+    // Drawn at its own proportions from the frame corner, smaller when a rotated north puts a tick past its box.
+    const ticks = [0, 1, 2, 3].map(k => {
+      const v = viewProject([Math.cos(k * Math.PI / 2), Math.sin(k * Math.PI / 2), 0], view, doc.north), l = Math.hypot(...v) || 1
+      const u: Point = [v[0] / l, v[1] / l], r = 1 / Math.hypot(u[0] / NORTH.rx, u[1] / NORTH.ry)
+      return { u, inner: [u[0] * r, u[1] * r] as Point, outer: [u[0] * (r + NORTH.tick), u[1] * (r + NORTH.tick)] as Point }
+    })
+    const half = [(NORTH.box[2] - NORTH.box[0]) / 2, (NORTH.box[3] - NORTH.box[1]) / 2]
+    const k = Math.min(1, ...ticks.map(t => Math.min(half[0] / Math.max(1e-9, Math.abs(t.outer[0])), half[1] / Math.max(1e-9, Math.abs(t.outer[1])))))
+    const at = (x: number, y: number): Point => [X(LEFT) + (NORTH.cx - LEFT + (x - NORTH.cx) * k) * st, Y(TOP) + (NORTH.cy - TOP + (y - NORTH.cy) * k) * st]
+    const off = (p: Point) => at(NORTH.cx + p[0], NORTH.cy + p[1])
     const n = 72
     out.push({
       type: 'polyline', layer: 'TEXT', weight: WEIGHT.north, closed: true,
       points: Array.from({ length: n }, (_, i) => at(NORTH.cx + NORTH.rx * Math.cos((2 * Math.PI * i) / n), NORTH.cy + NORTH.ry * Math.sin((2 * Math.PI * i) / n)))
     })
-    for (const [x0, y0, x1, y1] of NORTH_TICKS) out.push({ type: 'line', a: at(x0, y0), b: at(x1, y1), layer: 'TEXT', weight: WEIGHT.north })
+    for (const t of ticks) out.push({ type: 'line', a: off(t.inner), b: off(t.outer), layer: 'TEXT', weight: WEIGHT.north })
+    // Plant north's tick ends in an arrowhead.
+    const { u, outer } = ticks[1], base: Point = [outer[0] - u[0] * NORTH.arrow, outer[1] - u[1] * NORTH.arrow]
+    out.push({ type: 'polyline', layer: 'TEXT', weight: 0.2, closed: true, fill: true, points: [off(outer),
+      off([base[0] - u[1] * NORTH.barb, base[1] + u[0] * NORTH.barb]), off([base[0] + u[1] * NORTH.barb, base[1] - u[0] * NORTH.barb])] })
     out.push({ type: 'polyline', layer: 'TEXT', weight: 0.2, closed: true, fill: true, points: NORTH_N.map(([x, y]) => at(x, y)) })
     exclusions.push(rect(northBox))
   }
