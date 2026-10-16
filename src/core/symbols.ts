@@ -31,9 +31,11 @@ const endMarks = (code: string) =>
 function valve(code: string): SymbolStroke[] {
   const ends = endMarks(code)
   if (/^GLOBE/.test(code)) return [...bowtie(), C(0, 0, 3.5, true), L(0, 0, 0, -18), L(-7, -18, 7, -18), ...ends]
-  if (/^BALL/.test(code)) return [...bowtie(), C(0, 0, 5), L(0, -5, 0, -18), L(-7, -18, 7, -18), ...ends]
-  if (/^CHECK/.test(code)) return [...bowtie(), L(-12, 8, 12, -8), L(0, -12, 0, -4), L(-3, -8, 0, -4), ...ends]
-  if (/^PLUG-/.test(code)) return [...bowtie(), ...box(-3, -3, 6, 6), L(0, -3, 0, -18), ...ends]
+  if (/^BALL/.test(code)) return [...bowtie(), C(0, 0, 4.5), L(0, -4.5, 0, -16), L(0, -16, 10, -16), ...ends]
+  // Flow runs from the base of the triangle to its point, left to right.
+  if (/^CHECK/.test(code)) return [...poly(-12, -8, 12, 0, -12, 8, -12, -8), L(-8, 0, 10, 0), ...poly(5, -3, 10, 0, 5, 3), ...ends]
+  if (/^PLUG-/.test(code)) return [...bowtie(), ...poly(-3, 0, 0, -4, 3, 0, 0, 4, -3, 0), L(0, -4, 0, -16), L(0, -16, 10, -16), ...ends]
+  if (/^PSV/.test(code)) return [...poly(-14, -7, 0, 0, -14, 7, -14, -7), ...poly(0, 0, -7, -14, 7, -14, 0, 0), ...poly(0, 0, 4, 0, 6, -3, 8, 3, 10, -3, 12, 3, 14, 0), ...ends]
   if (/^NEEDL/.test(code)) return [...bowtie(), ...poly(-4, -18, 4, -18, 0, -8, -4, -18), ...ends]
   if (/^ANGL/.test(code)) return [...poly(-12, -8, 0, 0, -12, 8, -12, -8), ...poly(0, 0, -8, 12, 8, 12, 0, 0), L(0, 0, 10, -14), ...ends]
   if (/^3WAY/.test(code)) return [...bowtie(), ...poly(0, 0, -8, 14, 8, 14, 0, 0), L(0, 0, 0, -18), ...ends]
@@ -75,6 +77,12 @@ function support(code: string): SymbolStroke[] {
 }
 
 function annotation(code: string): SymbolStroke[] {
+  if (/^ISA/.test(code)) return [C(0, -4, 10), T('PI', -5, -1, 8), L(0, 6, 0, 14)]
+  if (/^NOZZLE/.test(code)) return [L(-14, -10, -14, 10), L(-10, -10, -10, 10), L(-14, -10, -10, -10), L(-14, 10, -10, 10), L(-10, -5, 2, -5), L(-10, 5, 2, 5), T('N1', 4, 3, 7)]
+  if (/^EQUIP/.test(code)) return [L(-14, -10, -14, 10), L(-10, -10, -10, 10), L(-10, -5, -2, -5), L(-10, 5, -2, 5), C(8, 0, 9)]
+  if (/^INS-LIM/.test(code)) return [L(-14, 4, 14, 4), ...poly(-9, 1, -14, 4, -9, 7, -9, 1), ...poly(9, 1, 14, 4, 9, 7, 9, 1), L(0, -1, 0, 9), T('I', -9, -2, 6), T('N', 4, -2, 6)]
+  if (/^WALL/.test(code)) return [L(0, -16, 0, -7), L(0, 7, 0, 16), ...poly(-6, -5, -2, -7, 3, -6, 6, -3, 6, 2, 3, 6, -2, 7, -6, 4, -7, 0, -6, -5), L(-14, 0, -7, 0), L(6, 0, 14, 0)]
+  if (/^AR$/.test(code)) return [L(-14, 0, 4, 0), ...poly(2, -4, 12, 0, 2, 4, 2, -4)]
   if (/^ORIFICE/.test(code)) return [L(-3, -12, -3, 12), L(3, -12, 3, 12), L(-3, -12, -3, -18), L(3, -12, 3, -18), ...(/2$/.test(code) ? [L(3, 12, 3, 18)] : [L(-3, 12, -3, 18)])]
   if (/GASKTK/.test(code)) return [L(0, -12, 0, 12), L(-4, -12, 4, -12)]
   if (/^SB$|SPEC.?BREAK/.test(code)) return [L(0, -14, 0, 14), ...poly(0, -14, 10, -11, 0, -8), T('SB', 3, 12, 7)]
@@ -86,7 +94,7 @@ function annotation(code: string): SymbolStroke[] {
   if (/^BAL|MTO/.test(code)) return [C(0, 0, 9), T('#', -3, 3, 9)]
   if (/REVTRI/.test(code)) return [...poly(0, -10, 10, 8, -10, 8, 0, -10), T('1', -3, 5, 8)]
   if (/REDFLAG/.test(code)) return [L(-8, 12, -8, -12), ...poly(-8, -12, 10, -6, -8, 0)]
-  if (/INS/.test(code) && !/INST/.test(code)) return [L(-14, -8, 14, -8), L(-14, 8, 14, 8), ...[-10, -2, 6].map(x => L(x, -8, x + 4, 8))]
+  if (/INS/.test(code) && !/INST/.test(code)) return [L(-12, -7, 12, -7), L(-12, 7, 12, 7), ...poly(-12, -7, -14, -4, -14, 4, -12, 7), ...poly(12, -7, 14, -4, 14, 4, 12, 7), L(-16, 0, -14, 0), L(14, 0, 16, 0)]
   if (/INST/.test(code)) return [L(0, 0, 0, -8), C(0, -16, 8), L(-8, -16, 8, -16)]
   if (/^CL/.test(code)) return [T('℄', -5, 5, 14)]
   if (/SLP/.test(code)) return [L(-14, 4, 14, -4), ...poly(-14, 4, 14, 4, 14, -4), T('SLOPE', -12, 14, 7)]
@@ -105,9 +113,16 @@ export function symbolStrokes(code: string | undefined, kind: Kind | 'pipe' | 'a
   if (kind === 'pipe') return [L(-16, 0, 16, 0)]
   if (kind === 'annotation') return annotation(c)
   // Two-port fittings that route as inline valves still draw as what they are.
-  if (/UNION/.test(c)) return [L(-6, -9, -6, 9), L(6, -9, 6, 9), L(-2, -6, -2, 6), L(2, -6, 2, 6)]
-  if (/CPLG/.test(c)) return /^H-/.test(c) ? [L(-5, -8, -5, 8), L(5, -8, 5, 8), L(-5, -8, 5, -8)] : [L(-6, -8, -6, 8), L(6, -8, 6, 8)]
+  if (/UNION/.test(c)) return [...box(-6, -6, 12, 12), L(0, -6, 0, 6)]
+  if (/CPLG/.test(c)) return /^H-/.test(c) ? [L(-5, -8, -5, 8), L(5, -8, 5, 8), L(-5, -8, 5, -8)] : box(-6, -6, 12, 12)
   if (/NIPPLE/.test(c)) return [L(-10, -5, 10, -5), L(-10, 5, 10, 5), ...poly(-10, -5, -12, 0, -10, 5), ...poly(10, -5, 12, 0, 10, 5)]
+  if (/^HOSE/.test(c)) return [L(-14, -10, -14, 10), L(14, -10, 14, 10), ...poly(-12, -4, -9, -8, -6, -4, -3, -8, 0, -4, 3, -8, 6, -4, 9, -8, 12, -4), ...poly(-12, 8, -9, 4, -6, 8, -3, 4, 0, 8, 3, 4, 6, 8, 9, 4, 12, 8)]
+  if (/^PULS/.test(c)) return [L(-14, -10, -14, 10), L(-11, -10, -11, 10), L(-11, -4, -4, -4), L(-11, 4, -4, 4), L(-4, -13, -4, 13), ...poly(-4, -13, 3, -11, 9, -6, 11, 0, 9, 6, 3, 11, -4, 13)]
+  if (/REGUL/.test(c)) return [L(-16, 0, -10, 0), L(10, 0, 16, 0), ...poly(-10, 0, 0, -8, 10, 0, 0, 8, -10, 0)]
+  if (/^CAMLOCK-ADPT/.test(c)) return [...box(-9, -6, 18, 12), L(3, -6, 3, 6), L(5, -6, 5, 6)]
+  if (/^CAMLOCK-CAP/.test(c)) return [...poly(-6, -8, 4, -8, 4, 8, -6, 8), L(-6, -8, -6, -5), L(-6, 8, -6, 5)]
+  if (/^CHICAGO/.test(c)) return [...poly(-8, -6, 4, -6, 9, 6, -3, 6, -8, -6)]
+  if (/^FLOWMETER/.test(c)) return [...box(-9, -7, 18, 14), L(-12, -10, -12, 10), L(12, -10, 12, 10), C(0, -16, 6)]
   if (kind === 'valve') return valve(c)
   if (kind === 'flange') return flange(c)
   if (kind === 'reducer') return reducer(c)
