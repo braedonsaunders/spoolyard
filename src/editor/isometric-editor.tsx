@@ -111,6 +111,7 @@ import {
   sized,
   sizeChoices,
   snapAlongLeg,
+  snapNearFace,
   type ComponentTrack,
 } from "../core/component-position";
 import { nodeItem } from "../core/joints";
@@ -169,6 +170,13 @@ const labels: Record<string, string> = {
   gasket: "Gasket",
   bolt: "Bolts",
   end: "Open end",
+};
+/** The last open pipe end: where typed routing carries on after opening, undo or delete. */
+const lastOpenEnd = (d: IsoDocument) => [...d.nodes].reverse().find((n) => n.kind === "end" && connected(d, n.id).length === 1)?.id ?? "";
+/** Why a pipe cannot start from a connection that has no free end. */
+const noFreeEnd = (d: IsoDocument, nodeId: string) => {
+  const node = getNode(d, nodeId), name = COMPONENT_TYPES.find((t) => t.code === node.component)?.label ?? labels[node.kind] ?? "connection";
+  return `The ${name.toLowerCase()} has no free end to route from. Select an open end, or click a pipe with the Pipe tool to branch from it.`;
 };
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -423,7 +431,7 @@ export function IsometricEditor({
         setDoc(loaded);
         setSpec(loaded.specs[0].id);
         setNps(loaded.runs.at(-1)?.nps ?? defaultNps(loaded.specs[0]));
-        setStart(loaded.nodes.at(-1)?.id ?? "");
+        setStart(lastOpenEnd(loaded));
         setSpan(loaded.units === "imperial" ? "10'" : "1000");
         setReady(true);
       })
@@ -466,7 +474,7 @@ export function IsometricEditor({
     setUndoCount(undo.current.length);
     setRedoCount(redo.current.length);
     setSelection("");
-    setStart(next.nodes.at(-1)?.id ?? "");
+    setStart(lastOpenEnd(next));
     setPending(null);
   };
   const remove = () =>
@@ -482,7 +490,7 @@ export function IsometricEditor({
       }
       d.nodes = d.nodes.filter((n) => n.associatedRunId || connected(d, n.id).length);
       setSelection("");
-      setStart(d.nodes.at(-1)?.id ?? "");
+      setStart(lastOpenEnd(d));
       setPending(null);
     });
   const activateTool = (next: string) => {
@@ -824,6 +832,7 @@ export function IsometricEditor({
         d.nodes.push(origin);
         from = origin.id;
       }
+      if (from && !pending && !canRouteFrom(d, from)) throw new Error(noFreeEnd(d, from));
       const problem = from && routeError(d, from, delta);
       if (problem) throw new Error(problem);
       const node = appendRun(
@@ -861,11 +870,12 @@ export function IsometricEditor({
     // A dimension also identifies its pipe, even when its label is offset from the centreline.
     return nearest ?? (owner ? pipeAtPoint(doc, drawing, [event.clientX, event.clientY], toScreen, owner, 32) : null);
   };
-  const insertFitting = (runId: string, type: ComponentType, row?: CatalogItem, position = fraction / 100) => {
+  const insertFitting = (runId: string, type: ComponentType, row?: CatalogItem, position = fraction / 100, clicked = false) => {
     const before = latest.current;
     let placed: PipeNode | undefined;
     commit((d) => {
       placed = placeComponentOnPipe(d, runId, type, position, row);
+      if (clicked) snapNearFace(d, placed.id);
       setSelection(placed.id);
     });
     if (latest.current === before) return;
@@ -948,7 +958,7 @@ export function IsometricEditor({
           setError(`The size shown was for a ${inches(paletteNps)} pipe. Choose the size for this ${inches(run.nps)} pipe, then click it again.`);
           return;
         }
-        insertFitting(at.runId, armed.type, armed.row, at.fraction);
+        insertFitting(at.runId, armed.type, armed.row, at.fraction, !onEnd);
       }
       else setError("No pipe at that point. Click a straight pipe or its dimension label to place " + armed.type.label + ".");
       return;
@@ -1008,7 +1018,7 @@ export function IsometricEditor({
         if (routing && node !== start) add(sub(getNode(doc, node).position, anchor));
         else if (canRouteFrom(doc, node)) selectConnection(node);
         else
-          setError(`The ${(COMPONENT_TYPES.find((t) => t.code === getNode(doc, node).component)?.label ?? labels[getNode(doc, node).kind] ?? "connection").toLowerCase()} has no free end to route from. Click an open end, or click a pipe to branch from it.`);
+          setError(noFreeEnd(doc, node));
         return;
       }
       const hit = branchTarget(event);
@@ -1060,7 +1070,7 @@ export function IsometricEditor({
       commit((d) => Object.assign(d, next));
       setSpec(next.specs[0].id);
       setNps(defaultNps(next.specs[0]));
-      setStart(next.nodes.at(-1)?.id ?? "");
+      setStart(lastOpenEnd(next));
       setSelection("");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -1683,6 +1693,7 @@ export function IsometricEditor({
                         commit((d) => {
                           if (state.track) {
                             moveComponentAlongPipe(d, state.id, Math.hypot(...sub(state.destination, state.track.from)));
+                            snapNearFace(d, state.id);
                             return;
                           }
                           getNode(d, state.id).position = state.destination;

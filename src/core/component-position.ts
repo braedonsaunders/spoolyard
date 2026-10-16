@@ -276,6 +276,15 @@ export function componentFaces(doc: IsoDocument, nodeId: string): [number, numbe
   return faces.length === 2 ? [Math.min(...faces), Math.max(...faces)] : null;
 }
 
+/** A component the sheet dimensions to its faces is placed with its near face, not its centre, on a placement step. */
+export function snapNearFace(doc: IsoDocument, nodeId: string): void {
+  const faces = componentFaces(doc, nodeId), track = componentTrack(doc, nodeId);
+  if (!faces || !track) return;
+  const step = placementStep(doc.units), shift = Math.round(faces[0] / step) * step - faces[0];
+  if (Math.abs(shift) > 1e-9 && track.distance + shift > track.min && track.distance + shift < track.max)
+    moveComponentAlongPipe(doc, nodeId, track.distance + shift);
+}
+
 /**
  * A connection a pipe can be routed from: an open end, a joint, elbow or tee that can take a branch, a fitting with a
  * free port, or an olet still waiting for its branch. An in-line valve between two pipes has no free end.

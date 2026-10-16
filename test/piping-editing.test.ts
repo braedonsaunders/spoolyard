@@ -5,7 +5,7 @@ import { appendRun, attachComponent, clone, connected, getNode, newIso, parseIso
 import { COMPONENT_TYPE_BY_CODE } from '../src/core/components.ts';
 import {
   canRouteFrom, componentFaces, componentTrack, continueFlow, legPosition, placeComponentOnPipe, reduceAtJoint, routeError,
-  setLineFlow, sizeChoices, snapAlongLeg
+  setLineFlow, sizeChoices, snapAlongLeg, snapNearFace
 } from '../src/core/component-position.ts';
 
 const spec = JSON.parse(readFileSync(new URL('../public/library/specs/a.json', import.meta.url), 'utf8')) as PipeSpec;
@@ -125,10 +125,14 @@ test('positions report the faces the sheet dimensions, or the centre', () => {
   // Mating flange faces across the gaskets, either side of the valve's face-to-face.
   assert.ok(Math.abs(near - (5000 - 114.3 - 3.18)) < 0.05, String(near));
   assert.ok(Math.abs(far - (5000 + 114.3 + 3.18)) < 0.05, String(far));
+  // Placed by a click, the face the sheet dimensions lands on the step rather than the centre.
+  snapNearFace(doc, valve.id);
+  assert.equal(Math.round(componentFaces(doc, valve.id)![0] * 1e6) / 1e6, Math.round(near));
   const welded = placeComponentOnPipe(doc, doc.runs.at(-1)!.id, type('GATE-BW'), 0.5);
   assert.equal(componentFaces(doc, welded.id), null);
   const reducer = placeComponentOnPipe(doc, doc.runs[0].id, type('C-RED'), 0.2, row(`${spec.id}/C-RED-4x3`));
-  assert.deepEqual(componentFaces(doc, reducer.id)!.map(v => Math.round(v * 100) / 100), [1000 - 50.8, 1000 + 50.8]);
+  const centre = componentTrack(doc, reducer.id)!.distance;
+  assert.deepEqual(componentFaces(doc, reducer.id)!.map(v => Math.round((v - centre) * 100) / 100), [-50.8, 50.8]);
 });
 
 test('flow is set along a line through elbows, in-line fittings and the run of a tee, not into its branch', () => {
