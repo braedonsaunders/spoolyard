@@ -216,8 +216,10 @@ export function drawAnnotations(ctx: IsoContext) {
       const stretch = leg.runs.slice(i).filter((_, k, all) => all.slice(0, k + 1).every(x => x.nps === run.nps))
       // A size change with no pipe beyond it, a bushing into an end, is sized by its reducer alone.
       if (changed && stretch.every(r => r.connector)) return
-      const g = ctx.geometry.get((stretch.find(r => !r.connector) ?? run).id)!
-      callout(lerp2(g.a, g.b, 0.25), [`${sizeText(run.nps)} NS`], g.run.id, { head: false })
+      // A leg's first label sits near its start; after a change, on the first pipe, near the change.
+      const g = ctx.geometry.get((changed && stretch.find(r => !r.connector) || run).id)!
+      const near = !changed || [g.run.from, g.run.to].indexOf(leg.nodes[leg.runs.indexOf(g.run)]) === 0
+      callout(lerp2(g.a, g.b, changed && !near ? 0.75 : 0.2), [`${sizeText(run.nps)} NS`], g.run.id, { head: false })
     })
   }
   // Any other size change not called out with its item.
@@ -326,8 +328,13 @@ export function drawAnnotations(ctx: IsoContext) {
     const id = node.tiePoint!.id.toUpperCase(), label = node.tiePoint!.label?.toUpperCase()
     const r = Math.max(15, (Math.max(measureText('TP', T), measureText(id, T)) / 2 + 7.5) / 1.15)
     const { centre } = spot(target, Math.max(r * 2.3, label ? measureText(label, T) + 4 : 0), r * 2 + (label ? T * 2 : 0), node.id, [40, 56, 76, 100])
-    // The label goes on the far side from the item, so the leader never crosses it.
-    const below = target[1] < centre[1], c: Point = [centre[0], centre[1] + (label ? below ? -T : T : 0)]
+    // The label goes under the hexagon unless the leader would cross it there.
+    const labelAt = (under: boolean): { c: Point; box: Poly } => {
+      const c: Point = [centre[0], centre[1] + (label ? under ? -T : T : 0)], w = measureText(label ?? '', T) / 2 + 1, y = under ? c[1] + r + 5 : c[1] - r - 5 - T
+      return { c, box: rectPoly(c[0] - w, y - 1, c[0] + w, y + T + 1) }
+    }
+    const crosses = (o: { c: Point; box: Poly }) => overlapsSegment(o.box, o.c, target)
+    const below = !label || !crosses(labelAt(true)) || crosses(labelAt(false)), { c } = labelAt(below)
     const hex = Array.from({ length: 6 }, (_, i) => add2(c, [Math.cos(i * Math.PI / 3) * r * 1.15, Math.sin(i * Math.PI / 3) * r])) as Point[]
     poly(hex, 'TAG', node.id, { closed: true })
     ctx.place.add(hex, 'tag', node.id)
