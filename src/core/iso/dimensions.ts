@@ -67,12 +67,17 @@ function closedStub(ctx: IsoContext, leg: Leg): PipeNode | undefined {
   return on && far && (far.kind === 'cap' || (!!on.associatedRunId && far.kind === 'end' && !far.continuation)) ? on : undefined
 }
 
+/** Distance along a pipe's own direction, to tell where on it something attached sits. */
+function alongRun(ctx: IsoContext, run: PipeRun) {
+  const dir = unit3(sub(getNode(ctx.doc, run.to).position, getNode(ctx.doc, run.from).position))
+  return (p: Vec3) => p[0] * dir[0] + p[1] * dir[1] + p[2] * dir[2]
+}
+
 /** The olet a part attached off the pipe's centreline stands on (a nipple screwed into it). */
 function oletUnder(ctx: IsoContext, node: PipeNode): PipeNode | undefined {
   const host = node.kind !== 'olet' && ctx.doc.runs.find(r => r.id === node.associatedRunId)
   if (!host) return undefined
-  const dir = unit3(sub(getNode(ctx.doc, host.to).position, getNode(ctx.doc, host.from).position))
-  const along = (p: Vec3) => p[0] * dir[0] + p[1] * dir[1] + p[2] * dir[2]
+  const along = alongRun(ctx, host)
   return ctx.nodes.find(o => o.kind === 'olet' && o.associatedRunId === host.id && Math.abs(along(o.position) - along(node.position)) < 1 &&
     distance(o.position, node.position) > 1)
 }
@@ -85,8 +90,7 @@ function ventOlets(ctx: IsoContext, legs: Leg[]): Set<string> {
     if (!on || getNode(ctx.doc, on.id === leg.nodes[0] ? leg.nodes.at(-1)! : leg.nodes[0]).kind !== 'cap') continue
     const host = ctx.doc.runs.find(r => r.id === on.associatedRunId)
     if (!host) continue
-    const dir = unit3(sub(getNode(ctx.doc, host.to).position, getNode(ctx.doc, host.from).position))
-    const along = (p: Vec3) => p[0] * dir[0] + p[1] * dir[1] + p[2] * dir[2]
+    const along = alongRun(ctx, host)
     for (const n of ctx.nodes)
       if (n.kind === 'olet' && n.associatedRunId === host.id && Math.abs(along(n.position) - along(on.position)) < 1) out.add(n.id)
   }
@@ -101,7 +105,7 @@ function measureAlong(ctx: IsoContext, leg: Leg) {
 
 /**
  * The chain stations of a leg: its ends, fitting work points, flange faces, the mating faces of flanged valves,
- * reducer ends on pipe and branch connections.
+ * reducer ends and branch connections.
  */
 function stations(ctx: IsoContext, leg: Leg, vents: Set<string>): Station[] {
   const out: Station[] = []
