@@ -126,6 +126,8 @@ export interface PipeNode {
   calloutText?: string
   /** Dimension this support's location along its pipe. */
   dimensioned?: boolean
+  /** The located point is approximate (a wall penetration): its dimension reads "(±)". */
+  approximate?: boolean
   /** Mating flange makeup per flanged port, keyed by pipe id. */
   portFlanges?: Record<string, PortFlange>
   /**
@@ -1430,6 +1432,7 @@ export function parseIsoJson(raw: string): IsoDocument {
         (n.continuation.coordinates != null && typeof n.continuation.coordinates !== 'boolean'))) ||
       (n.elevationCallout != null && typeof n.elevationCallout !== 'boolean') ||
       (n.dimensioned != null && typeof n.dimensioned !== 'boolean') ||
+      (n.approximate != null && typeof n.approximate !== 'boolean') ||
       (n.tiePoint != null && (!isPlain(n.tiePoint) || !isString(n.tiePoint.id, 40) ||
         (n.tiePoint.label != null && !isString(n.tiePoint.label, 120)))) ||
       (n.operator != null && !isString(n.operator, 120)) ||

@@ -104,8 +104,20 @@ export function NodeCallouts({ doc, nodeId, commit }: { doc: IsoDocument; nodeId
       )}
       {node.kind === "support" && (
         <label className="iso-check">
+          <input type="checkbox" checked={node.dimensioned !== false} onChange={(e) => edit((n) => { n.dimensioned = e.target.checked ? undefined : false; })} />
+          Dimension its location
+        </label>
+      )}
+      {node.kind === "annotation" && (
+        <label className="iso-check">
           <input type="checkbox" checked={!!node.dimensioned} onChange={(e) => edit((n) => { n.dimensioned = e.target.checked || undefined; })} />
           Dimension its location
+        </label>
+      )}
+      {(node.kind === "support" ? node.dimensioned !== false : node.kind === "annotation" && !!node.dimensioned) && (
+        <label className="iso-check">
+          <input type="checkbox" checked={!!node.approximate} onChange={(e) => edit((n) => { n.approximate = e.target.checked || undefined; })} />
+          Approximate (±)
         </label>
       )}
       {(node.kind === "support" || node.kind === "annotation") && (

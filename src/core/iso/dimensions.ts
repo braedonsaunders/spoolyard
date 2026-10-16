@@ -7,7 +7,9 @@ import { measureText } from '../stroke-font'
 import { segmentPoly, textPoly, type Poly } from './placement'
 import { add2, dot2, isAxial, lerp2, planeText, scale2, sub2, unit2, unit3, uprightOf } from './plane'
 
-interface Station { model: Vec3; page: Point; node?: string }
+/** A point a leg is measured to; `along` is its distance from the leg's first node. */
+interface Station { model: Vec3; page: Point; along: number; node?: string; end?: boolean }
+interface Span { a: Station; b: Station; mm: number; approximate?: boolean }
 interface Leg { runs: PipeRun[]; nodes: string[]; dir3: Vec3; dir: Point }
 
 /** Straight legs of the sheet: in-line pipes joined through valves, flanges, reducers and welds. */
@@ -39,36 +41,78 @@ export function sheetLegs(ctx: IsoContext): Leg[] {
   return legs
 }
 
-/** Where a leg is measured: fitting work points, flanged faces of valves, flange joints and open ends. */
-function stations(ctx: IsoContext, leg: Leg): Station[] {
-  const out: Array<Station & { along: number }> = []
+/** Where the pipe turns or branches: elbows, bends and tees are located at their work points. */
+const workPoint = (node: PipeNode) => /^(elbow|tee)/.test(node.kind)
+
+/**
+ * A screwed vent or drain stub: one straight run of parts joined without pipe off a branch connection on the pipe,
+ * closed at its far end by a cap or an instrument. Its parts give its length. Returns the node it stands on.
+ */
+function closedStub(ctx: IsoContext, leg: Leg): PipeNode | undefined {
+  if (!leg.runs.every(r => r.connector)) return undefined
+  const [a, b] = [leg.nodes[0], leg.nodes.at(-1)!].map(id => getNode(ctx.doc, id))
+  const [on, far] = a.associatedRunId ? [a, b] : b.associatedRunId ? [b, a] : []
+  return on && far && (far.kind === 'cap' || (far.kind === 'end' && !far.continuation)) ? on : undefined
+}
+
+/** Olets carrying a capped vent or drain stub: they are located on the pipe rather than cut into its chain. */
+function ventOlets(ctx: IsoContext, legs: Leg[]): Set<string> {
+  const out = new Set<string>()
+  for (const leg of legs) {
+    const on = closedStub(ctx, leg)
+    if (!on || getNode(ctx.doc, on.id === leg.nodes[0] ? leg.nodes.at(-1)! : leg.nodes[0]).kind !== 'cap') continue
+    const host = ctx.doc.runs.find(r => r.id === on.associatedRunId)
+    if (!host) continue
+    const dir = unit3(sub(getNode(ctx.doc, host.to).position, getNode(ctx.doc, host.from).position))
+    const along = (p: Vec3) => p[0] * dir[0] + p[1] * dir[1] + p[2] * dir[2]
+    for (const n of ctx.nodes)
+      if (n.kind === 'olet' && n.associatedRunId === host.id && Math.abs(along(n.position) - along(on.position)) < 1) out.add(n.id)
+  }
+  return out
+}
+
+/** Distance along a leg from its first node. */
+function measureAlong(ctx: IsoContext, leg: Leg) {
   const origin = getNode(ctx.doc, leg.nodes[0]).position
-  const along = (p: Vec3) => (p[0] - origin[0]) * leg.dir3[0] + (p[1] - origin[1]) * leg.dir3[1] + (p[2] - origin[2]) * leg.dir3[2]
-  const at = (model: Vec3, page: Point, node?: string) => out.push({ model, page, node, along: along(model) })
+  return (p: Vec3) => (p[0] - origin[0]) * leg.dir3[0] + (p[1] - origin[1]) * leg.dir3[1] + (p[2] - origin[2]) * leg.dir3[2]
+}
+
+/**
+ * The chain stations of a leg: its ends, fitting work points, flange faces, the mating faces of flanged valves,
+ * reducer ends on pipe and branch connections.
+ */
+function stations(ctx: IsoContext, leg: Leg, vents: Set<string>): Station[] {
+  const out: Station[] = []
+  const along = measureAlong(ctx, leg), own = new Set(leg.runs.map(r => r.id))
+  const at = (model: Vec3, page: Point, node?: string, end = false) => out.push({ model, page, node, along: along(model), end })
   leg.nodes.forEach((id, i) => {
     const node = getNode(ctx.doc, id), page = ctx.pos.get(id)!
-    const inner = i > 0 && i < leg.nodes.length - 1
-    if (inner && node.kind === 'gasket') return
+    const end = i === 0 || i === leg.nodes.length - 1
+    if (!end && node.kind === 'gasket') return
     const code = nodeCode(ctx.doc, node) ?? ''
     // Nipples, couplings, unions and regulators only join the pieces either side: the dimensions run through them.
-    if (inner && /NIPPLE|UNION|CPLG|REGUL/.test(code)) return
-    const joints = ctx.joints.filter(j => j.nodeId === id && j.kind === 'component-port')
+    if (!end && /NIPPLE|UNION|CPLG|REGUL/.test(code)) return
+    const joints = ctx.joints.filter(j => j.nodeId === id && j.kind === 'component-port' && own.has(j.runIds[0]))
     const e = ctx.extent.get(id) ?? 0
-    if (inner && joints.length) {
-      // A flanged valve is dimensioned between its mating flange faces, across both gaskets.
+    if (!end && joints.length) {
+      // A flanged valve is dimensioned between its mating flange faces, across its gaskets. A drawing that ends at the
+      // valve's own face leaves that gasket to the next drawing.
       for (const j of joints) {
         const run = ctx.runs.find(r => r.id === j.runIds[0]), g = run && ctx.geometry.get(run.id)
         if (!run || !g) continue
-        const out3 = sub(getNode(ctx.doc, run.from === id ? run.to : run.from).position, node.position), l = length(out3) || 1
-        const face: Vec3 = [0, 1, 2].map(k => j.position[k] + out3[k] / l * (j.gasket?.thickness ?? 0)) as Vec3
+        const far = getNode(ctx.doc, run.from === id ? run.to : run.from).position
+        const out3 = sub(far, node.position), l = length(out3) || 1
+        const gap = Math.min(j.gasket?.thickness ?? 0, distance(j.position, far))
+        const face: Vec3 = [0, 1, 2].map(k => j.position[k] + out3[k] / l * gap) as Vec3
         const dir = run.from === id ? g.dir : scale2(g.dir, -1)
         at(face, add2(page, scale2(dir, Math.max(0, e - SIZE.flangeThickness - 0.4))))
       }
       return
     }
-    if (inner && node.kind === 'reducer' && !/CPLG/.test(code)) {
-      // A reducer is dimensioned to both its ends.
-      for (const run of connected(ctx.doc, id).filter(r => ctx.geometry.has(r.id))) {
+    if (!end && node.kind === 'reducer' && !/CPLG/.test(code)) {
+      // A reducer is dimensioned to its ends on pipe. Welded straight to a fitting it is part of that fitting's make-up,
+      // which is measured on to the far joint.
+      for (const run of connected(ctx.doc, id).filter(r => own.has(r.id) && !r.connector && ctx.geometry.has(r.id))) {
         const g = ctx.geometry.get(run.id)!, t = takeout(ctx.doc, node, run.id) ?? 0
         const out3 = sub(getNode(ctx.doc, run.from === id ? run.to : run.from).position, node.position), l = length(out3) || 1
         const dir = run.from === id ? g.dir : scale2(g.dir, -1)
@@ -76,81 +120,132 @@ function stations(ctx: IsoContext, leg: Leg): Station[] {
       }
       return
     }
-    at(node.position, page, id)
+    at(node.position, page, id, end)
   })
-  // Faces closer than a gasket (a flange pair at a break) are one station.
-  return out.sort((a, b) => a.along - b.along).filter((s, i, all) => !i || s.along - all[i - 1].along > 3.2)
+  // Branch connections on the pipe are stations of the chain; capped vents and drains are located instead.
+  for (const n of ctx.nodes) {
+    const page = ctx.pos.get(n.id)
+    if (n.kind === 'olet' && page && n.associatedRunId && own.has(n.associatedRunId) && !vents.has(n.id)) at(n.position, page, n.id)
+  }
+  out.sort((a, b) => a.along - b.along)
+  // Faces closer than a gasket are one station (a flange pair at a break); at the end of a leg the gasket is dimensioned.
+  const kept: Station[] = []
+  for (const s of out) {
+    const last = kept.at(-1), gap = last ? s.along - last.along : Infinity
+    if (gap > 3.2 || ((s.end || last!.end) && gap > 0.5)) kept.push(s)
+    else if (s.end) kept[kept.length - 1] = s
+  }
+  return kept
 }
 
 /**
- * Branch connections on the pipe (olets) and the supports the drafter chose to locate, each dimensioned from one
- * station of the leg in a tier of its own next to the pipe: olets from the nearest station, supports from the
- * fitting at an end of their pipe piece.
+ * What is located along a leg, next to the pipe: supports (unless their dimension is turned off) and annotations
+ * marked dimensioned, chained support to support from a fitting; approximate locations, such as a wall, from the
+ * nearest fitting and outside the chain; capped vents and drains from the nearest station.
  */
-function locations(ctx: IsoContext, leg: Leg, points: Station[]): Array<{ a: Station; b: Station; mm: number }> {
-  const out: Array<{ a: Station; b: Station; mm: number }> = []
-  const along = (p: Vec3) => p[0] * leg.dir3[0] + p[1] * leg.dir3[1] + p[2] * leg.dir3[2]
-  for (const node of ctx.nodes) {
-    if (!leg.runs.some(r => r.id === node.associatedRunId)) continue
-    if (!(node.kind === 'olet' || (node.kind === 'support' && node.dimensioned))) continue
+function locations(ctx: IsoContext, leg: Leg, points: Station[], vents: Set<string>): Span[] {
+  const along = measureAlong(ctx, leg), own = new Set(leg.runs.map(r => r.id)), out: Span[] = []
+  const span = (a: Station, b: Station, approximate = false) =>
+    out.push({ ...(a.along <= b.along ? { a, b } : { a: b, b: a }), mm: Math.abs(b.along - a.along), ...(approximate ? { approximate } : {}) })
+  const items = ctx.nodes.flatMap(node => {
     const page = ctx.pos.get(node.id)
-    if (!page) continue
-    // A support is located from a fitting at an end of its own pipe piece, as the fitter sets it out.
-    const host = leg.runs.find(r => r.id === node.associatedRunId)!
-    const ends = points.filter(p => p.node && (p.node === host.from || p.node === host.to))
-    const fittings = ends.filter(p => /^(elbow|tee)/.test(getNode(ctx.doc, p.node!).kind))
-    const pool = node.kind === 'support' ? (fittings.length ? fittings : ends.length ? ends : points) : points
-    const from = pool.reduce((best, p) => Math.abs(along(p.model) - along(node.position)) < Math.abs(along(best.model) - along(node.position)) ? p : best)
-    const mm = Math.abs(along(from.model) - along(node.position))
-    if (mm < 1) continue
-    const station: Station = { model: node.position, page, node: node.id }
-    out.push(along(from.model) < along(node.position) ? { a: from, b: station, mm } : { a: station, b: from, mm })
+    if (!page || !node.associatedRunId || !own.has(node.associatedRunId)) return []
+    return [{ node, station: { model: node.position, page, node: node.id, along: along(node.position) } as Station }]
+  }).sort((a, b) => a.station.along - b.station.along)
+  const nearest = (s: Station, pool: Station[]) => pool.reduce((best, p) => Math.abs(p.along - s.along) < Math.abs(best.along - s.along) ? p : best)
+  const fitting = (p: Station) => !!p.node && workPoint(getNode(ctx.doc, p.node))
+  const located = items.filter(({ node }) => node.kind === 'support' ? node.dimensioned !== false : node.kind === 'annotation' && !!node.dimensioned)
+  const chain = located.filter(i => !i.node.approximate).map(i => i.station)
+  if (chain.length) {
+    // The chain starts from a fitting at an end of the first or last support's own pipe piece, else from the leg's end
+    // there, else from the nearest fitting across joints, whichever lies nearer its support.
+    const hostEnds = (s: Station) => {
+      const run = ctx.doc.runs.find(r => r.id === getNode(ctx.doc, s.node!).associatedRunId)
+      return run ? [run.from, run.to] : []
+    }
+    const first = chain[0], last = chain.at(-1)!
+    const before = points.filter(p => p.along < first.along - 0.5).reverse(), after = points.filter(p => p.along > last.along + 0.5)
+    const choose = (ok: (p: Station, s: Station) => boolean) => {
+      const b = before.find(p => ok(p, first)), a = after.find(p => ok(p, last))
+      if (b && (!a || first.along - b.along <= a.along - last.along)) return { anchor: b, order: chain }
+      return a ? { anchor: a, order: [...chain].reverse() } : undefined
+    }
+    const onPiece = (p: Station, s: Station) => !!p.node && hostEnds(s).includes(p.node)
+    const start = choose((p, s) => fitting(p) && onPiece(p, s)) ?? choose((p, s) => !!p.end && onPiece(p, s)) ?? choose(fitting) ?? choose(() => true)
+    if (start) start.order.reduce((from, s) => { span(from, s); return s }, start.anchor)
   }
+  const fittings = points.filter(fitting)
+  for (const { station } of located.filter(i => i.node.approximate)) span(nearest(station, fittings.length ? fittings : points), station, true)
+  for (const { node, station } of items) if (vents.has(node.id)) span(nearest(station, points), station)
   return out
+}
+
+/** Spans packed into as few tiers as they need without overlapping along the leg. */
+function pack(spans: Span[]): Span[][] {
+  const tiers: Span[][] = []
+  for (const s of [...spans].sort((x, y) => x.a.along - y.a.along)) {
+    const tier = tiers.find(t => t.every(o => s.b.along <= o.a.along + 0.5 || s.a.along >= o.b.along - 0.5))
+    if (tier) tier.push(s)
+    else tiers.push([s])
+  }
+  return tiers
 }
 
 export function drawDimensions(ctx: IsoContext) {
   const { line, poly, arrow } = emitters(ctx)
   const units = ctx.doc.units
-  for (const leg of sheetLegs(ctx)) {
-    // A screwed vent or drain (nipple and cap off a pipe) is made of its parts; it takes no dimensions.
-    const node = (id: string) => getNode(ctx.doc, id)
-    if (leg.runs.every(r => r.connector) && leg.nodes.some(id => /NIPPLE/.test(nodeCode(ctx.doc, node(id)) ?? '')) &&
-      [leg.nodes[0], leg.nodes.at(-1)!].some(id => node(id).kind === 'cap' || !!node(id).associatedRunId)) continue
-    const points = stations(ctx, leg)
+  // Chains are measured between rounded station positions, so the pieces always add up to the rounded whole.
+  const quantum = units === 'mm' ? 1 : 25.4 / 16
+  const snap = (mm: number) => Math.round(mm / quantum) * quantum
+  const measure = (a: Station, b: Station) => Math.abs(snap(b.along) - snap(a.along))
+  const node = (id: string) => getNode(ctx.doc, id)
+  const legs = sheetLegs(ctx), vents = ventOlets(ctx, legs)
+  for (const leg of legs) {
+    // A capped vent or drain stub takes no dimensions: its parts give its length.
+    if (closedStub(ctx, leg)) continue
+    const points = stations(ctx, leg, vents)
     if (points.length < 2) continue
-    const segments = points.slice(1).map((p, i) => ({ a: points[i], b: p, mm: distance(points[i].model, p.model) })).filter(s => s.mm > 0.5)
-    const skewed = !isAxial(leg.dir3)
+    const segments: Span[] = points.slice(1).map((p, i) => ({ a: points[i], b: p, mm: measure(points[i], p) })).filter(s => s.mm > 0.5)
+    const located = locations(ctx, leg, points, vents).map(s => ({ ...s, mm: measure(s.a, s.b) })).filter(s => s.mm > 0.5)
+    // A fitting's own short port to an open end is dimensioned by its length alone, with no offset construction.
+    const ownPort = leg.runs.length === 1 && leg.runs[0].connector && [leg.nodes, [...leg.nodes].reverse()]
+      .some(([a, b]) => workPoint(node(a)) && node(b).kind === 'end')
+    const skewed = !isAxial(leg.dir3) && !ownPort
     // An offset with nothing along it is dimensioned by its construction alone.
-    if (skewed && segments.length < 2 && !locations(ctx, leg, points).length) { offset(leg, points); continue }
+    if (skewed && segments.length < 2 && !located.length) { offset(leg, points); continue }
     if (!segments.length) continue
-    // Branch locations next to the pipe, then the chain between stations, then an overall dimension for each part
-    // of the leg between branches.
-    const located = locations(ctx, leg, points)
-    const tiers = located.length ? [located, segments] : [segments]
-    const sections: Array<typeof segments> = [[]]
+    // Locations next to the pipe, then the chain between stations, then an overall for each part of the leg between
+    // tees.
+    const tiers: Span[][] = [...pack(located), segments]
+    const sections: Span[][] = [[]]
     for (const s of segments) {
       sections.at(-1)!.push(s)
-      if (s.b.node && s.b !== points.at(-1) && getNode(ctx.doc, s.b.node).kind === 'tee') sections.push([])
+      if (s.b.node && s.b !== points.at(-1) && node(s.b.node).kind === 'tee') sections.push([])
     }
-    const across = (sec: typeof segments) => ({ a: sec[0].a, b: sec.at(-1)!.b, mm: distance(sec[0].a.model, sec.at(-1)!.b.model) })
-    // When tees cut the chain into single pieces, the overall runs the whole leg instead.
-    const overall = sections.every(sec => sec.length < 2) ? segments.length > 1 ? [across(segments)] : [] : sections.filter(sec => sec.length > 1).map(across)
+    const across = (sec: Span[]): Span => ({ a: sec[0].a, b: sec.at(-1)!.b, mm: measure(sec[0].a, sec.at(-1)!.b) })
+    let overall = sections.filter(sec => sec.length > 1).map(across)
+    // When tees cut the chain into single pieces, the overall runs the whole leg: always along an offset (its true
+    // length), else only between two open ends and unless the leg is a fitting's own make-up.
+    const open = [points[0], points.at(-1)!].every(p => !p.node || !workPoint(node(p.node)))
+    if (!overall.length && segments.length > 1 && (skewed || open && leg.runs.some(r => !r.connector))) overall = [across(segments)]
     if (overall.length) tiers.push(overall)
     // Extension lines run along an isometric axis across the leg: vertical for horizontal legs, horizontal for risers.
+    // A level leg drawn upright on the page takes a level axis.
     const horizontal = Math.abs(leg.dir3[2]) < 0.7
-    const options: Vec3[] = horizontal ? [[0, 0, 1], [0, 0, -1]] : [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0]]
+    const options: Array<[Vec3, number]> = horizontal
+      ? [[[0, 0, 1], 0], [[0, 0, -1], 0], [[1, 0, 0], 150], [[-1, 0, 0], 150], [[0, 1, 0], 150], [[0, -1, 0], 150]]
+      : [[[1, 0, 0], 0], [[-1, 0, 0], 0], [[0, 1, 0], 0], [[0, -1, 0], 0]]
     let best: { cost: number; ext: Point } | null = null
-    for (const axis3 of options) {
+    for (const [axis3, penalty] of options) {
       const ext = unit2(ctx.axis(axis3))
       if (Math.abs(dot2(ext, leg.dir)) > 0.95) continue
-      let cost = 0
+      let cost = penalty
       tiers.forEach((tier, t) => {
         const off = SIZE.tier + t * SIZE.tierStep
         for (const s of tier) {
           const a = add2(s.a.page, scale2(ext, off)), b = add2(s.b.page, scale2(ext, off))
           // A dimension line may cross a pipe; its lettering may not.
-          cost += ctx.place.cost(segmentPoly(a, b, 1), undefined, { pipe: 8, symbol: 30 }) + ctx.place.cost(labelPoly(s.mm, a, b, ext))
+          cost += ctx.place.cost(segmentPoly(a, b, 1), undefined, { pipe: 8, symbol: 30 }) + ctx.place.cost(labelPoly(valueOf(s), a, b, ext))
         }
       })
       // An offset's construction goes on the other side of the pipe from its chain.
@@ -165,10 +260,14 @@ export function drawDimensions(ctx: IsoContext) {
       const off = SIZE.tier + t * SIZE.tierStep
       // Neighbouring pieces of a chain are no place for a short dimension's text.
       const spans = tier.map(s => [s.a.page, s.b.page] as [Point, Point])
-      for (const s of tier) dimension(s.a, s.b, s.mm, ext, off, runBetween(leg, s), ownerOf(leg, s), spans.filter(([a]) => a !== s.a.page))
+      for (const s of tier) dimension(s.a, s.b, s.mm, ext, off, runBetween(leg, s), ownerOf(leg, s), spans.filter(([a]) => a !== s.a.page), s.approximate)
     })
     // The overall of a skewed leg is its true length; the construction goes on the other side.
     if (skewed) offset(leg, points, ext)
+  }
+  /** A dimension's lettering: the length, marked "(±)" where the location is approximate. */
+  function valueOf(s: { mm: number; approximate?: boolean }) {
+    return draftLength(s.mm, units, 24) + (s.approximate ? '(±)' : '')
   }
   /** The pipe a dimension measures node to node, so its length can be edited in place. */
   function runBetween(leg: Leg, s: { a: Station; b: Station }) {
@@ -178,15 +277,16 @@ export function drawDimensions(ctx: IsoContext) {
     const run = leg.runs.find(r => [r.from, r.to].includes(s.a.node ?? '') && [r.from, r.to].includes(s.b.node ?? ''))
     return run?.id ?? leg.runs[0].id
   }
-  function labelPoly(mm: number, a: Point, b: Point, ext: Point) {
+  function labelPoly(value: string, a: Point, b: Point, ext: Point) {
     const along = unit2(sub2(b, a)), t = planeText(along, ext)
-    return textPoly(add2(lerp2(a, b, 0.5), scale2(uprightOf(t), 2)), draftLength(mm, units, 24), SIZE.text, t.rotation, t.oblique, 'middle', 1)
+    return textPoly(add2(lerp2(a, b, 0.5), scale2(uprightOf(t), 2)), value, SIZE.text, t.rotation, t.oblique, 'middle', 1)
   }
   /** One dimension: extension lines from both points, a dimension line with arrowheads, and iso-plane text. */
-  function dimension(pa: Station, pb: Station, mm: number, ext: Point, offset: number, editable?: PipeRun, owner?: string, others: Array<[Point, Point]> = []) {
+  function dimension(pa: Station, pb: Station, mm: number, ext: Point, offset: number, editable?: PipeRun, owner?: string,
+    others: Array<[Point, Point]> = [], approximate = false) {
     const a = add2(pa.page, scale2(ext, offset)), b = add2(pb.page, scale2(ext, offset))
     const along = unit2(sub2(b, a)), span = Math.hypot(...sub2(b, a))
-    const value = draftLength(mm, units, 24), t = planeText(along, ext), up = uprightOf(t)
+    const value = valueOf({ mm, approximate }), t = planeText(along, ext), up = uprightOf(t)
     const width = measureText(value, SIZE.text)
     const short = span < SIZE.arrow * 2.2
     // Text stands on its reading side of the line; when that is taken it moves beyond an end or to the other side.
@@ -237,7 +337,6 @@ export function drawDimensions(ctx: IsoContext) {
       emitters(ctx).text(add2(lerp2(a, b, 0.5), scale2(up, -(SIZE.text * 0.8 + 2.5))), 'CUT ' + draftLength(cut, units, 24), SIZE.text * 0.8, 'DIM', editable.id,
         { rotation: t.rotation, oblique: t.oblique, anchor: 'middle', role: 'cut' })
   }
-  /** Rolling or plane offsets: hatched triangle with both leg dimensions and the offset angle. */
   /** Clutter under the plane-offset triangle that would go opposite `ext`. */
   function triangleCost(leg: Leg, points: Station[], ext: Point) {
     const start = points[0], end = points.at(-1)!, d = sub(end.model, start.model)
@@ -250,9 +349,12 @@ export function drawDimensions(ctx: IsoContext) {
     const corner = corners.find(c => dot2(sub2(c, mid), ext) <= 0) ?? corners[0]
     return ctx.place.cost([start.page, corner, end.page] as Poly, o => leg.runs.some(r => r.id === o.owner), { pipe: 40, line: 1 })
   }
-  /** The offset construction of a skewed leg; `chainExt` is the side its chain dimensions took, if it has them. */
+  /**
+   * The offset construction of a skewed leg, a hatched triangle per plane with its legs and angle; `chainExt` is the
+   * side its chain dimensions took, if it has them.
+   */
   function offset(leg: Leg, points: Station[], chainExt?: Point) {
-    const start = points[0], end = points.at(-1)!, d = sub(end.model, start.model), total = length(d)
+    const start = points[0], end = points.at(-1)!, d = sub(end.model, start.model), total = measure(start, end)
     if (total < 1) return
     const owner = leg.runs[0].id
     const comps = [0, 1, 2].filter(i => Math.abs(d[i]) > 0.5)
@@ -263,7 +365,7 @@ export function drawDimensions(ctx: IsoContext) {
     const step = (from: Point, i: number): Point => add2(from, scale2(unitAxis(i), d[i] * k))
     // A plane offset is one right triangle; a rolling offset is a horizontal triangle (the travel in plan) and a
     // vertical one (the rise), drawn as the reference sheets do.
-    const horizontal = comps.filter(i => i !== 2).sort((a, b) => Math.abs(d[b]) - Math.abs(d[a])), rises = comps.includes(2)
+    const horizontal = comps.filter(i => i !== 2).sort((a, b) => Math.abs(d[b]) - Math.abs(d[a]))
     const centre0 = lerp2(start.page, end.page, 0.5)
     // Each leg, the length along its axis, and the axis its lettering stands on (the triangle's other axis).
     const legs: Array<[Point, Point, number, number]> = []
