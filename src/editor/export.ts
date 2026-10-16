@@ -36,7 +36,6 @@ import {
   cutCsv,
   weldCsv,
   validateIso,
-  styleOf,
   round,
   welds,
   csv,
@@ -47,7 +46,6 @@ import {
   displayBom,
 } from "../core/model";
 import { createDrawing, drawingSvg, weightOf, type Drawing, type Primitive } from "../core/drawing";
-import { defaultGrid, GRID_ORIGIN, gridLines } from "../core/grid";
 
 const hex = (value: string) =>
   rgb(...([1, 3, 5].map((i) => parseInt(value.slice(i, i + 2), 16) / 255) as [number, number, number]));
@@ -229,27 +227,8 @@ export async function exportPdf(doc: IsoDocument): Promise<Blob> {
       const scale = Math.min(width / d.width, height / d.height),
         ox = (width - d.width * scale) / 2,
         oy = (height - d.height * scale) / 2;
+      // The drafting grid is an editing aid: issued sheets never print it.
       page.drawRectangle({ x: 0, y: 0, width, height, color: rgb(1, 1, 1) });
-      const settings = doc.grid ?? defaultGrid();
-      // Graph paper prints only on to-scale sheets; production isometrics are not to scale.
-      const grid = settings.visible && styleOf(doc).layout === "scale"
-        ? gridLines(d, GRID_ORIGIN, settings, doc.units)
-        : null;
-      for (const l of grid?.lines ?? [])
-        page.drawLine({
-          start: { x: ox + l.a[0] * scale, y: height - oy - l.a[1] * scale },
-          end: { x: ox + l.b[0] * scale, y: height - oy - l.b[1] * scale },
-          thickness: (l.major ? 0.85 : 0.6) * scale,
-          color: l.major ? rgb(0.647, 0.784, 0.875) : rgb(0.776, 0.859, 0.918),
-        });
-      if (grid)
-        page.drawText(grid.caption, {
-          x: ox + (d.area[0] + 5) * scale,
-          y: height - oy - (d.area[1] + 17) * scale,
-          size: 10 * scale,
-          font,
-          color: rgb(0.31, 0.447, 0.537),
-        });
       await drawPrimitives(page, d, font, { x: ox, y: height - oy, scale });
       if (issues.length)
         page.drawText("DRAFT - FABRICATION DATA INCOMPLETE", {
