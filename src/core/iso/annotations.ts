@@ -204,7 +204,7 @@ export function drawAnnotations(ctx: IsoContext) {
       const n = getNode(ctx.doc, id)
       return n.kind === 'olet' || n.kind === 'tee' && n.branchEdgeId === run.id && connected(ctx.doc, id).some(r => r.id !== run.id && r.nps !== run.nps)
     }
-    if ([leg.nodes[0], leg.nodes.at(-1)!].some(id => getNode(ctx.doc, id).kind === 'olet') && leg.runs.every(r => r.connector)) continue
+    if (leg.nodes.some(id => getNode(ctx.doc, id).kind === 'olet' || !!getNode(ctx.doc, id).associatedRunId) && leg.runs.every(r => r.connector)) continue
     const branch = branchAt(leg.nodes[0], leg.runs[0]) || branchAt(leg.nodes.at(-1)!, leg.runs.at(-1)!)
     leg.runs.forEach((run, i) => {
       const changed = i > 0 && run.nps !== leg.runs[i - 1].nps
