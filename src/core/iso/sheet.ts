@@ -1,5 +1,5 @@
 import type { Point, Primitive } from '../drawing'
-import { sheetInfoOf, titleBlockOf, type IsoDocument } from '../model'
+import { sheetInfoOf, styleOf, titleBlockOf, type IsoDocument } from '../model'
 import { measureText, strokeText } from '../stroke-font'
 import { viewProject } from './layout'
 
@@ -403,6 +403,18 @@ export function drawSheet(input: {
     title(label, x0 + 14.5, y, labelSize, 'start', x1 - x0 - 16)
     title(up(value), (x0 + x1) / 2, 1559, valueSize, 'middle', x1 - x0 - 8)
   }
+  // A set of several spools names each sheet's spool and its place in the set, right of the box labels; a sheet
+  // not drawn to scale says so under its drawing number. A single to-scale sheet keeps the issued layout.
+  const flush = (value: string, x0: number, x1: number, y: number, size: number) => {
+    const room = x1 - x0 - 14, w = Math.min(room, measureText(value, size) / kx)
+    title(value, x1 - 12 - w, y, size, 'start', room)
+  }
+  const spools = [...new Set(doc.runs.map(r => r.spool))], sheetNo = spools.indexOf(spool)
+  if (spools.length > 1 && sheetNo >= 0) {
+    flush(`SPOOL ${up(spool)}`, 1617 + 14.5 + measureText('LINE No.', 13) / kx + 20, 1923.5, 1499, 11)
+    flush(`SHEET ${sheetNo + 1} OF ${spools.length}`, 1923.5 + 14.5 + measureText('DRAWING No.', 13) / kx + 20, 2252.5, 1497, 11)
+  }
+  if (styleOf(doc).layout === 'schematic') flush('SCALE: NTS', 2252.5 - 160, 2252.5, 1590, 10)
 
   const viewport = rect([LEFT + GAP, TOP + GAP, RIGHT - GAP, TB - GAP])
   const clip = (r: SheetRect): SheetRect =>

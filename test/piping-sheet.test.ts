@@ -102,6 +102,19 @@ test('viewport and exclusions stay inside the border and clear of the title bloc
   assert.equal(frame(document(), rows(7), 'front').primitives.filter(p => p.layer === 'TEXT').length, 0, 'no north symbol on an elevation');
 });
 
+test('a set of spools numbers its sheets and names each spool; a not-to-scale sheet says so', () => {
+  const d = document();
+  const end = d.nodes.find(n => d.runs[0].to === n.id)!;
+  appendRun(d, end.id, [0, 1000, 0], 'CS40', 2, 'S2', '');
+  d.style = { layout: 'schematic', weldNumbers: false, lettering: 'cad' };
+  const second = texts(drawSheet({ doc: d, spool: 'S2', width: sheetWidth(d), height: 850, rows: rows(3) }).primitives, 'TITLE');
+  for (const s of ['SPOOL S2', 'SHEET 2 OF 2', 'SCALE: NTS']) assert.ok(second.some(t => t.text === s), s);
+  for (let i = 0; i < second.length; i++)
+    for (let j = i + 1; j < second.length; j++) assert.ok(!overlap(box(second[i]), box(second[j])), `${second[i].text} clear of ${second[j].text}`);
+  const single = texts(frame({ ...document(), style: { layout: 'scale', weldNumbers: false, lettering: 'cad' } }).primitives, 'TITLE').map(t => t.text);
+  assert.ok(!single.some(t => /^SPOOL |^SHEET |NTS/.test(t)), 'a single to-scale sheet keeps the issued title block');
+});
+
 test('the north arrow points along plant north as the view draws it, and turns with the model', async () => {
   const { viewProject } = await import('../src/core/iso/layout.ts');
   for (const [north, view] of [[0, 'iso'], [90, 'iso'], [45, 'iso'], [30, 'plan']] as const) {
