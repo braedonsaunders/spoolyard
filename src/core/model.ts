@@ -651,7 +651,7 @@ export function defaultEndPrep(spec: PipeSpec, nps: number): EndPrep {
 }
 export function setAutoFitting(doc: IsoDocument, nodeId: string): void {
   const node = getNode(doc, nodeId), edges = connected(doc, nodeId)
-  if (!['end', 'weld', 'elbow90', 'elbow45', 'tee'].includes(node.kind)) return
+  if (!['end', 'weld', 'elbow90', 'elbow45', 'tee'].includes(node.kind) && !(node.kind === 'valve' && /^F-CPLGS[WC]$/.test(node.component ?? ''))) return
   const vectors = edges.map(r => sub(getNode(doc, r.from === nodeId ? r.to : r.from).position, node.position))
   const cosine = (i: number, j: number) => vectors[i].reduce((sum, v, k) => sum + v * vectors[j][k], 0) / (length(vectors[i]) * length(vectors[j]))
   const changeKind = (kind: Kind) => {
@@ -680,7 +680,12 @@ export function setAutoFitting(doc: IsoDocument, nodeId: string): void {
   } else if (edges.length === 2) {
     const angle = Math.acos(Math.max(-1, Math.min(1, cosine(0, 1)))) * 180 / Math.PI
     if (Math.abs(angle - 180) < 0.1) {
-      changeKind('weld')
+      // Socket-weld and threaded pipe cannot be joined end to end: a straight joint between them is a coupling.
+      const prep = edges.map(r => prepAtNode(r, nodeId)).find(p => p === 'SW' || p === 'THD')
+      if (prep && edges[0].nps === edges[1].nps) {
+        changeKind('valve')
+        choose('valve', edges[0], undefined, prep === 'SW' ? 'F-CPLGSW' : 'F-CPLGSC')
+      } else changeKind('weld')
       return
     }
     const bend = 180 - angle, kind = Math.abs(bend - 45) < 0.1 ? 'elbow45' : 'elbow90'
@@ -1068,6 +1073,8 @@ export function validateIso(doc: IsoDocument): string[] {
       if (new Set(tags).size > 1) issues.push(`${at}one butt weld has two different weld numbers. Keep one.`)
       if (prepAtNode(edges[0], n.id) !== prepAtNode(edges[1], n.id))
         issues.push(`${at}the two pipe ends at one butt weld have different end preparations.`)
+      else if (['SW', 'THD'].includes(prepAtNode(edges[0], n.id)) && !edges.some(r => r.connector))
+        issues.push(`${at}two ${prepAtNode(edges[0], n.id) === 'SW' ? 'socket-weld' : 'threaded'} pipes meet end to end with nothing joining them. Insert a coupling, or draw them as one pipe.`)
       if ((edges[0].rootGap ?? getSpec(doc, edges[0].specId).rootGap) !== (edges[1].rootGap ?? getSpec(doc, edges[1].specId).rootGap))
         issues.push(`${at}the two pipe ends at one butt weld have different root gaps.`)
     }

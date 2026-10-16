@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
-import { appendRun, applyComponent, attachComponent, clone, getNode, newIso, runResult, validateIso, welds, type IsoDocument, type PipeSpec } from '../src/core/model.ts';
+import { appendRun, applyComponent, attachComponent, bom, clone, getNode, newIso, runResult, validateIso, welds, type IsoDocument, type PipeSpec } from '../src/core/model.ts';
 import { standardRow } from '../src/core/standards.ts';
 import { COMPONENT_TYPES } from '../src/core/components.ts';
 import { placeComponentOnPipe } from '../src/core/component-position.ts';
@@ -101,6 +101,28 @@ test('slip-on flanges take two fillet welds; olets and welded supports take thei
   appendRun(valve, null, [2000, 0, 0], 'A', 3, 'SP', 'L');
   placeComponentOnPipe(valve, valve.runs[0].id, COMPONENT_TYPES.find(t => t.code === 'GATE-FL')!, 0.5);
   assert.deepEqual(welds(valve).map(w => w.type), ['SO', 'SO', 'SO', 'SO']);
+});
+
+test('socket-weld and threaded pipe drawn straight on is joined by a coupling, never by a phantom weld', () => {
+  for (const [prep, code] of [['SW', 'F-CPLGSW'], ['THD', 'F-CPLGSC']] as const) {
+    const doc = newIso(); doc.specs = [clone(specA)];
+    const joint = appendRun(doc, null, [300, 0, 0], 'A', 1, 'SP', 'L', prep);
+    appendRun(doc, joint.id, [300, 0, 0], 'A', 1, 'SP', 'L', prep);
+    assert.equal(joint.component, code);
+    assert.equal(joint.catalogId, row(doc, code, 1).id);
+    assert.ok(bom(doc).some(r => r.description === row(doc, code, 1).description));
+    assert.equal(welds(doc).length, prep === 'SW' ? 2 : 0);
+    assert.deepEqual(validateIso(doc), []);
+    // A drawing that still joins them with a bare weld is flagged and lists no weld there.
+    Object.assign(joint, { kind: 'weld' }); delete joint.component; delete joint.catalogId;
+    assert.match(validateIso(doc).join(), new RegExp(`two ${prep === 'SW' ? 'socket-weld' : 'threaded'} pipes meet end to end`));
+    assert.equal(welds(doc).length, 0);
+  }
+  // Butt-weld pipe drawn straight on is one butt weld, as before.
+  const bw = newIso(); bw.specs = [clone(specA)];
+  const weld = appendRun(bw, null, [300, 0, 0], 'A', 4, 'SP', 'L');
+  appendRun(bw, weld.id, [300, 0, 0], 'A', 4, 'SP', 'L');
+  assert.equal(weld.kind, 'weld');
 });
 
 test('a slip-on flange sets the pipe back a wall and 1/16" from its face', () => {
