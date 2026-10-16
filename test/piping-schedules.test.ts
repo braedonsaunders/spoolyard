@@ -7,7 +7,7 @@ import { flangedJoints, matingFlange } from '../src/core/joints.ts';
 import { draftLength } from '../src/core/format.ts';
 import { sheetMaterials } from '../src/core/material-list.ts';
 import {
-  allowanceText, cutCsv, cutSchedule, lengthText, materialCsv, materialSchedule, pipeEnd, scheduleText, weldCsv, weldRow, weldSchedule
+  allowanceText, cutCsv, cutSchedule, lengthText, materialCsv, overallText, materialSchedule, pipeEnd, scheduleText, weldCsv, weldRow, weldSchedule
 } from '../src/core/schedules.ts';
 
 test('welds are numbered in sequence along each spool, not in the order the pipes were drawn', () => {
@@ -99,6 +99,8 @@ test('cut overalls run between the sheet dimension points, with the pipe end pre
   assert.equal(allowanceText(193.67, 'mm'), '193.7');
   assert.equal(lengthText(25.4 * 15.5, 'imperial'), `1'-3 1/2"`);
   assert.equal(lengthText(630.2, 'mm'), '630');
+  // Overalls read as the sheet's dimensions do, in inches below two feet.
+  assert.equal(overallText(25.4 * 15, 'imperial'), '15"');
   assert.equal(lengthText(NaN, 'mm'), '—');
 });
 

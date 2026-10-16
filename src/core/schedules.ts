@@ -19,6 +19,8 @@ export const UNKNOWN = '—'
 export const lengthUnits = (units: Units) => units === 'mm' ? 'millimetres' : 'feet and inches'
 /** A length as the sheets write it: whole millimetres, or feet-inches to 1/16". */
 export const lengthText = (mm: number, units: Units) => Number.isFinite(mm) ? draftLength(mm, units) : UNKNOWN
+/** An overall as the sheet dimensions it: inches below two feet. */
+export const overallText = (mm: number, units: Units) => Number.isFinite(mm) ? draftLength(mm, units, 24) : UNKNOWN
 /** A takeout or root gap: tenths of a millimetre, or inches to 1/16" (decimal inches only where that reads zero). */
 export function allowanceText(mm: number, units: Units): string {
   if (!Number.isFinite(mm)) return UNKNOWN
@@ -227,7 +229,7 @@ export function cutCsv(doc: IsoDocument): string {
       'Start gap' + u, 'End gap' + u, 'Cut' + u, 'Start end', 'End end'],
     ...cutSchedule(doc).map(r => [
       r.drawing, r.spool, r.item, `${r.piece} of ${r.pieces}`, sizeText(r.run.nps), r.run.specId, r.run.line, r.run.heat,
-      csvLength(r.overall, doc.units), ...r.takeouts.map(v => csvAllowance(v, doc.units)), ...r.gaps.map(v => csvAllowance(v, doc.units)),
+      Number.isFinite(r.overall) ? overallText(r.overall, doc.units) : '', ...r.takeouts.map(v => csvAllowance(v, doc.units)), ...r.gaps.map(v => csvAllowance(v, doc.units)),
       r.uncut ? 'NOT CUT' : r.cut > 0 ? csvLength(r.cut, doc.units) : '', ...r.ends
     ])
   ])

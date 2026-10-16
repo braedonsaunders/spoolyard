@@ -80,7 +80,7 @@ import {
   allowanceText,
   cutSchedule,
   cutText,
-  lengthText,
+  overallText,
   lengthUnits,
   materialCsv,
   materialSchedule,
@@ -2300,7 +2300,7 @@ export function IsometricEditor({
                     <td>{c.spool}</td>
                     <td>{pieceText(c)}</td>
                     <td>{sizeText(c.run.nps)}</td>
-                    <td>{lengthText(c.overall, doc.units)}</td>
+                    <td>{overallText(c.overall, doc.units)}</td>
                     <td>{c.takeouts.map((v) => allowanceText(v, doc.units)).join(" + ")}</td>
                     <td>{c.gaps.map((v) => allowanceText(v, doc.units)).join(" + ")}</td>
                     <td>{cutText(c, doc.units)}</td>
