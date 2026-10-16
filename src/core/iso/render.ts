@@ -6,7 +6,7 @@ import { SIZE, type IsoContext, type RunGeometry } from './context'
 import { drawDimensions } from './dimensions'
 import { drawAnnotations } from './annotations'
 import { layoutDirection, layoutSheet, tangles, untangle, viewProject, type Layout, type LegShape, type View } from './layout'
-import { clipOutside, Placement, textPoly, type Rect } from './placement'
+import { clipOutside, overlaps, Placement, rectPoly, segmentPoly, textPoly, type Rect } from './placement'
 import { unit2, unit3 } from './plane'
 import { drawPipes } from './symbols'
 
@@ -98,31 +98,39 @@ export function renderIso(
     }
   }
   const layout = layoutSheet(doc, runs, nodes, facing, schematic, base, shape)
-  const fit: SheetFit = model ? { centre: [0, 0], scale: 0.3 } : hold ? { ...hold, base } : schematic ? { ...fitOf(layout), base, ...shape } : fitOf(layout)
+  let fit: SheetFit = model ? { centre: [0, 0], scale: 0.3 } : hold ? { ...hold, base } : schematic ? { ...fitOf(layout), base, ...shape } : fitOf(layout)
   const cx = model ? 550 : (fitArea[0] + fitArea[2]) / 2, cy = model ? 425 : (fitArea[1] + fitArea[3]) / 2
-  const toSheet = (q: Point): Point => [(q[0] - fit.centre[0]) * fit.scale + cx, (q[1] - fit.centre[1]) * fit.scale + cy]
-  const pos = new Map([...layout.raw].map(([id, p]) => [id, toSheet(p)] as [string, Point]))
-  const project = (p: Vec3) => toSheet(layout.rawProject(p))
   const axis = (v: Vec3) => unit2(viewProject(v, facing, doc.north))
   const direction = (v: Vec3) => (schematic ? layoutDirection : viewProject)(v, facing, doc.north)
-  const geometry = new Map<string, RunGeometry>()
-  for (const run of runs) {
-    const a = pos.get(run.from), b = pos.get(run.to)
-    if (!a || !b) continue
-    const d: Point = [b[0] - a[0], b[1] - a[1]], length = Math.hypot(...d)
-    const pa = getNode(doc, run.from).position, pb = getNode(doc, run.to).position
-    geometry.set(run.id, { run, a, b, dir: length ? [d[0] / length, d[1] / length] : [1, 0], length, dir3: unit3([pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]]) })
+  const paint = (fit: SheetFit) => {
+    const toSheet = (q: Point): Point => [(q[0] - fit.centre[0]) * fit.scale + cx, (q[1] - fit.centre[1]) * fit.scale + cy]
+    const pos = new Map([...layout.raw].map(([id, p]) => [id, toSheet(p)] as [string, Point]))
+    const project = (p: Vec3) => toSheet(layout.rawProject(p))
+    const geometry = new Map<string, RunGeometry>()
+    for (const run of runs) {
+      const a = pos.get(run.from), b = pos.get(run.to)
+      if (!a || !b) continue
+      const d: Point = [b[0] - a[0], b[1] - a[1]], length = Math.hypot(...d)
+      const pa = getNode(doc, run.from).position, pb = getNode(doc, run.to).position
+      geometry.set(run.id, { run, a, b, dir: length ? [d[0] / length, d[1] / length] : [1, 0], length, dir3: unit3([pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]]) })
+    }
+    const ctx: IsoContext = {
+      doc, spool, view: facing, style, runs, nodes, pos, project, axis, direction, geometry,
+      place: new Placement(viewport, exclusions), materials, joints, extent: new Map(), out: []
+    }
+    // Free notes stay where the drafter put them, so every label is placed clear of them.
+    for (const note of doc.sheetNotes ?? [])
+      if (note.spool === spool || !spool) ctx.place.add(textPoly(note.at, note.text.toUpperCase(), SIZE.text, 0, 0, 'start', 1), 'text', note.id)
+    drawPipes(ctx)
+    drawDimensions(ctx)
+    drawAnnotations(ctx)
+    return ctx
   }
-  const ctx: IsoContext = {
-    doc, spool, view: facing, style, runs, nodes, pos, project, axis, direction, geometry,
-    place: new Placement(viewport, exclusions), materials, joints, extent: new Map(), out: []
-  }
-  // Free notes stay where the drafter put them, so every label is placed clear of them.
-  for (const note of doc.sheetNotes ?? [])
-    if (note.spool === spool || !spool) ctx.place.add(textPoly(note.at, note.text.toUpperCase(), SIZE.text, 0, 0, 'start', 1), 'text', note.id)
-  drawPipes(ctx)
-  drawDimensions(ctx)
-  drawAnnotations(ctx)
+  let ctx = paint(fit)
+  // The picture keeps off the north symbol, bill of materials and notes, and inside the frame: when its constructions
+  // reach them, the sheet is drawn again a little smaller.
+  for (let i = 0; i < 3 && sheet && !hold && intrudes(ctx.out, viewport, exclusions); i++) ctx = paint(fit = { ...fit, scale: fit.scale * 0.9 })
+  const pos = ctx.pos, project = ctx.project
   // Thin drafting lines break around lettering, as drafted, so a dimension or leader never strikes through text.
   const lettering = ctx.out.flatMap(p => p.type === 'text' && p.layer !== 'SYMBOL' ? [textPoly(p.p, p.text, p.size, p.rotation, p.oblique, p.anchor, 1.2)] : [])
   const drawn = crossingGaps(ctx).flatMap(p => {
@@ -144,6 +152,16 @@ export function renderIso(
     view: facing,
     lettering: style.lettering
   }
+}
+/** Whether any drawn line leaves the model viewport or reaches into an area the picture keeps off. */
+export function intrudes(out: Primitive[], viewport: Rect, exclusions: Rect[]): boolean {
+  const keepOut = exclusions.map(e => rectPoly(...e))
+  return out.some(p => {
+    if (p.type !== 'line' && p.type !== 'polyline') return false
+    const pieces: Array<[Point, Point]> = p.type === 'line' ? [[p.a, p.b]] : p.points.slice(1).map((q, i) => [p.points[i], q])
+    return pieces.some(([a, b]) => [a, b].some(q => q[0] < viewport[0] || q[0] > viewport[2] || q[1] < viewport[1] || q[1] > viewport[3]) ||
+      keepOut.some(e => overlaps(segmentPoly(a, b, 0.5), e)))
+  })
 }
 /** Breaks in the pipe behind where two pipes cross (0.25 in) and in a leader where it crosses a pipe. */
 const PIPE_GAP = 850 / 11 * 0.25, LEADER_GAP = 850 / 11 * 0.08

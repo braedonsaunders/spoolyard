@@ -135,6 +135,25 @@ test('where two pipes cross on the sheet the one behind is broken, and leaders b
   for (const l of segments('LEADER')) for (const p of segments('PIPE')) assert.ok(l.owner === p.owner || !crosses(l, p), 'a leader crosses a pipe unbroken');
 });
 
+test('the picture keeps off the north symbol, bill of materials and notes', async () => {
+  const { intrudes } = await import('../src/core/iso/render.ts');
+  const { drawSheet } = await import('../src/core/iso/sheet.ts');
+  const { sheetWidth } = await import('../src/core/drawing.ts');
+  const { sheetMaterials } = await import('../src/core/material-list.ts');
+  const viewport: [number, number, number, number] = [10, 10, 1000, 700], bom: [number, number, number, number] = [800, 10, 1000, 300];
+  const line = (a: Point, b: Point): Primitive => ({ type: 'line', a, b, layer: 'DIM' });
+  assert.equal(intrudes([line([100, 100], [700, 200])], viewport, [bom]), false);
+  assert.equal(intrudes([line([100, 100], [850, 200])], viewport, [bom]), true, 'into the BOM');
+  assert.equal(intrudes([line([100, 100], [100, 750])], viewport, [bom]), true, 'off the sheet');
+  // Every drawn line of a sheet stays clear of the frame's areas.
+  const doc = newIso();
+  let at = appendRun(doc, null, [-1500, 1500, 0], 'CS40', 3, 'SP-1', 'L-1');
+  at = appendRun(doc, at.id, [900, 900, 0], 'CS40', 3, 'SP-1', 'L-1');
+  appendRun(doc, at.id, [0, 0, 1800], 'CS40', 3, 'SP-1', 'L-1');
+  const d = draw(doc), frame = drawSheet({ doc, spool: 'SP-1', width: sheetWidth(doc), height: 850, rows: sheetMaterials(doc, 'SP-1') });
+  assert.equal(intrudes(d.primitives.filter(p => !['TITLE', 'BOM', 'NOTES', 'BORDER', 'TEXT'].includes(p.layer)), frame.viewport, frame.exclusions), false);
+});
+
 test('no lettering overprints other lettering: two-line support labels, rolling offsets and free notes', async () => {
   const { attachComponent } = await import('../src/core/model.ts');
   const { textPoly, overlaps } = await import('../src/core/iso/placement.ts');
