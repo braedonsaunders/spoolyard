@@ -103,6 +103,12 @@ test('slip-on flanges take two fillet welds; olets and welded supports take thei
   assert.deepEqual(welds(valve).map(w => w.type), ['SO', 'SO', 'SO', 'SO']);
 });
 
+test('a slip-on flange sets the pipe back a wall and 1/16" from its face', () => {
+  assert.equal(standardRow('FLG-RFSO', 2, '150#', undefined, 'STD')!.takeout, 3.91 + 1.59);
+  assert.equal(standardRow('FLG-RFSO', 2, '150#', undefined, '10S')!.takeout, 2.77 + 1.59);
+  assert.equal(row(Object.assign(newIso(), { specs: [clone(specA)] }), 'FLG-RFSO', 2).takeout, 3.91 + 1.59);
+});
+
 test('standard sockolets, thredolets and plugs need no typed lengths', () => {
   assert.equal(standardRow('SOL', 1, '150#')!.takeout, 20.64);
   assert.equal(standardRow('TOL', 1, '150#')!.takeout, 15.88);

@@ -508,7 +508,8 @@ export function standardRow(code: string, nps: number, rating?: string | number,
     if (!f.soLength) return undefined
     if (type === 'SO') {
       const wall = pipeWall(nps, schedule ?? 'STD') ?? pipeWall(nps)
-      return wall == null ? undefined : row('flange', nps, wall, name, `${B165_SOURCE}; slip-on: pipe end set back from the face by one pipe wall`, { ...base, lengthThroughHub: f.soLength })
+      // The pipe end stands back a wall and 1/16 in so the bore fillet weld stays clear of the face (B31.3 Fig. 328.5.2B).
+      return wall == null ? undefined : row('flange', nps, wall + mm(1 / 16), name, `${B165_SOURCE}; slip-on: pipe end set back from the face by the pipe wall plus 1/16 in`, { ...base, lengthThroughHub: f.soLength })
     }
     if (type === 'SW')
       return f.socketDepth == null ? undefined : row('flange', nps, f.soLength - f.socketDepth, name, `${B165_SOURCE}; socket-weld: effective takeout = hub length less socket depth D`, { ...base, lengthThroughHub: f.soLength, socketDepth: f.socketDepth })
