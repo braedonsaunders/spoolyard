@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
-import { appendRun, applyComponent, attachComponent, bom, clone, getNode, newIso, parseIsoJson, runResult, validateIso, welds, type IsoDocument, type PipeSpec } from '../src/core/model.ts';
+import { appendRun, applyComponent, attachComponent, bom, clone, cutCsv, getNode, insertComponent, newIso, parseIsoJson, runResult, validateIso, welds, type IsoDocument, type PipeSpec } from '../src/core/model.ts';
+import { nodeItem } from '../src/core/joints.ts';
 import { sheetMaterials } from '../src/core/material-list.ts';
 import { standardRow } from '../src/core/standards.ts';
 import { COMPONENT_TYPES } from '../src/core/components.ts';
@@ -171,6 +172,43 @@ test('BOM rows can be bought from: olets by header and branch, lap-joint flanges
   assert.doesNotMatch(lj, /\bRF\b/);
   assert.match(lj, /A105/);
   assert.match(rows.find(r => r.category === 'stub')!.description, /^STUB END, LONG PATTERN, ASME B16\.9, BE, .*A234.*, STD\.$/);
+});
+
+test('a nipple is a pipe of catalogued length with finished ends, listed by count and never cut', () => {
+  const doc = newIso(); doc.specs = [clone(specA)];
+  appendRun(doc, null, [2000, 0, 0], 'A', 2, 'SP', 'L');
+  const tol = attachComponent(doc, doc.runs[0].id, 'olet', 0.5);
+  applyComponent(doc, tol, 'TOL', row(doc, 'TOL', 0.75));
+  const valve = appendRun(doc, tol.id, [0, 0, 200], 'A', 0.75, 'SP', 'L', 'THD');
+  const plug = appendRun(doc, valve.id, [0, 0, 150], 'A', 0.75, 'SP', 'L', 'THD');
+  applyComponent(doc, valve, 'GATE-SC', row(doc, 'GATE-SC', 0.75));
+  applyComponent(doc, plug, 'PLUG', row(doc, 'PLUG', 0.75));
+  const nipple = doc.runs[1];
+  // Placing a nipple on the pipe makes that pipe the nipple and moves the valve to suit its 3" length.
+  const at = placeComponentOnPipe(doc, nipple.id, COMPONENT_TYPES.find(t => t.code === 'NIPPLE')!, 0.5);
+  assert.equal(at.id, valve.id);
+  close(runResult(doc, nipple).cut, inch(3));
+  assert.deepEqual(validateIso(doc), []);
+  const rows = sheetMaterials(doc, 'SP');
+  const listed = rows.find(r => r.category === 'nipple')!;
+  assert.deepEqual([listed.qtyText, listed.nd, listed.description], ['1', '3/4"', 'NIPPLE, 3/4" X 3" LG, XS, A106 GR. B, TBE']);
+  assert.ok(!rows.some(r => r.category === 'pipe' && r.memberIds.includes(nipple.id)));
+  assert.ok(bom(doc).some(r => r.unit === 'ea' && r.description === listed.description));
+  assert.ok(!cutCsv(doc).includes(nipple.id));
+  // A nipple that no longer fits between its fittings is reported.
+  valve.position = [valve.position[0], valve.position[1], valve.position[2] + 20];
+  assert.match(validateIso(doc).join(), /nipple is 76\.2 mm long, but its fittings leave 96\.2 mm/);
+  assert.throws(() => parseIsoJson(JSON.stringify({ ...doc, runs: doc.runs.map(r => r.id === nipple.id ? { ...r, nipple: { length: -1 } } : r) })), /nipple/);
+});
+
+test('a nipple drawn as an in-line component takes the specification nipple length', () => {
+  const doc = newIso(); doc.specs = [clone(specA)];
+  appendRun(doc, null, [500, 0, 0], 'A', 0.75, 'SP', 'L', 'THD');
+  const node = insertComponent(doc, doc.runs[0].id, 'valve', 0.5);
+  Object.assign(node, { component: 'NIPPLE' });
+  close(nodeItem(doc, node)!.takeout, inch(1.5));
+  assert.match(sheetMaterials(doc, 'SP').find(r => r.category === 'nipple')!.description, /^NIPPLE, 3\/4" X 3" LG, XS, A106 GR\. B, TBE$/);
+  assert.deepEqual(validateIso(doc), []);
 });
 
 test('a slip-on flange sets the pipe back a wall and 1/16" from its face', () => {

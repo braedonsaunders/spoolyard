@@ -1,7 +1,7 @@
 import { COMPONENT_TYPE_BY_CODE } from './components'
 import { flangedJoints, isFlangePair, nodeCode, nodeItem, type FlangedJoint } from './joints'
-import { boltSizeText, draftLength, purchaseLength, sizeText } from './format'
-import { connected, flatSideText, getNode, getSpec, runResult, type CatalogItem, type IsoDocument, type PipeNode, type PipeRun } from './model'
+import { boltSizeText, compose, draftLength, purchaseLength, schedule, sizeText } from './format'
+import { connected, flatSideText, getNode, getSpec, nippleDescription, runResult, type CatalogItem, type IsoDocument, type PipeNode, type PipeRun } from './model'
 
 export type MaterialCategory =
   | 'pipe' | 'cap' | 'nipple' | 'bend' | 'elbow90' | 'elbow45' | 'stub' | 'reducer' | 'tee' | 'olet' | 'regulator'
@@ -35,9 +35,6 @@ export interface MaterialRow {
 /** A full mill random length (20 ft, 6 m) is used as it comes, not cut. */
 const RANDOM_LENGTH = { imperial: 240 * 25.4 - 1, mm: 6000 - 1 }
 const KERF = 3.175
-const compose = (...parts: Array<string | undefined>) =>
-  parts.map(p => p?.trim()).filter(Boolean).join(', ').toUpperCase()
-const schedule = (text?: string) => !text ? '' : /^(sch|std|xs|xxs)/i.test(text) ? text : 'SCH ' + text
 /** The drawing text of a catalogue row: its own BOM text, else description, material, schedule and rating. */
 export function rowDescription(item: CatalogItem | undefined, fallback: string): string {
   if (item?.bomDescription) return item.bomDescription.toUpperCase()
@@ -121,6 +118,12 @@ export function sheetMaterials(doc: IsoDocument, spool = ''): MaterialRow[] {
   const sizes = [...new Set(spoolRuns.filter(r => !r.connector).map(r => r.nps))].sort((a, b) => a - b)
   for (const run of sizes.flatMap(nps => routeOrder(doc, spoolRuns, nps).filter(r => !r.connector && r.nps === nps))) {
     const spec = getSpec(doc, run.specId), size = spec.sizes.find(s => s.nps === run.nps), cut = runResult(doc, run).cut
+    if (run.nipple) {
+      // A nipple is a bought piece, counted like a fitting.
+      const description = nippleDescription(doc, run)
+      add(JSON.stringify(['nipple', spec.id, run.nps, description]), { category: 'nipple', nd: sizeText(run.nps), description, qty: 0, size: run.nps }, run.id, 1)
+      continue
+    }
     const base = run.description?.toUpperCase() ?? size?.bomDescription?.toUpperCase() ??
       compose(size?.description ?? 'PIPE', size?.material ?? spec.material, schedule(size?.schedule ?? spec.schedule))
     const known = Number.isFinite(cut) && cut > 0

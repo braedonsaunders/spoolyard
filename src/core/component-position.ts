@@ -1,5 +1,5 @@
 import { COMPONENT_TYPES, type ComponentType } from './components';
-import { connected, getNode, getSpec, length, sub, add, mul, runResult, insertComponent, attachComponent, applyComponent, setAutoFitting, type CatalogItem, type IsoDocument, type PipeRun, type Vec3 } from './model';
+import { connected, getNode, getSpec, length, sub, add, mul, runResult, insertComponent, attachComponent, applyComponent, makeNipple, setAutoFitting, type CatalogItem, type IsoDocument, type PipeRun, type Vec3 } from './model';
 
 export interface ComponentTrack {
   /** Ends of the whole straight leg, between changes of direction, branches and open ends. */
@@ -127,6 +127,8 @@ export function placeComponentOnPipe(doc: IsoDocument, runId: string, type: Comp
   if (!run) throw new Error('Select a pipe to insert this component.');
   if (type.kind === 'pipe') throw new Error('Use the Pipe tool to route a pipe.');
   if (!(fraction >= 0 && fraction <= 1)) throw new Error('Click on the pipe to place this component.');
+  // A nipple is the clicked pipe itself, bought to its catalogued length.
+  if (type.code === 'NIPPLE') return getNode(doc, makeNipple(doc, runId).to);
   const specRows = getSpec(doc, run.specId).fittings;
   const code = (f: CatalogItem) => f.component ?? COMPONENT_TYPES.find(t => t.kind === f.kind)?.code;
   const match =

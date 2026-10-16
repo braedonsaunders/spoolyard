@@ -1,5 +1,6 @@
 import { COMPONENT_TYPE_BY_CODE } from './components'
 import { bolting, ratingClass, standardRow, stubEnd as standardStub } from './standards'
+import { compose, draftLength, schedule, sizeText } from './format'
 import {
   add, connected, fitting, getNode, getSpec, length, mul, sub,
   type CatalogItem, type EndPrep, type IsoDocument, type Kind, type PipeNode, type PipeRun, type PipeSpec, type Vec3
@@ -35,11 +36,46 @@ export const specFace = (spec: PipeSpec): 'RF' | 'FF' =>
 const sameBranch = (f: CatalogItem, nps: number, smallerNps?: number) =>
   smallerNps == null || smallerNps === nps ? !f.smallerNps || f.smallerNps === nps : f.smallerNps === smallerNps
 
+const NIPPLE_LENGTH = 'Screwed/Socket Weld General Parameters.Pipe Nipple Length'
+/** A nipple's catalogued length (mm): the specification's nipple row, else its Pipe Nipple Length (in). */
+export function nippleLength(spec: PipeSpec, nps: number): number | undefined {
+  const own = spec.nipples?.find(n => n.nps === nps)?.length
+  if (own && own > 0) return own
+  const inches = Number(spec.parameters?.[NIPPLE_LENGTH])
+  return inches > 0 ? inches * 25.4 : undefined
+}
+/** Nipple end finish from the end preparations: threaded both ends, plain one end, plain or bevelled both ends. */
+export function nippleEnds(a: EndPrep, b: EndPrep): string {
+  const threaded = [a, b].filter(p => p === 'THD').length, bevelled = [a, b].filter(p => p === 'BW').length
+  return threaded === 2 ? 'TBE' : threaded ? 'POE' : bevelled === 2 ? 'BBE' : bevelled ? 'BOE' : 'PBE'
+}
+/**
+ * BOM text of a nipple: size by length (catalogued in inches, as its size is), schedule, material and ends, e.g.
+ * NIPPLE, 3/4" X 3" LG, XS, A106 GR. B, TBE.
+ */
+export function nippleText(spec: PipeSpec, nps: number, length: number, ends: string): string {
+  const own = spec.nipples?.find(n => n.nps === nps), size = spec.sizes.find(s => s.nps === nps)
+  if (own?.bomDescription) return own.bomDescription.toUpperCase()
+  return compose(own?.description ?? 'NIPPLE', `${sizeText(nps)} X ${draftLength(length, 'imperial', Infinity)} LG`, schedule(own?.schedule ?? size?.schedule ?? spec.schedule),
+    own?.material ?? size?.material ?? spec.material, ends)
+}
+/** A nipple placed as an in-line component (older drawings) takes half its catalogued length each side. */
+function nippleRow(spec: PipeSpec, nps: number, named?: CatalogItem): CatalogItem | undefined {
+  const length = nippleLength(spec, nps)
+  if (!length) return named
+  return {
+    ...named, id: named?.id ?? `std:NIPPLE:${nps}`, kind: 'valve', nps, component: 'NIPPLE', takeout: length / 2, faceToFace: length,
+    description: named?.description ?? nippleText(spec, nps, length, 'TBE'), takeoutMissing: undefined,
+    source: "Specification nipple length; takeout = half the nipple, whose ends carry the thread engagement"
+  }
+}
+
 /** A specification row with known dimensions, else the built-in ASME row for the same component. */
 export function catalogRow(spec: PipeSpec, code: string, nps: number, smallerNps?: number): CatalogItem | undefined {
   const rows = spec.fittings.filter(f => f.component === code && f.nps === nps && sameBranch(f, nps, smallerNps))
   const row = rows.find(f => !f.takeoutMissing)
   if (row) return row
+  if (code === 'NIPPLE') return nippleRow(spec, nps, rows[0])
   const pipe = spec.sizes.find(s => s.nps === nps), std = standardRow(code, nps, specRating(spec), smallerNps, pipe?.schedule ?? spec.schedule)
   if (!std) return rows[0]
   const named = rows[0], wrought = /^(W-|STUB-END|[CE]-RED$|REDELL$|LR180R$|SR180R$)/.test(code)

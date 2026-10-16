@@ -1,6 +1,6 @@
 import type { GridSettings } from './grid'
 import { COMPONENT_TYPES } from './components'
-import { defaultCode, flangedAllowance, flangedJoints, isFlangePair, matingFlange, nodeItem, pipeEndPrep } from './joints'
+import { defaultCode, flangedAllowance, flangedJoints, isFlangePair, matingFlange, nippleEnds, nippleLength, nippleText, nodeItem, pipeEndPrep } from './joints'
 import { boltSizeText } from './format'
 import { flange, pipeOd } from './standards'
 /** Spoolyard piping semantics (file schema id "bidwright-piping" is kept for compatibility). Coordinates and fabrication lengths are millimetres. */
@@ -93,7 +93,19 @@ export interface PipeSpec {
   revision?: string
   /** Free-form specification parameters, e.g. flange face, bolt type, small-bore start size. */
   parameters?: Record<string, string>
+  /** Pipe nipples by size: catalogued length (mm), schedule and material. */
+  nipples?: NippleRow[]
   branchChart?: Array<{ run: number; branch: number; code: string }>
+}
+export interface NippleRow {
+  nps: number
+  length: number
+  id?: string
+  schedule?: string
+  material?: string
+  description?: string
+  /** Verbatim drawing BOM text. */
+  bomDescription?: string
 }
 export interface PipeNode {
   id: string
@@ -241,6 +253,11 @@ export interface PipeRun {
   uncut?: boolean
   /** Bill-of-materials text for this pipe when it differs from its size's text in the specification. */
   description?: string
+  /**
+   * A pipe nipple: bought to the specification's catalogued length (or `length`, mm) with its ends finished, and listed
+   * by count rather than cut. Its ends (TBE, POE, PBE…) follow the end preparations.
+   */
+  nipple?: { length?: number }
 }
 export interface IsoDocument {
   schema: 'bidwright-piping'
@@ -807,6 +824,9 @@ export function insertComponent(
   delete r.toPrep
   delete r.toField
   delete r.toTag
+  // A nipple cut in two is two pipes.
+  delete r.nipple
+  delete next.nipple
   const oldEnd = getNode(doc, previous)
   if (oldEnd.portTakeouts?.[runId] != null) {
     oldEnd.portTakeouts[next.id] = oldEnd.portTakeouts[runId]
@@ -899,6 +919,30 @@ export function resizeRunToCut(doc: IsoDocument, runId: string, cut: number): vo
   if (!Number.isFinite(extra))
     throw new Error('Enter fitting takeouts before editing the cut length.')
   resizeRun(doc, runId, cut + extra)
+}
+/** A nipple pipe's catalogued length (mm, unknown without a catalogue entry) and its end finish. */
+export function nippleOf(doc: IsoDocument, run: PipeRun): { length?: number; ends: string } | undefined {
+  if (!run.nipple) return undefined
+  return { length: run.nipple.length ?? nippleLength(getSpec(doc, run.specId), run.nps), ends: nippleEnds(pipePrepAt(doc, run, 0), pipePrepAt(doc, run, 1)) }
+}
+/** BOM text of a nipple pipe; the pipe's own text if it has one. */
+export function nippleDescription(doc: IsoDocument, run: PipeRun): string {
+  const n = nippleOf(doc, run)!
+  return run.description?.toUpperCase() ?? nippleText(getSpec(doc, run.specId), run.nps, n.length ?? runResult(doc, run).cut, n.ends)
+}
+/**
+ * Make a pipe a nipple of its catalogued length (or `length`, mm). Where its fittings' takeouts are known the pipe is
+ * resized so the nipple fits, moving the route beyond it.
+ */
+export function makeNipple(doc: IsoDocument, runId: string, length?: number): PipeRun {
+  const run = doc.runs.find(r => r.id === runId)
+  if (!run || run.connector) throw new Error('Select a pipe to make it a nipple.')
+  if (length != null && !(length > 0)) throw new Error('Enter a positive nipple length.')
+  run.nipple = length != null ? { length } : {}
+  const want = nippleOf(doc, run)!.length, result = runResult(doc, run)
+  const extra = result.takeouts[0] + result.takeouts[1] + result.gaps[0] + result.gaps[1]
+  if (want && Number.isFinite(extra) && Math.abs(result.cut - want) > 0.01) resizeRun(doc, runId, want + extra)
+  return run
 }
 /** Spreadsheet-style letters provide a stable A..Z, AA..AZ weld sequence. */
 export function weldNumber(
@@ -1043,6 +1087,9 @@ export function validateIso(doc: IsoDocument): string[] {
         issues.push(
           `${r.spool}: a ${r.nps}″ pipe is ${formatLength(result.cut, doc.units)} after fitting allowances, so the fittings at its ends overlap. Move them apart or lengthen the pipe.`
         )
+      const nipple = nippleOf(doc, r)
+      if (nipple?.length && result.cut > 0 && Math.abs(result.cut - nipple.length) > 0.8)
+        issues.push(`${r.spool}: a ${r.nps}″ nipple is ${formatLength(nipple.length, doc.units)} long, but its fittings leave ${formatLength(result.cut, doc.units)} for it. Move them, or set the nipple's length.`)
       if (!r.spool.trim()) issues.push('A pipe has no spool number. Select it and enter one.')
     } catch (e) {
       issues.push(e instanceof Error ? e.message : String(e))
@@ -1193,13 +1240,15 @@ export function bom(
       size = s.sizes.find(size => size.nps === r.nps),
       v = runResult(doc, r),
       metres = Number.isFinite(v.cut) && v.cut > 0 ? v.cut / 1000 : NaN
+    // A nipple is bought by the piece.
+    const nipple = r.nipple ? nippleDescription(doc, r) : undefined
     addRow(
       {
-        description: `Pipe · ${size?.material || s.material} · Sch ${size?.schedule || s.schedule}`,
+        description: nipple ?? `Pipe · ${size?.material || s.material} · Sch ${size?.schedule || s.schedule}`,
         spec: s.id,
         nps: r.nps,
-        qty: metres,
-        unit: 'm',
+        qty: nipple ? 1 : metres,
+        unit: nipple ? 'ea' : 'm',
         weightKg:
           Number.isFinite(metres) && Number.isFinite(v.weightKg)
             ? v.weightKg
@@ -1214,7 +1263,7 @@ export function bom(
         spool: r.spool,
         line: r.line
       },
-      JSON.stringify([size?.od, size?.wall, size?.kgM]),
+      JSON.stringify([size?.od, size?.wall, size?.kgM, ...(nipple ? ['nipple'] : [])]),
       r.id
     )
   }
@@ -1602,7 +1651,10 @@ export function parseIsoJson(raw: string): IsoDocument {
         (typeof s.parameters !== 'object' ||
           Array.isArray(s.parameters) ||
           Object.keys(s.parameters).length > 500 ||
-          !Object.entries(s.parameters).every(([k, v]) => isString(k, 200) && isString(v))))
+          !Object.entries(s.parameters).every(([k, v]) => isString(k, 200) && isString(v)))) ||
+      (s.nipples != null && (!Array.isArray(s.nipples) || s.nipples.length > 500 ||
+        !s.nipples.every(n => isPlain(n) && positive(n.nps) && positive(n.length) &&
+          (['id', 'schedule', 'material', 'description', 'bomDescription'] as const).every(k => n[k] == null || isString(n[k])))))
     )
       throw new Error('Invalid pipe specification parameters.')
     const sizes = new Set<number>()
@@ -1663,6 +1715,8 @@ export function parseIsoJson(raw: string): IsoDocument {
       )
         throw new Error('Invalid end preparation.')
     if (r.description != null && !isString(r.description, 300)) throw new Error('Invalid pipe description.')
+    if (r.nipple != null && (!isPlain(r.nipple) || (r.nipple.length != null && !positive(r.nipple.length))))
+      throw new Error('Invalid pipe nipple.')
     for (const key of ['connector', 'fromField', 'toField', 'uncut'])
       if (
         r[key as keyof PipeRun] != null &&
@@ -1774,8 +1828,9 @@ export function cutCsv(doc: IsoDocument): string {
       'Start preparation',
       'End preparation'
     ],
+    // Nipples are bought to length, not cut.
     ...doc.runs
-      .filter(r => !r.connector)
+      .filter(r => !r.connector && !r.nipple)
       .map(r => {
         const c = runResult(doc, r)
         return [
