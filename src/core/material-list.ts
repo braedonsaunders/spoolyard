@@ -4,13 +4,14 @@ import { boltSizeText, draftLength, purchaseLength, sizeText } from './format'
 import { connected, getNode, getSpec, runResult, type CatalogItem, type IsoDocument, type PipeNode, type PipeRun } from './model'
 
 export type MaterialCategory =
-  | 'pipe' | 'cap' | 'nipple' | 'bend' | 'elbow90' | 'elbow45' | 'stub' | 'reducer' | 'tee' | 'olet' | 'regulator'
+  | 'pipe' | 'cap' | 'nipple' | 'bend' | 'elbow90' | 'elbow45' | 'stub' | 'hose' | 'reducer' | 'tee' | 'olet' | 'regulator'
   | 'reducing-coupling' | 'union' | 'flange' | 'bolt' | 'gasket' | 'valve' | 'other'
 /**
- * Issued order: pipe; fittings by type (caps; nipples and full couplings; bends; elbows; stub ends; reducers; tees and
- * laterals; olets; regulators; reducing couplings; unions); flanges, bolting, gaskets, valves; specialty items last.
+ * Issued order: pipe; fittings by type (caps; nipples and full couplings; bends; elbows; stub ends; hoses and hose
+ * adaptors; reducers; tees and laterals; olets; regulators; reducing couplings; unions); flanges, bolting, gaskets,
+ * valves; specialty items (relief valves, vessels) last.
  */
-const ORDER: MaterialCategory[] = ['pipe', 'cap', 'nipple', 'bend', 'elbow90', 'elbow45', 'stub', 'reducer', 'tee', 'olet', 'regulator',
+const ORDER: MaterialCategory[] = ['pipe', 'cap', 'nipple', 'bend', 'elbow90', 'elbow45', 'stub', 'hose', 'reducer', 'tee', 'olet', 'regulator',
   'reducing-coupling', 'union', 'flange', 'bolt', 'gasket', 'valve', 'other']
 /** 90° and 45° elbows share a place in the list and follow the order they appear along the line. */
 const rank = (c: MaterialCategory) => c === 'elbow45' ? ORDER.indexOf('elbow90') : ORDER.indexOf(c)
@@ -47,7 +48,9 @@ function categoryOf(kind: PipeNode['kind'], code = ''): MaterialCategory {
   if (/^STUB-END/.test(code)) return 'stub'
   if (/^R-CPLG/.test(code)) return 'reducing-coupling'
   if (/UNION/.test(code)) return 'union'
-  if (/NIPPLE|^F-CPLG/.test(code)) return 'nipple'
+  if (/NIPPLE|^F-CPLG|^CHICAGO/.test(code)) return 'nipple'
+  if (/^HOSE|^CAMLOCK-ADPT/.test(code)) return 'hose'
+  if (/^PSV|^PULS/.test(code)) return 'other'
   if (/REGUL/.test(code)) return 'regulator'
   if (/^TUBE$/.test(code)) return 'other'
   switch (kind) {
@@ -135,8 +138,12 @@ export function sheetMaterials(doc: IsoDocument, spool = ''): MaterialRow[] {
     const edges = connected(doc, node.id), host = edges[0] ?? doc.runs.find(r => r.id === node.associatedRunId)
     if (!host || (spool && !(edges.length ? edges : [host]).some(r => r.spool === spool))) continue
     const item = nodeItem(doc, node), code = nodeCode(doc, node) ?? item?.component ?? ''
-    const sizes = edges.map(r => r.nps), nps = item?.nps ?? Math.max(...sizes, host.nps)
-    const small = item?.smallerNps ?? (sizes.length > 1 ? Math.min(...sizes) : undefined)
+    if (COMPONENT_TYPE_BY_CODE[code]?.byOthers) continue
+    // An angle body is sized inlet by outlet, the outlet being its branch.
+    const outlet = COMPONENT_TYPE_BY_CODE[code]?.angle ? edges.find(r => r.id === node.branchEdgeId) : undefined
+    const inlet = outlet && edges.find(r => r !== outlet)
+    const sizes = edges.map(r => r.nps), nps = item?.nps ?? inlet?.nps ?? Math.max(...sizes, host.nps)
+    const small = item?.smallerNps ?? outlet?.nps ?? (sizes.length > 1 ? Math.min(...sizes) : undefined)
     const pair = isFlangePair(doc, node)
     // A flange the next drawing supplies is not listed here (its stub end is, with the joint).
     if (node.kind === 'flange' && !pair && node.jointSupply?.flange === false && !/^STUB-END/.test(code)) continue

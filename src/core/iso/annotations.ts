@@ -1,6 +1,6 @@
 import type { Point } from '../drawing'
 import { COMPONENT_TYPE_BY_CODE } from '../components'
-import { coordinateText, elevationText, sizeText } from '../format'
+import { coordinateText, draftLength, elevationText, sizeText } from '../format'
 import { nodeCode, type FlangedJoint } from '../joints'
 import { materialId } from '../material-list'
 import { connected, getNode, welds, type PipeNode, type PipeRun } from '../model'
@@ -8,7 +8,7 @@ import { measureText, LINE_SPACING } from '../stroke-font'
 import { SIZE, emitters, type IsoContext } from './context'
 import { overlaps, rectPoly, segmentPoly, textPoly, type Occupant, type Poly } from './placement'
 import { add2, dot2, left2, lerp2, planeText, scale2, sub2, unit2, uprightOf } from './plane'
-import { acrossOf } from './symbols'
+import { acrossOf, equipmentCode, equipmentEnd, insulation, insulationLimit, wallPenetration, weldPoint } from './symbols'
 import { sheetLegs } from './dimensions'
 
 interface Candidate { centre: Point; cost: number }
@@ -17,6 +17,8 @@ const overlapsSegment = (shape: Poly, a: Point, b: Point) => {
   const d = sub2(b, a), l = Math.hypot(...d)
   return l > 4 && overlaps(shape, segmentPoly(add2(a, scale2(d, 1.5 / l)), sub2(b, scale2(d, 3 / l)), 0.3))
 }
+/** Symbols that letter their own label: insulation, its limit, equipment and instrument bubbles. */
+const labelledSymbol = (code: string, text?: string) => insulation(code, text) || insulationLimit(code, text) || equipmentCode(code) || /^ISA/.test(code)
 const ANGLES = Array.from({ length: 16 }, (_, i) => i * Math.PI / 8)
 
 export function drawAnnotations(ctx: IsoContext) {
@@ -83,7 +85,7 @@ export function drawAnnotations(ctx: IsoContext) {
     for (const run of leg.runs) {
       const id = materialId(ctx.materials, run.id), g = ctx.geometry.get(run.id)
       if (!id || !g) continue
-      // On a riser the tag stands upright beside the pipe; elsewhere it lies in the pipe's isometric plane.
+      // The tag lies along the pipe in its isometric plane; on a riser it reads up the pipe.
       const across = vertical ? left2(g.dir) : acrossOf(ctx, g.dir, g.dir3)
       const label = String(id), w = measureText(label, T) + 4.5, h = T + 4
       let best: { cost: number; box: Poly; at: Point; foot: Point } | null = null
@@ -91,7 +93,7 @@ export function drawAnnotations(ctx: IsoContext) {
         for (const side of [1, -1])
           for (const gap of [9, 14, 20]) {
             const foot = lerp2(g.a, g.b, t), out = scale2(across, side * (gap + h / 2 + 1))
-            const at = add2(foot, out), u: Point = vertical ? [1, 0] : g.dir, v: Point = vertical ? [0, 1] : scale2(across, side)
+            const at = add2(foot, out), u = g.dir, v = scale2(across, side)
             const box: Poly = [add2(at, add2(scale2(u, -w / 2), scale2(v, -h / 2))), add2(at, add2(scale2(u, w / 2), scale2(v, -h / 2))),
               add2(at, add2(scale2(u, w / 2), scale2(v, h / 2))), add2(at, add2(scale2(u, -w / 2), scale2(v, h / 2)))]
             const cost = ctx.place.cost(box) * 2 + ctx.place.cost(segmentPoly(foot, add2(foot, scale2(v, gap)), 0.5), own(run.id)) + Math.abs(t - 0.5) * 6 + gap * 0.2
@@ -100,31 +102,50 @@ export function drawAnnotations(ctx: IsoContext) {
       if (!best) continue
       poly(best.box, 'TAG', run.id, { closed: true })
       ctx.place.add(best.box, 'tag', run.id)
-      const upright: Point = across[1] < 0 ? across : scale2(across, -1)
-      const { rotation, oblique } = vertical ? { rotation: 0, oblique: 0 } : planeText(g.dir, upright)
-      const baseline = vertical ? add2(best.at, [0, T / 2]) : add2(best.at, scale2(upright, -T / 2))
-      text(baseline, label, T, 'TAG', run.id, { rotation, oblique, anchor: 'middle' })
-      const edge = sub2(best.at, scale2(unit2(sub2(best.at, best.foot)), vertical ? w / 2 : h / 2))
+      // The number's baseline is half a letter below the box centre, whichever way its uprights turned out.
+      const turn = planeText(g.dir, across)
+      text(add2(best.at, scale2(uprightOf(turn), -T / 2)), label, T, 'TAG', run.id, { rotation: turn.rotation, oblique: turn.oblique, anchor: 'middle' })
+      const edge = sub2(best.at, scale2(unit2(sub2(best.at, best.foot)), h / 2))
       line(best.foot, edge, 'LEADER', run.id)
       ctx.place.addSegment(best.foot, edge, 'tag', run.id, 1.5)
     }
   }
-  // Fittings, valves and stub ends: a box with an arrowed leader.
+  /** A callout whose first line is a boxed BOM number: valves with their operator and tag, fittings with their size. */
+  function itemBlock(target: Point, id: number | undefined, lines: string[], owner: string, head = true) {
+    const block = callout(target, [...(id ? [String(id)] : []), ...lines], owner, { head })
+    if (!id) return
+    const w = measureText(String(id), T) + 4.5
+    poly(rectPoly(block.left - 2.2, block.top - 2, block.left - 2.2 + w, block.top + T + 2), 'TAG', owner, { closed: true })
+  }
+  // Fittings, valves and stub ends: a box with an arrowed leader. Where the size changes at the item, its size label
+  // stands under its number in one block; an olet adds its type.
+  const sizeLabelled = new Set<string>()
   for (const node of ctx.nodes) {
     const at = ctx.pos.get(node.id)
     if (!at || ['end', 'weld', 'annotation', 'support', 'gasket', 'bolt'].includes(node.kind)) continue
     const code = nodeCode(ctx.doc, node) ?? ''
     if (node.kind === 'flange' && !/^STUB-END/.test(code)) continue
-    const id = materialId(ctx.materials, node.id)
-    if (!id) continue
-    if (node.kind === 'valve' && (node.operator || node.tag)) {
-      const lines = [String(id), ...(node.operator ? [node.operator.toUpperCase()] : []), ...(node.tag ? [node.tag.toUpperCase()] : [])]
-      const block = callout(at, lines, node.id)
-      const w = measureText(String(id), T) + 4.5
-      poly(rectPoly(block.left - 2.2, block.top - 2, block.left - 2.2 + w, block.top + T + 2), 'TAG', node.id, { closed: true })
-      continue
+    const id = materialId(ctx.materials, node.id), size = sizeLabel(node, code), byOthers = !!COMPONENT_TYPE_BY_CODE[code]?.byOthers
+    if (size.length) sizeLabelled.add(node.id)
+    // An in-line instrument by others carries its tag in a bubble.
+    if (byOthers && node.tag) bubble(at, node.tag, node.id, true)
+    if (!id && !size.length) continue
+    if (node.kind === 'valve' && (node.operator || node.tag) && !byOthers)
+      itemBlock(at, id, [...(node.operator ? [node.operator.toUpperCase()] : []), ...(node.tag ? [node.tag.toUpperCase()] : []), ...size], node.id)
+    else if (size.length) itemBlock(at, id, size, node.id, !!id)
+    else if (id) tag(at, id, node.id)
+  }
+  /** The size callout at an item where the size changes: inlet first on an angle body, else the large end first. */
+  function sizeLabel(node: PipeNode, code: string): string[] {
+    if (node.kind === 'olet') {
+      const nd = ctx.materials.find(r => r.memberIds.includes(node.id))?.nd
+      return nd ? [`${nd} NS`, ...(/^(SOL|WOL|TOL)$/.test(code) ? [code] : [])] : []
     }
-    tag(at, id, node.id)
+    const edges = connected(ctx.doc, node.id).filter(r => ctx.geometry.has(r.id)), sizes = [...new Set(edges.map(r => r.nps))]
+    if (sizes.length < 2 || node.kind === 'tee' && !node.branchEdgeId) return []
+    const outlet = COMPONENT_TYPE_BY_CODE[code]?.angle ? edges.find(r => r.id === node.branchEdgeId) : undefined
+    const inlet = outlet && edges.find(r => r !== outlet)
+    return [`${inlet ? sizeText(inlet.nps, outlet!.nps) : sizeText(Math.max(...sizes), Math.min(...sizes))} NS`]
   }
   // Flanged joints: "F12 B13 G14" with the bolt number boxed, naming only the parts this drawing supplies. A joint whose
   // gasket and bolts are on another drawing tags its flange alone; the second flange of a pair gets its own tag.
@@ -174,28 +195,39 @@ export function drawAnnotations(ctx: IsoContext) {
     const out = run.from === joint.nodeId ? g.dir : scale2(g.dir, -1)
     return add2(at, scale2(out, Math.max(0, (ctx.extent.get(joint.nodeId) ?? 0) - SIZE.flangeThickness / 2)))
   }
-  // Nominal size labels at the first pipe of each size and at every size change.
+  // Nominal size labels: the first pipe of each size, again where the size changes along a straight, and on every
+  // branch of another size than its header, off a reducing tee or an olet. A screwed vent or drain made only of its
+  // fittings is sized by its olet.
   const sized = new Set<string>()
   for (const leg of sheetLegs(ctx)) {
-    const run = leg.runs[0], key = `${run.line}|${run.nps}`
-    // A branch off an olet is sized by the olet's own callout.
-    if (sized.has(key) || leg.nodes.some(id => getNode(ctx.doc, id).associatedRunId)) continue
-    sized.add(key)
-    const g = ctx.geometry.get(run.id)!
-    callout(lerp2(g.a, g.b, 0.2), [`${sizeText(run.nps)} NS`], run.id, { head: false })
+    const branchAt = (id: string, run: PipeRun) => {
+      const n = getNode(ctx.doc, id)
+      return n.kind === 'olet' || n.kind === 'tee' && n.branchEdgeId === run.id && connected(ctx.doc, id).some(r => r.id !== run.id && r.nps !== run.nps)
+    }
+    if (leg.nodes.some(id => getNode(ctx.doc, id).kind === 'olet' || !!getNode(ctx.doc, id).associatedRunId) && leg.runs.every(r => r.connector)) continue
+    const branch = branchAt(leg.nodes[0], leg.runs[0]) || branchAt(leg.nodes.at(-1)!, leg.runs.at(-1)!)
+    leg.runs.forEach((run, i) => {
+      const changed = i > 0 && run.nps !== leg.runs[i - 1].nps
+      if (i > 0 && !changed) return
+      const key = `${run.line}|${run.nps}`
+      if (sized.has(key) && !changed && !branch) return
+      sized.add(key)
+      // Labelled on the first pipe of the stretch at this size, past any fittings welded together.
+      const stretch = leg.runs.slice(i).filter((_, k, all) => all.slice(0, k + 1).every(x => x.nps === run.nps))
+      // A size change with no pipe beyond it, a bushing into an end, is sized by its reducer alone.
+      if (changed && stretch.every(r => r.connector)) return
+      // A leg's first label sits near its start; after a change, on the first pipe, near the change.
+      const g = ctx.geometry.get((changed && stretch.find(r => !r.connector) || run).id)!
+      const near = !changed || [g.run.from, g.run.to].indexOf(leg.nodes[leg.runs.indexOf(g.run)]) === 0
+      callout(lerp2(g.a, g.b, changed && !near ? 0.75 : 0.2), [`${sizeText(run.nps)} NS`], g.run.id, { head: false })
+    })
   }
+  // Any other size change not called out with its item.
   for (const node of ctx.nodes) {
-    const sizes = [...new Set(connected(ctx.doc, node.id).filter(r => ctx.geometry.has(r.id)).map(r => r.nps))]
-    if (sizes.length < 2 || node.kind === 'tee' && !node.branchEdgeId) continue
     const at = ctx.pos.get(node.id)
-    if (at) callout(at, [`${sizeText(Math.max(...sizes), Math.min(...sizes))} NS`], node.id, { head: false })
-  }
-  // Olets: the header by branch size and the fitting type.
-  for (const node of ctx.nodes) {
-    const at = ctx.pos.get(node.id), nd = node.kind === 'olet' ? ctx.materials.find(r => r.memberIds.includes(node.id))?.nd : undefined
-    if (!at || !nd) continue
-    const code = nodeCode(ctx.doc, node) ?? ''
-    callout(at, [`${nd} NS`, ...(/^(SOL|WOL|TOL)$/.test(code) ? [code] : [])], node.id, { head: false })
+    if (!at || sizeLabelled.has(node.id) || node.kind === 'olet') continue
+    const size = sizeLabel(node, nodeCode(ctx.doc, node) ?? '')
+    if (size.length) callout(at, size, node.id, { head: false })
   }
   // Line numbers written along the longest pipe of each line.
   const lines = new Map<string, PipeRun>()
@@ -224,41 +256,126 @@ export function drawAnnotations(ctx: IsoContext) {
     if (node.continuation) {
       const lines = node.continuation.text.split('\n').map(s => s.trim().toUpperCase()).filter(Boolean)
       const point = node.position
-      if (node.continuation.coordinates !== false) lines.push(...coordinateText(ctx.doc, point))
+      // Coordinates are plant data; without a plant origin there are none to give.
+      if (node.continuation.coordinates !== false && ctx.doc.coordinates) lines.push(...coordinateText(ctx.doc, point))
       callout(at, lines, node.id)
     }
-    if (node.elevationCallout) callout(at, [elevationText(ctx.doc, node.position)], node.id)
+    if (node.elevationCallout || levelChange(node)) callout(at, [elevationText(ctx.doc, node.position)], node.id)
     if (node.tiePoint) tiePoint(at, node)
     if (node.kind === 'support') {
       const code = nodeCode(ctx.doc, node) ?? ''
       const label = (node.calloutText ?? (/U-?BOLT/.test(code) ? 'U-BOLT' : /HANG|HNGR/.test(code) ? 'HANGER' : /SHOE/.test(code) ? 'SHOE' :
         /GUIDE/.test(code) ? 'GUIDE' : /ANCHOR/.test(code) ? 'ANCHOR' : COMPONENT_TYPE_BY_CODE[code]?.label ?? 'SUPPORT')).toUpperCase()
-      const width = measureText(label, T), height = T + (label.split('\n').length - 1) * T * LINE_SPACING
-      const { centre } = spot(at, width + 4, height + 4, node.id, [12, 18, 26, 36])
-      text([centre[0] - width / 2, centre[1] - height / 2 + T], label, T, 'TEXT', node.id)
-    } else if (node.calloutText) callout(at, node.calloutText.toUpperCase().split('\n'), node.id)
+      // A label of several lines is placed as the block it is, so no line lands on other lettering.
+      const rows = label.split('\n'), width = Math.max(...rows.map(l => measureText(l, T))), height = T + (rows.length - 1) * T * LINE_SPACING
+      if (label.trim()) {
+        const { centre } = spot(at, width + 4, height + 4, node.id, [12, 18, 26, 36, 50])
+        text([centre[0] - width / 2, centre[1] - height / 2 + T], label, T, 'TEXT', node.id)
+      }
+    } else if (node.kind === 'annotation' && wallPenetration(nodeCode(ctx.doc, node) ?? '', node.calloutText))
+      callout(at, (node.calloutText || 'WALL').toUpperCase().split('\n'), node.id, { head: false })
+    else if (node.calloutText && !(node.kind === 'annotation' && labelledSymbol(nodeCode(ctx.doc, node) ?? '', node.calloutText)))
+      callout(at, node.calloutText.toUpperCase().split('\n'), node.id)
+    else if (node.bendRadius && node.bendRadius > 0) callout(at, [`BEND RADIUS ${draftLength(node.bendRadius, ctx.doc.units)}`], node.id)
+    if (node.kind !== 'annotation') continue
+    const code = nodeCode(ctx.doc, node) ?? ''
+    if (/^ISA/.test(code) && (node.tag || node.calloutText)) bubble(at, (node.tag || node.calloutText)!, node.id, false, instrumentOut(node))
+    if (equipmentCode(code)) equipmentLabel(node)
+  }
+  /** With elevations on, a fitting where a riser meets a level pipe gets its centreline elevation, given a plant origin. */
+  function levelChange(node: PipeNode): boolean {
+    if (!ctx.style.elevations || !ctx.doc.coordinates || node.continuation || ['end', 'annotation', 'support'].includes(node.kind)) return false
+    const dirs = connected(ctx.doc, node.id).map(r => ctx.geometry.get(r.id)?.dir3).filter(Boolean) as Array<[number, number, number]>
+    return dirs.some(d => Math.abs(d[2]) > 0.7) && dirs.some(d => Math.abs(d[2]) < 0.05)
+  }
+  /** An ISA instrument circle lettered with its tag, joined to its point: in line beyond an open end, else beside. */
+  function bubble(target: Point, tagText: string, owner: string, arrowed: boolean, inLine?: Point) {
+    const label = tagText.toUpperCase(), r = Math.max(10, measureText(label, T) / 2 + 4)
+    const centre = inLine ? add2(target, scale2(inLine, 16 + r)) : spot(target, r * 2, r * 2, owner, [30, 42, 56, 74, 96]).centre
+    const ring = Array.from({ length: 36 }, (_, i) => add2(centre, [Math.cos(i * Math.PI / 18) * r, Math.sin(i * Math.PI / 18) * r])) as Point[]
+    poly(ring, 'TAG', owner, { closed: true })
+    ctx.place.add(rectPoly(centre[0] - r, centre[1] - r, centre[0] + r, centre[1] + r), 'tag', owner)
+    text([centre[0], centre[1] + T / 2], label, T, 'TAG', owner, { anchor: 'middle' })
+    leader(add2(centre, scale2(unit2(sub2(target, centre)), r)), target, owner, arrowed)
+  }
+  /** Out of the pipe at an open end the instrument stands on, so its bubble continues the line. */
+  function instrumentOut(node: PipeNode): Point | undefined {
+    const g = node.associatedRunId ? ctx.geometry.get(node.associatedRunId) : undefined
+    if (!g) return
+    for (const [id, out] of [[g.run.from, scale2(g.dir, -1)], [g.run.to, g.dir]] as Array<[string, Point]>) {
+      const end = getNode(ctx.doc, id)
+      if (end.kind === 'end' && connected(ctx.doc, id).length === 1 && Math.hypot(...end.position.map((v, i) => v - node.position[i])) < 1) return out
+    }
+  }
+  /** An equipment nozzle's id over its boxed equipment tag, or an outline's tag, beside the nozzle neck. */
+  function equipmentLabel(node: PipeNode) {
+    const at = equipmentEnd(ctx, node), from = at && ctx.pos.get(at.end.id)
+    if (!at || !from) return
+    const outline = nodeCode(ctx.doc, node) === 'EQUIP', neck = (at.end.kind === 'flange' ? 1.2 : 0) + SIZE.flangeThickness * 1.6 + 16
+    const target = add2(from, scale2(at.out, outline ? neck + 11 : neck)), equipment = (node.tag ?? '').toUpperCase()
+    const nozzle = outline ? '' : (node.calloutText ?? '').split('\n')[0].toUpperCase()
+    const w = Math.max(measureText(nozzle, T), measureText(equipment, T) + 6), h = (nozzle ? T * LINE_SPACING : 0) + T + 6
+    if (!nozzle && !equipment) return
+    const { centre } = spot(target, w + 4, h + 4, node.id, outline ? [26, 34, 44] : [10, 16, 24, 34])
+    let y = centre[1] - h / 2
+    if (nozzle) { text([centre[0], y + T], nozzle, T, 'TEXT', node.id, { anchor: 'middle' }); y += T * LINE_SPACING }
+    if (!equipment) return
+    text([centre[0], y + T + 3], equipment, T, 'TEXT', node.id, { anchor: 'middle' })
+    if (!outline) poly(rectPoly(centre[0] - w / 2, y, centre[0] + w / 2, y + T + 6), 'TAG', node.id, { closed: true })
   }
   function tiePoint(target: Point, node: PipeNode) {
-    const r = 15, label = node.tiePoint!.label?.toUpperCase()
+    // The hexagon is sized so its widest line fits between its sloping sides.
+    const id = node.tiePoint!.id.toUpperCase(), label = node.tiePoint!.label?.toUpperCase()
+    const r = Math.max(15, (Math.max(measureText('TP', T), measureText(id, T)) / 2 + 7.5) / 1.15)
     const { centre } = spot(target, Math.max(r * 2.3, label ? measureText(label, T) + 4 : 0), r * 2 + (label ? T * 2 : 0), node.id, [40, 56, 76, 100])
-    const c: Point = [centre[0], centre[1] - (label ? T : 0)]
+    // The label goes under the hexagon unless the leader would cross it there.
+    const labelAt = (under: boolean): { c: Point; box: Poly } => {
+      const c: Point = [centre[0], centre[1] + (label ? under ? -T : T : 0)], w = measureText(label ?? '', T) / 2 + 1, y = under ? c[1] + r + 5 : c[1] - r - 5 - T
+      return { c, box: rectPoly(c[0] - w, y - 1, c[0] + w, y + T + 1) }
+    }
+    const crosses = (o: { c: Point; box: Poly }) => overlapsSegment(o.box, o.c, target)
+    const below = !label || !crosses(labelAt(true)) || crosses(labelAt(false)), { c } = labelAt(below)
     const hex = Array.from({ length: 6 }, (_, i) => add2(c, [Math.cos(i * Math.PI / 3) * r * 1.15, Math.sin(i * Math.PI / 3) * r])) as Point[]
     poly(hex, 'TAG', node.id, { closed: true })
     ctx.place.add(hex, 'tag', node.id)
     text([c[0], c[1] - 2], 'TP', T, 'TAG', node.id, { anchor: 'middle' })
-    text([c[0], c[1] + T + 2], node.tiePoint!.id.toUpperCase(), T, 'TAG', node.id, { anchor: 'middle' })
-    if (label) text([c[0], c[1] + r + T + 5], label, T, 'TEXT', node.id, { anchor: 'middle' })
-    const toward = unit2(sub2(target, c))
-    line(add2(c, scale2(toward, r)), target, 'LEADER', node.id)
+    text([c[0], c[1] + T + 2], id, T, 'TAG', node.id, { anchor: 'middle' })
+    if (label) text([c[0], below ? c[1] + r + T + 5 : c[1] - r - 5], label, T, 'TEXT', node.id, { anchor: 'middle' })
+    // The leader leaves the hexagon's outline toward the item.
+    const toward = unit2(sub2(target, c)), edge = hex.reduce((best, p, i) => {
+      const q = hex[(i + 1) % 6], d = sub2(q, p), den = toward[0] * d[1] - toward[1] * d[0]
+      if (Math.abs(den) < 1e-9) return best
+      const t = ((p[0] - c[0]) * d[1] - (p[1] - c[1]) * d[0]) / den, u = ((p[0] - c[0]) * toward[1] - (p[1] - c[1]) * toward[0]) / den
+      return t > 0 && u >= 0 && u <= 1 && t < best ? t : best
+    }, r * 1.15)
+    line(add2(c, scale2(toward, edge)), target, 'LEADER', node.id)
   }
   // Free notes placed by the drafter on this sheet.
   for (const note of ctx.doc.sheetNotes ?? [])
     if (note.spool === ctx.spool || !ctx.spool) text(note.at, note.text.toUpperCase(), T, 'TEXT', note.id)
-  if (ctx.style.weldNumbers)
-    for (const w of welds(ctx.doc)) {
-      if (!ctx.geometry.has(w.runId)) continue
-      const p = ctx.project(w.position), width = measureText(w.tag, T * 0.9)
-      const { centre } = spot(p, width + 3, T + 3, w.nodeId, [8, 12, 16, 22])
-      text([centre[0] - width / 2, centre[1] + T * 0.45], w.tag, T * 0.9, 'WELD', w.nodeId)
-    }
+  // Field welds are flagged FW; with weld numbers on, each weld's number sits in a balloon on a leader to its weld.
+  for (const w of welds(ctx.doc)) {
+    const p = ctx.geometry.has(w.runId) ? weldPoint(ctx, w) : undefined
+    if (!p) continue
+    if (w.field) fieldFlag(p, w.nodeId)
+    if (!ctx.style.weldNumbers) continue
+    const size = T * 0.85, r = Math.max(size * 0.85, measureText(w.tag, size) / 2 + 2.2)
+    const { centre } = spot(p, r * 2, r * 2, w.nodeId, [12, 17, 23, 30])
+    const ring = Array.from({ length: 24 }, (_, i) => add2(centre, [Math.cos(i * Math.PI / 12) * r, Math.sin(i * Math.PI / 12) * r])) as Point[]
+    poly(ring, 'WELD', w.nodeId, { closed: true, weight: 0.6 })
+    ctx.place.add(rectPoly(centre[0] - r, centre[1] - r, centre[0] + r, centre[1] + r), 'tag', w.nodeId)
+    text([centre[0], centre[1] + size / 2], w.tag, size, 'WELD', w.nodeId, { anchor: 'middle' })
+    leader(add2(centre, scale2(unit2(sub2(p, centre)), r)), p, w.nodeId, false)
+  }
+  // A butt-welded end marked as field welded where it continues on another drawing is flagged too.
+  for (const node of ctx.nodes) {
+    const run = node.kind === 'end' && node.continuation ? connected(ctx.doc, node.id)[0] : undefined, at = ctx.pos.get(node.id)
+    if (run && at && ctx.geometry.has(run.id) && (run.from === node.id ? run.fromField : run.toField)) fieldFlag(at, node.id)
+  }
+  function fieldFlag(p: Point, owner: string) {
+    const width = measureText('FW', T)
+    const { centre } = spot(p, width + 4, T + 4, owner, [12, 17, 23])
+    text([centre[0] - width / 2, centre[1] + T / 2], 'FW', T, 'WELD', owner)
+    leader(boxEdge(centre, width + 3, T + 3, p), p, owner, false)
+  }
 }

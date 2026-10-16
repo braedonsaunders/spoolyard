@@ -190,6 +190,8 @@ export interface DrawingStyle {
   layout: 'scale' | 'schematic'
   weldNumbers: boolean
   lettering: 'cad' | 'sans'
+  /** Centreline elevation at every change of level, not only where the drafter places one. */
+  elevations?: boolean
 }
 /** Plant east, north and elevation (mm) of the model origin. */
 export interface PlantCoordinates {
@@ -228,6 +230,8 @@ export interface PipeRun {
   uncut?: boolean
   /** Bill-of-materials text for this pipe when it differs from its size's text in the specification. */
   description?: string
+  /** Flow direction along the pipe: forward runs from `from` to `to`. */
+  flow?: 'forward' | 'reverse'
 }
 export interface IsoDocument {
   schema: 'bidwright-piping'
@@ -1045,12 +1049,17 @@ export function validateIso(doc: IsoDocument): string[] {
       if (!Number.isFinite(bend) || Math.abs(bend - expected) > 1)
         issues.push(`${at}the ${name} turns ${Number.isFinite(bend) ? round(bend) + '°' : 'an unknown angle'} but is a ${expected}° fitting. Choose a fitting for this angle.`)
     }
-    if (
+    if (component?.angle && degree === 2 && Math.abs(angleBetween(edges[0], edges[1]) - 90) > 1)
+      issues.push(`${at}the ${name} is an angle body. Its pipes must leave it square to each other.`)
+    else if (
+      !component?.angle &&
       ['valve', 'reducer', 'weld', 'flange', 'gasket'].includes(n.kind) &&
       degree === 2 &&
       Math.abs(angleBetween(edges[0], edges[1]) - 180) > 1
     )
       issues.push(`${at}the ${name} sits at a change of direction. In-line components must be on a straight pipe.`)
+    if (/^CHECK/.test(component?.code ?? '') && edges.length && !edges.some(r => r.flow))
+      issues.push(`${at}the ${name} has no flow direction. Set the flow on its pipes so it is drawn and installed the right way round.`)
     if (n.kind === 'tee' && degree === 3 && n.branchEdgeId) {
       const main = edges.filter(r => r.id !== n.branchEdgeId),
         branch = edges.find(r => r.id === n.branchEdgeId)
@@ -1483,7 +1492,8 @@ export function parseIsoJson(raw: string): IsoDocument {
   if (
     d.style != null &&
     (!isPlain(d.style) || !['scale', 'schematic'].includes(d.style.layout) ||
-      typeof d.style.weldNumbers !== 'boolean' || !['cad', 'sans'].includes(d.style.lettering))
+      typeof d.style.weldNumbers !== 'boolean' || !['cad', 'sans'].includes(d.style.lettering) ||
+      (d.style.elevations != null && typeof d.style.elevations !== 'boolean'))
   )
     throw new Error('Invalid drawing style.')
   if (
@@ -1594,6 +1604,7 @@ export function parseIsoJson(raw: string): IsoDocument {
       )
         throw new Error('Invalid end preparation.')
     if (r.description != null && !isString(r.description, 300)) throw new Error('Invalid pipe description.')
+    if (r.flow != null && r.flow !== 'forward' && r.flow !== 'reverse') throw new Error('Invalid flow direction.')
     for (const key of ['connector', 'fromField', 'toField', 'uncut'])
       if (
         r[key as keyof PipeRun] != null &&
