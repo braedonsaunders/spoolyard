@@ -111,6 +111,30 @@ test('not to scale, a narrow drawing draws its level pipe longer to fill the ope
   assert.equal(draw(flat).fit.stretch ?? 0, 0);
 });
 
+test('where two pipes cross on the sheet the one behind is broken, and leaders break where they cross a pipe', () => {
+  // Drawn to scale, the west run passes in front of the riser.
+  const doc = newIso();
+  doc.style = { layout: 'scale', weldNumbers: false, lettering: 'cad' };
+  const top = appendRun(doc, null, [0, 0, 3000], 'CS40', 2, 'SP-1', 'L-1');
+  const south = appendRun(doc, top.id, [0, -2000, 0], 'CS40', 2, 'SP-1', 'L-1');
+  appendRun(doc, south.id, [-3000, 0, 0], 'CS40', 2, 'SP-1', 'L-1');
+  const d = draw(doc), lines = (owner: string) =>
+    d.primitives.filter((p): p is Extract<Primitive, { type: 'line' }> => p.type === 'line' && p.layer === 'PIPE' && p.owner === owner);
+  const riser = lines(doc.runs[0].id), west = lines(doc.runs[2].id);
+  assert.equal(riser.length, 2, 'the riser is broken');
+  assert.equal(west.length, 1, 'the pipe in front is whole');
+  const gap = Math.hypot(riser[1].a[0] - riser[0].b[0], riser[1].a[1] - riser[0].b[1]);
+  assert.ok(Math.abs(gap - 850 / 11 * 0.25) < 0.01, `a quarter-inch gap, not ${gap}`);
+  // No leader runs through a pipe.
+  const segments = (layer: string) => d.primitives.filter((p): p is Extract<Primitive, { type: 'line' }> => p.type === 'line' && p.layer === layer);
+  const crosses = (m: { a: Point; b: Point }, n: { a: Point; b: Point }) => {
+    const side = (p: Point, q: Point, r: Point) => Math.sign((q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]));
+    return side(m.a, m.b, n.a) * side(m.a, m.b, n.b) < 0 && side(n.a, n.b, m.a) * side(n.a, n.b, m.b) < 0;
+  };
+  assert.ok(segments('LEADER').length > 0);
+  for (const l of segments('LEADER')) for (const p of segments('PIPE')) assert.ok(l.owner === p.owner || !crosses(l, p), 'a leader crosses a pipe unbroken');
+});
+
 test('no lettering overprints other lettering: two-line support labels, rolling offsets and free notes', async () => {
   const { attachComponent } = await import('../src/core/model.ts');
   const { textPoly, overlaps } = await import('../src/core/iso/placement.ts');

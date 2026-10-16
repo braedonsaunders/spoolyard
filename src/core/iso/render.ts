@@ -1,7 +1,7 @@
 import type { Drawing, Point, Primitive, SheetFit } from '../drawing'
 import { flangedJoints } from '../joints'
 import { sheetMaterials } from '../material-list'
-import { getNode, styleOf, type IsoDocument, type Vec3 } from '../model'
+import { getNode, styleOf, type IsoDocument, type PipeRun, type Vec3 } from '../model'
 import { SIZE, type IsoContext, type RunGeometry } from './context'
 import { drawDimensions } from './dimensions'
 import { drawAnnotations } from './annotations'
@@ -125,7 +125,7 @@ export function renderIso(
   drawAnnotations(ctx)
   // Thin drafting lines break around lettering, as drafted, so a dimension or leader never strikes through text.
   const lettering = ctx.out.flatMap(p => p.type === 'text' && p.layer !== 'SYMBOL' ? [textPoly(p.p, p.text, p.size, p.rotation, p.oblique, p.anchor, 1.2)] : [])
-  const drawn = ctx.out.flatMap(p => {
+  const drawn = crossingGaps(ctx).flatMap(p => {
     if (p.type !== 'line' || !['DIM', 'LEADER', 'HATCH'].includes(p.layer)) return [p]
     let pieces: Array<[Point, Point]> = [[p.a, p.b]]
     for (const box of lettering) pieces = pieces.flatMap(([a, b]) => clipOutside(a, b, box))
@@ -144,6 +144,69 @@ export function renderIso(
     view: facing,
     lettering: style.lettering
   }
+}
+/** Breaks in the pipe behind where two pipes cross (0.25 in) and in a leader where it crosses a pipe. */
+const PIPE_GAP = 850 / 11 * 0.25, LEADER_GAP = 850 / 11 * 0.08
+type Line = Extract<Primitive, { type: 'line' }>
+/** The drawing with the rear pipe broken at each crossing of two pipes, and leaders broken where they cross a pipe. */
+function crossingGaps(ctx: IsoContext): Primitive[] {
+  const { doc, view } = ctx, angle = doc.north * Math.PI / 180
+  // How near the viewer a model point is.
+  const depth = (p: Vec3) => view === 'plan' ? p[2] : view === 'front' ? -p[1] : view === 'side' ? p[0]
+    : p[2] - (p[0] * Math.cos(angle) - p[1] * Math.sin(angle)) - (p[0] * Math.sin(angle) + p[1] * Math.cos(angle))
+  const model = (run: PipeRun, at: Point): Vec3 => {
+    const g = ctx.geometry.get(run.id)!, a = getNode(doc, run.from).position, b = getNode(doc, run.to).position
+    const f = g.length ? ((at[0] - g.a[0]) * g.dir[0] + (at[1] - g.a[1]) * g.dir[1]) / g.length : 0
+    return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f]
+  }
+  // Pipes that meet at a node, or a branch and the pipe it is fitted on, do not cross.
+  const ends = (r: PipeRun) => [r.from, r.to]
+  const joined = (a: PipeRun, b: PipeRun) => ends(a).some(id => ends(b).includes(id)) ||
+    ends(a).some(id => getNode(doc, id).associatedRunId === b.id) || ends(b).some(id => getNode(doc, id).associatedRunId === a.id)
+  const runOf = new Map(ctx.runs.map(r => [r.id, r]))
+  const pipes = ctx.out.flatMap((p, i) => p.type === 'line' && p.layer === 'PIPE' && p.owner && runOf.has(p.owner) && ctx.geometry.has(p.owner) ? [{ i, p, run: runOf.get(p.owner)! }] : [])
+  const cuts = new Map<number, Array<[number, number]>>()
+  const cut = (i: number, line: Line, at: Point, gap: number) => {
+    const l = Math.hypot(line.b[0] - line.a[0], line.b[1] - line.a[1]), t = Math.hypot(at[0] - line.a[0], at[1] - line.a[1]) / l
+    cuts.set(i, [...(cuts.get(i) ?? []), [t - gap / 2 / l, t + gap / 2 / l]])
+  }
+  for (let x = 0; x < pipes.length; x++)
+    for (let y = x + 1; y < pipes.length; y++) {
+      const a = pipes[x], b = pipes[y]
+      if (a.run === b.run || joined(a.run, b.run)) continue
+      const at = crossing(a.p, b.p)
+      if (!at) continue
+      const rear = depth(model(a.run, at)) < depth(model(b.run, at)) ? a : b
+      cut(rear.i, rear.p, at, PIPE_GAP)
+    }
+  ctx.out.forEach((p, i) => {
+    if (p.type !== 'line' || p.layer !== 'LEADER') return
+    for (const pipe of pipes) {
+      const at = pipe.p.owner !== p.owner && crossing(p, pipe.p)
+      if (at) cut(i, p, at, LEADER_GAP)
+    }
+  })
+  return ctx.out.flatMap((p, i) => {
+    const gaps = cuts.get(i)
+    if (!gaps || p.type !== 'line') return [p]
+    const pieces: Line[] = []
+    let from = 0
+    for (const [t0, t1] of gaps.sort((m, n) => m[0] - n[0])) {
+      if (t0 > from) pieces.push({ ...p, a: lerp(p, from), b: lerp(p, t0) })
+      from = Math.max(from, t1)
+    }
+    if (from < 1) pieces.push({ ...p, a: lerp(p, from), b: p.b })
+    return pieces
+  })
+}
+const lerp = (l: Line, t: number): Point => [l.a[0] + (l.b[0] - l.a[0]) * t, l.a[1] + (l.b[1] - l.a[1]) * t]
+/** Where two lines cross, clear of both their ends. */
+function crossing(m: Line, n: Line): Point | undefined {
+  const r: Point = [m.b[0] - m.a[0], m.b[1] - m.a[1]], s: Point = [n.b[0] - n.a[0], n.b[1] - n.a[1]], den = r[0] * s[1] - r[1] * s[0]
+  if (Math.abs(den) < 1e-9) return
+  const q: Point = [n.a[0] - m.a[0], n.a[1] - m.a[1]], t = (q[0] * s[1] - q[1] * s[0]) / den, u = (q[0] * r[1] - q[1] * r[0]) / den
+  const clear = (k: number, l: number) => k * l > 2 && (1 - k) * l > 2
+  return clear(t, Math.hypot(...r)) && clear(u, Math.hypot(...s)) ? [m.a[0] + r[0] * t, m.a[1] + r[1] * t] : undefined
 }
 /** Width-to-height balance a narrow not-to-scale drawing is widened to, and the most its level pipe is stretched. */
 const BALANCE = 0.8, STRETCH = 1.2
