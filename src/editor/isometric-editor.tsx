@@ -1197,13 +1197,13 @@ export function IsometricEditor({
         <button title="Import PCF, piping JSON or legacy DXF" onClick={() => importInput.current?.click()}>
           <Upload size={14} /> Import
         </button>
-        <details className="iso-export-menu">
+        <details className="iso-export-menu" ref={exportMenu}>
           <summary>
             <Download size={14} /> Export <ChevronDown size={12} />
           </summary>
           <div>
             {["PDF", "DWG", "DXF", "PCF", "SVG", "JSON", "bom", "cut", "weld"].map((format) => (
-              <button key={format} disabled={!!busy || !ready} onClick={() => void runExport(format)}>
+              <button key={format} disabled={!!busy || !ready} onClick={() => { closeExport(); void runExport(format); }}>
                 {format === "PDF"
                   ? "PDF drawing package"
                   : format === "bom"
@@ -1274,7 +1274,7 @@ export function IsometricEditor({
                 >
                   {activeSpec.sizes.map((s) => (
                     <option value={s.nps} key={s.nps}>
-                      {s.nps}″
+                      {inches(s.nps)}
                     </option>
                   ))}
                 </select>
@@ -1974,7 +1974,7 @@ export function IsometricEditor({
                         >
                           {getSpec(doc, selectedRun.specId).sizes.map((s) => (
                             <option key={s.nps} value={s.nps}>
-                              {s.nps}″
+                              {inches(s.nps)}
                             </option>
                           ))}
                         </select>
@@ -2220,7 +2220,7 @@ export function IsometricEditor({
                             )
                             .map((f) => (
                               <option key={f.id} value={f.id}>
-                                {[f.smallerNps ? f.nps + "×" + f.smallerNps + "″" : "", f.rating, f.schedule, f.description]
+                                {[f.smallerNps ? inches(f.nps) + " × " + inches(f.smallerNps) : "", f.rating, f.schedule, f.description]
                                   .filter(Boolean)
                                   .join(" · ")}
                               </option>
@@ -2359,9 +2359,9 @@ export function IsometricEditor({
                   </details>
                 </>
               )}
-              <div className={cn("iso-validation", issues.length ? "warning" : "valid")}>
+              <div className={cn("iso-validation", issues.length ? "warning" : doc.runs.length ? "valid" : "empty")}>
                 <strong>
-                  {issues.length ? issues.length + " fabrication checks" : "Ready for fabrication review"}
+                  {issues.length ? issues.length + " fabrication checks" : doc.runs.length ? "Ready for fabrication review" : "Nothing to check yet · draw a pipe"}
                 </strong>
                 {issues.slice(0, 8).map((issue, i) => (
                   <p key={i}>{typeof issue === "string" ? issue : JSON.stringify(issue)}</p>
@@ -2562,8 +2562,8 @@ export function IsometricEditor({
                 ? "Click the title block to edit · Drag empty space to pan · Scroll to zoom"
                 : "Infinite model space · Drag empty space to pan · Scroll to zoom"}
         </span>
-        <span className={issues.length ? "warning" : "valid"}>
-          {issues.length ? issues.length + " checks" : "Dimensions checked"}
+        <span className={issues.length ? "warning" : doc.runs.length ? "valid" : undefined}>
+          {issues.length ? issues.length + " checks" : doc.runs.length ? "Dimensions checked" : "No pipe drawn"}
         </span>
       </footer>
       <input

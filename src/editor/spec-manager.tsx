@@ -268,9 +268,7 @@ export function SpecManager({
       <section className="iso-specs-detail">
         {component === GENERAL ? (
           <>
-            <h2>
-              {spec.id} · {spec.name}
-            </h2>
+            <h2>{spec.name.startsWith(spec.id + " ") ? spec.name : `${spec.id} · ${spec.name}`}</h2>
             <div className="iso-specs-form">
               {(["name", "material", "service", "rating", "schedule", "revision"] as const).map((k) => (
                 <label key={k} className="iso-field">
