@@ -40,18 +40,26 @@ export function catalogRow(spec: PipeSpec, code: string, nps: number, smallerNps
   const rows = spec.fittings.filter(f => f.component === code && f.nps === nps && sameBranch(f, nps, smallerNps))
   const row = rows.find(f => !f.takeoutMissing)
   if (row) return row
-  const std = standardRow(code, nps, specRating(spec), smallerNps, spec.sizes.find(s => s.nps === nps)?.schedule ?? spec.schedule)
+  const pipe = spec.sizes.find(s => s.nps === nps), std = standardRow(code, nps, specRating(spec), smallerNps, pipe?.schedule ?? spec.schedule)
   if (!std) return rows[0]
-  const named = rows[0]
+  const named = rows[0], wrought = /^(W-|STUB-END|[CE]-RED$|REDELL$|LR180R$|SR180R$)/.test(code)
   return {
     ...named,
     ...std,
     id: named?.id ?? `std:${code}:${nps}${smallerNps && smallerNps !== nps ? 'x' + smallerNps : ''}`,
     component: code,
     description: named?.description ?? std.description,
+    // A standard part is bought in the specification's material, and a butt-weld fitting in its pipe's wall.
+    material: named?.material ?? specMaterial(spec, std.kind, wrought, nps),
+    schedule: named?.schedule ?? (wrought ? pipe?.schedule ?? spec.schedule : undefined),
     takeoutMissing: undefined,
     source: std.source
   }
+}
+/** The material the specification names for parts of a kind: butt-weld fittings, flanges, valves, gaskets or bolts. */
+function specMaterial(spec: PipeSpec, kind: Kind, wrought: boolean, nps: number): string | undefined {
+  const like = (f: CatalogItem) => !!f.material && (wrought ? /^W-|[CE]-RED$/.test(f.component ?? '') : f.kind === kind && !/^STUB-END/.test(f.component ?? ''))
+  return (spec.fittings.find(f => like(f) && f.nps === nps) ?? spec.fittings.find(like))?.material
 }
 
 /** Size of the pipes a node joins: largest and (for reducing items) smallest bore. */

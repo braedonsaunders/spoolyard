@@ -497,7 +497,8 @@ export function standardRow(code: string, nps: number, rating?: string | number,
   if (flg) {
     const f = flange(nps, rating)
     if (!f || (flg[1] === 'FF' && f.rating > 300)) return undefined
-    const type = flg[2], name = `FLANGE ${flg[1]} ${FLANGE_NAMES[type]}, CLASS ${f.rating}`
+    // A lap-joint flange is flat: its face is the stub end's lap.
+    const type = flg[2], name = type === 'LJ' ? `FLANGE, LAP-JOINT, CLASS ${f.rating}, ASME B16.5` : `FLANGE ${flg[1]} ${FLANGE_NAMES[type]}, CLASS ${f.rating}`
     const base = { flangeThickness: f.thickness, boltCount: f.boltCount, boltDiameter: f.boltDiameter, boltLength: f.studLength }
     if (type === 'WN') return row('flange', nps, f.wnLength, name, `${B165_SOURCE}; takeout = length through hub Y`, { ...base, lengthThroughHub: f.wnLength })
     if (type === 'BL') return row('flange', nps, f.thickness, name, `${B165_SOURCE}; blind flange: takeout = thickness`, { ...base, thickness: f.thickness })
@@ -572,7 +573,7 @@ export function standardRow(code: string, nps: number, rating?: string | number,
       case 'STUB-END':
       case 'STUB-END-SHORT': {
         const st = stubEnd(nps, c === 'STUB-END-SHORT', schedule)!
-        return row('flange', nps, st.length, `STUB END, ${st.short ? 'MSS SP-43 SHORT' : 'B16.9 LONG'} PATTERN, LAP OD ${st.lapOd} MM`,
+        return row('flange', nps, st.length, `STUB END, ${st.short ? 'SHORT PATTERN, MSS SP-43 TYPE A' : 'LONG PATTERN, ASME B16.9'}, BE`,
           `${st.short ? 'MSS SP-43 short pattern (type A)' : 'ASME B16.9 long pattern'} length F; takeout = F from the lap face; lap thickness = ${schedule ?? (st.short ? 'Sch 10S' : 'STD')} pipe wall`, { thickness: st.lapThickness })
       }
     }

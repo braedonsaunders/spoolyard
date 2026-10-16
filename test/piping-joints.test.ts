@@ -169,7 +169,7 @@ test('a pipe flanged at one end only loses the flange allowance at that end alon
   const bare = bend(), open = runResult(bare, bare.runs[1]).cut, plain = runResult(bare, bare.runs[0]).cut;
   const cases: Array<[string, number, RegExp[]]> = [
     ['FLG-RFWN', 63.5, [/FLANGE RF WN/]],
-    ['FLG-RFLJ', NaN, [/FLANGE RF LAP-JOINT/, /STUB END/]],
+    ['FLG-RFLJ', NaN, [/^FLANGE, LAP-JOINT/, /STUB END/]],
     ['FLG-RFSO', NaN, [/SLIP-ON FLANGE RF/]]
   ];
   for (const [code, hub, parts] of cases) {

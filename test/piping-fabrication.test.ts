@@ -158,6 +158,21 @@ test('olets list as their own group after every fitting, before the flanges', ()
   assert.deepEqual(order.slice(0, 3), ['union', 'olet', 'flange']);
 });
 
+test('BOM rows can be bought from: olets by header and branch, lap-joint flanges and stub ends with material and wall', () => {
+  const doc = newIso(); doc.specs = [clone(specA)];
+  appendRun(doc, null, [2000, 0, 0], 'A', 6, 'SP', 'L');
+  placeComponentOnPipe(doc, doc.runs[0].id, COMPONENT_TYPES.find(t => t.code === 'FLG-RFLJ')!, 0);
+  const sol = attachComponent(doc, doc.runs[0].id, 'olet', 0.5);
+  applyComponent(doc, sol, 'SOL', row(doc, 'SOL', 0.75));
+  appendRun(doc, sol.id, [0, 0, 300], 'A', 0.75, 'SP', 'L', 'SW');
+  const rows = sheetMaterials(doc, 'SP');
+  assert.equal(rows.find(r => r.category === 'olet')!.nd, '6"X3/4"');
+  const lj = rows.find(r => /LAP-JOINT/.test(r.description))!.description;
+  assert.doesNotMatch(lj, /\bRF\b/);
+  assert.match(lj, /A105/);
+  assert.match(rows.find(r => r.category === 'stub')!.description, /^STUB END, LONG PATTERN, ASME B16\.9, BE, .*A234.*, STD\.$/);
+});
+
 test('a slip-on flange sets the pipe back a wall and 1/16" from its face', () => {
   assert.equal(standardRow('FLG-RFSO', 2, '150#', undefined, 'STD')!.takeout, 3.91 + 1.59);
   assert.equal(standardRow('FLG-RFSO', 2, '150#', undefined, '10S')!.takeout, 2.77 + 1.59);

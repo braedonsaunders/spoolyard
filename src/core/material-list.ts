@@ -136,8 +136,10 @@ export function sheetMaterials(doc: IsoDocument, spool = ''): MaterialRow[] {
     const edges = connected(doc, node.id), host = edges[0] ?? doc.runs.find(r => r.id === node.associatedRunId)
     if (!host || (spool && !(edges.length ? edges : [host]).some(r => r.spool === spool))) continue
     const item = nodeItem(doc, node), code = nodeCode(doc, node) ?? item?.component ?? ''
-    const sizes = edges.map(r => r.nps), nps = item?.nps ?? Math.max(...sizes, host.nps)
-    const small = item?.smallerNps ?? (sizes.length > 1 ? Math.min(...sizes) : undefined)
+    // An olet is contoured to its header and bought as header by branch size.
+    const header = node.kind === 'olet' ? doc.runs.find(r => r.id === node.associatedRunId) : undefined
+    const sizes = edges.map(r => r.nps), nps = header?.nps ?? item?.nps ?? Math.max(...sizes, host.nps)
+    const small = header ? edges[0]?.nps ?? item?.smallerNps ?? item?.nps : item?.smallerNps ?? (sizes.length > 1 ? Math.min(...sizes) : undefined)
     const pair = isFlangePair(doc, node)
     // A flange the next drawing supplies is not listed here (its stub end is, with the joint).
     if (node.kind === 'flange' && !pair && node.jointSupply?.flange === false && !/^STUB-END/.test(code)) continue
