@@ -151,12 +151,14 @@ function stations(ctx: IsoContext, leg: Leg, vents: Set<string>): Station[] {
     if (n.kind === 'olet' && page && n.associatedRunId && own.has(n.associatedRunId) && !vents.has(n.id)) at(n.position, page, n.id)
   }
   out.sort((a, b) => a.along - b.along)
-  // Faces closer than a gasket are one station (a flange pair at a break); at the end of a leg the gasket is dimensioned.
+  // Faces closer than a gasket are one station (a flange pair at a break), measured at the face on the pipe, so the
+  // gasket goes with a stub end welded to a fitting; at the end of a leg the gasket is dimensioned.
+  const onPipe = (s: Station) => !!s.node && connected(ctx.doc, s.node).some(r => own.has(r.id) && !r.connector)
   const kept: Station[] = []
   for (const s of out) {
     const last = kept.at(-1), gap = last ? s.along - last.along : Infinity
     if (gap > 3.2 || ((s.end || last!.end) && gap > 0.5)) kept.push(s)
-    else if (s.end) kept[kept.length - 1] = s
+    else if (s.end || (!last!.end && onPipe(s) && !onPipe(last!))) kept[kept.length - 1] = s
   }
   return kept
 }

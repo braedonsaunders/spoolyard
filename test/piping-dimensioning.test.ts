@@ -50,6 +50,22 @@ test('a gasket at the end of a leg is dimensioned and the overall takes it in', 
   assert.deepEqual(dims(d).sort(), ['1000', '1003', '3']);
 });
 
+test('a flange pair at a break is measured at the face on the pipe, whichever way the leg was drawn', () => {
+  // 1000 of pipe from an open end to a flange, the gasket, and a flange welded straight to an elbow 100 on.
+  const pipeFirst = doc();
+  const f1 = run(pipeFirst, null, [1000, 0, 0]), f2 = run(pipeFirst, f1.id, [3, 0, 0], true);
+  run(pipeFirst, run(pipeFirst, f2.id, [100, 0, 0], true).id, [0, 1000, 0]);
+  const elbowFirst = doc();
+  const elbow = run(elbowFirst, null, [0, -1000, 0]), g2 = run(elbowFirst, elbow.id, [-100, 0, 0], true);
+  const g1 = run(elbowFirst, g2.id, [-3, 0, 0], true);
+  run(elbowFirst, g1.id, [-1000, 0, 0]);
+  for (const [d, nodes] of [[pipeFirst, [f1, f2]], [elbowFirst, [g1, g2]]] as const) {
+    for (const n of nodes) applyComponent(d, n, 'FLG-RFWN', row(d, 'FLG-RFWN'));
+    const texts = dims(d);
+    assert.ok(['1000', '103', '1103'].every(t => texts.includes(t)) && !texts.includes('1003'), texts.join(' '));
+  }
+});
+
 test('a drawing that ends at a valve face leaves the gasket to the next drawing', () => {
   const d = doc();
   const valve = run(d, null, [1000, 0, 0]);
