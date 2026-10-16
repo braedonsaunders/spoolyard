@@ -39,7 +39,12 @@ where it powers piping isometrics in Files and Tools.
   - hatched offset triangles with their angles, set and roll.
 
   Drawings are laid out not to scale, so short pieces stay readable, with automatic label placement. The next
-  spool's parts are drawn thin beyond each break.
+  spool's parts are drawn thin beyond each break. Link another `.piping` file at a continuation to include a
+  snapshot of its neighbouring components without adding its material or welds to this drawing.
+- **Issued drawing controls.** Hold and reorder item numbers, retain verbatim issued BOM cells alongside the
+  calculated values, arrange nodes on the paper without changing plant coordinates, and draft dimensions between
+  selected work points, body faces or mating faces. Choose closed dimension chains or independent legacy rounding,
+  body-face chains, stacked size labels and compass ticks in Drawing setup.
 - **Measured routing.** Click along the six iso directions with Ortho on, or type a length and pick East, North
   or Up. Bends and branches get the specification's elbows and tees automatically; rolling offsets route in XYZ.
   Click a pipe to branch off it, place olets on a header, and fit reducers either way round.

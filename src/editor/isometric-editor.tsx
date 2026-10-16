@@ -61,6 +61,7 @@ import {
   setAutoFitting,
   styleOf,
   removeComponent,
+  pruneSheetAnchors,
   resizeRun,
   resizeRunToCut,
   sub,
@@ -499,6 +500,8 @@ export function IsometricEditor({
         removeComponent(d, node.id);
       }
       d.nodes = d.nodes.filter((n) => n.associatedRunId || connected(d, n.id).length);
+      if (d.references) d.references = d.references.filter(r => d.nodes.some(n => n.id === r.atNodeId));
+      pruneSheetAnchors(d);
       setSelection("");
       setStart(lastOpenEnd(d));
       setPending(null);
@@ -2351,7 +2354,8 @@ export function IsometricEditor({
                             ))}
                         </select>
                       </Field>
-                      <NodeCallouts doc={doc} nodeId={selectedNode.id} commit={commit} />
+                      <NodeCallouts doc={doc} nodeId={selectedNode.id} commit={commit}
+                        sheetPoint={surface === "paper" && view === "iso" ? drawing.positions.get(selectedNode.id) : undefined} />
                       {missingTakeoutNodes.some(n => n.id === selectedNode.id) && <p className="iso-help iso-takeout-help">
                         This fitting has no known takeout. Enter the centre-to-pipe-end distance below to calculate the pipe cuts. Use the individual port takeouts in Fabrication details if they differ.
                       </p>}

@@ -149,6 +149,14 @@ export function drawAnnotations(ctx: IsoContext) {
   }
   // Flanged joints: "F12 B13 G14" with the bolt number boxed, naming only the parts this drawing supplies. A joint whose
   // gasket and bolts are on another drawing tags its flange alone; the second flange of a pair gets its own tag.
+  const stubSizeJoints = new Map<string, string>(), stubSizes = new Set<string>()
+  if (ctx.style.stackSizeLabels) for (const joint of [...ctx.joints].sort((a, b) =>
+    Number(a.kind === 'component-port') - Number(b.kind === 'component-port'))) {
+    for (const runId of joint.stubRunIds) {
+      const run = ctx.runs.find(r => r.id === runId), key = run && `${run.line}|${run.nps}`
+      if (key && !stubSizeJoints.has(key)) stubSizeJoints.set(key, joint.id)
+    }
+  }
   for (const joint of ctx.joints) {
     const target = jointPoint(joint)
     if (!target) continue
@@ -182,7 +190,11 @@ export function drawAnnotations(ctx: IsoContext) {
         const g = ctx.geometry.get(run.id)
         if (!g) continue
         const out = run.from === node.id ? g.dir : scale2(g.dir, -1)
-        tag(add2(target, scale2(out, 5)), stub, joint.nodeId)
+        const at = add2(target, scale2(out, 5)), key = `${run.line}|${run.nps}`
+        if (stubSizeJoints.get(key) === joint.id && !stubSizes.has(key)) {
+          itemBlock(at, stub, [`${sizeText(run.nps)} NS`], joint.nodeId)
+          stubSizes.add(key)
+        } else tag(at, stub, joint.nodeId)
       }
     }
   }
@@ -198,7 +210,7 @@ export function drawAnnotations(ctx: IsoContext) {
   // Nominal size labels: the first pipe of each size, again where the size changes along a straight, and on every
   // branch of another size than its header, off a reducing tee or an olet. A screwed vent or drain made only of its
   // fittings is sized by its olet.
-  const sized = new Set<string>()
+  const sized = new Set<string>(stubSizes)
   for (const leg of sheetLegs(ctx)) {
     const branchAt = (id: string, run: PipeRun) => {
       const n = getNode(ctx.doc, id)
@@ -313,6 +325,13 @@ export function drawAnnotations(ctx: IsoContext) {
     if (!at || !from) return
     const outline = nodeCode(ctx.doc, node) === 'EQUIP', neck = (at.end.kind === 'flange' ? 1.2 : 0) + SIZE.flangeThickness * 1.6 + 16
     const target = add2(from, scale2(at.out, outline ? neck + 11 : neck)), equipment = (node.tag ?? '').toUpperCase()
+    if (outline && equipment) {
+      const g = ctx.geometry.get(node.associatedRunId ?? ''), across = acrossOf(ctx, at.out, g?.dir3 ?? [1, 0, 0])
+      const turn = planeText(across, at.out)
+      text(add2(target, scale2(uprightOf(turn), -T / 2)), equipment, T, 'TEXT', node.id,
+        { rotation: turn.rotation, oblique: turn.oblique, anchor: 'middle' })
+      return
+    }
     const nozzle = outline ? '' : (node.calloutText ?? '').split('\n')[0].toUpperCase()
     const w = Math.max(measureText(nozzle, T), measureText(equipment, T) + 6), h = (nozzle ? T * LINE_SPACING : 0) + T + 6
     if (!nozzle && !equipment) return

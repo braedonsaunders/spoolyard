@@ -56,6 +56,7 @@ export interface IsoContext {
   /** Page extent of each node's symbol along its pipe, so pipes stop at valve bodies. */
   extent: Map<string, number>
   out: Primitive[]
+  referenceDimensions?: Array<{ atNodeId: string; model: Vec3; page: Point }>
 }
 export function emitters(ctx: Pick<IsoContext, 'out' | 'place'>) {
   const line = (a: Point, b: Point, layer: string, owner?: string, weight?: number, occupy = true) => {

@@ -356,7 +356,7 @@ export function flangedJoints(doc: IsoDocument, spool = ''): FlangedJoint[] {
       const other = getNode(doc, run.from === node.id ? run.to : run.from), explicit = run.connector && other.kind === 'flange'
       // Two components bolted face to face share one joint; its gasket and bolts are listed with the first of them.
       const direct = boltedDirect(doc, node, run), second = direct && doc.nodes.indexOf(other) < doc.nodes.indexOf(node)
-      const lugged = lug || (direct && /^BFLY(-LUG)?$/.test(nodeCode(doc, other) ?? ''))
+      const lugged = lug || choice?.mate === 'lug' || (direct && /^BFLY(-LUG)?$/.test(nodeCode(doc, other) ?? ''))
       const makeup = lugged ? 'lug-valve-side' : wafer ? 'wafer-valve' : mate && isLapJoint(mate.code) ? 'lj-pair' : 'flange-pair'
       // A wafer valve's through-studs belong to its first joint.
       const physical = !(wafer && index > 0) && !second

@@ -150,6 +150,8 @@ export interface PipeNode {
   calloutText?: string
   /** Dimension this support's location along its pipe. */
   dimensioned?: boolean
+  /** Which dimension chain locates this branch work point when component-face tiers are shown. */
+  dimensionChain?: 'both' | 'body' | 'mate'
   /** The located point is approximate (a wall penetration): its dimension reads "(±)". */
   approximate?: boolean
   /** List this support as material in the bill of materials; by default a support from a specification row is listed. */
@@ -176,6 +178,7 @@ export const isEccentric = (code?: string) => !!code && /^E-(RED|SWAGE|SWG)$/.te
 export const flatSideText = (n: PipeNode) =>
   !n.flatSide ? '' : n.flatSide === 'top' ? 'FOT' : n.flatSide === 'bottom' ? 'FOB' : `FLAT ${n.flatSide.toUpperCase()}`
 export interface PortFlange {
+  mate?: 'flange' | 'lug'
   /** Mating flange component code, or 'NONE' when the mate is not supplied. */
   component?: string
   gasket?: boolean
@@ -216,12 +219,31 @@ export interface TitleBlock {
   /** How the sheet's dates are written, printed in the date labels; YY-MM-DD when unset. */
   dateFormat?: string
 }
+/** A dimension endpoint follows a work point or a component's face on a connected run. */
+export interface DimensionAnchor {
+  nodeId: string
+  runId?: string
+  face?: 'body' | 'mate'
+}
+export interface SheetDimension {
+  from: DimensionAnchor
+  to: DimensionAnchor
+  /** Extension direction in plant axes and distance on paper, independent of model length. */
+  axis: Vec3
+  offset: number
+}
 export interface SheetInfo {
   drawingNumber?: string
   lineNumber?: string
   revision?: string
   /** Item numbers held as issued: material row keys in ID order. New items follow, in the usual order. */
   bomOrder?: string[]
+  /** Verbatim cells retained when reproducing an issued drawing; calculated fabrication quantities remain intact. */
+  issuedValues?: Record<string, { qtyText?: string; nd?: string; description?: string }>
+  /** Drafter's positions on the isometric paper (sheet units); routing and fabrication coordinates are unchanged. */
+  nodePositions?: Record<string, [number, number]>
+  /** An explicitly drafted set replaces automatic dimensions on this sheet. Lengths still come from the model. */
+  dimensions?: SheetDimension[]
 }
 export interface DrawingStyle {
   layout: 'scale' | 'schematic'
@@ -233,6 +255,10 @@ export interface DrawingStyle {
   componentFaces?: boolean
   /** Print SCALE: NTS on schematic sheets. Omitted means shown. */
   scaleNote?: boolean
+  /** Legacy issued sheets may round each dimension independently rather than close a rounded chain. */
+  dimensionRounding?: 'chain' | 'individual'
+  northMark?: 'arrow' | 'ticks'
+  stackSizeLabels?: boolean
 }
 /** Plant east, north and elevation (mm) of the model origin. */
 export interface PlantCoordinates {
@@ -313,6 +339,19 @@ export interface IsoDocument {
   style?: DrawingStyle
   coordinates?: PlantCoordinates
   sheetNotes?: SheetNote[]
+  /** Adjacent drawings shown thin at continuations, excluded from all fabrication quantities. */
+  references?: DrawingReference[]
+}
+export interface DrawingReference {
+  id: string
+  atNodeId: string
+  name: string
+  anchorNodeId: string
+  nodes: PipeNode[]
+  runs: PipeRun[]
+  specs: PipeSpec[]
+  components?: number
+  dimensionTo?: string
 }
 export interface RunResult {
   run: PipeRun
@@ -559,7 +598,7 @@ export function styleOf(doc: IsoDocument): DrawingStyle {
   return doc.style ?? { layout: 'scale', weldNumbers: true, lettering: 'sans' }
 }
 /** Drawing number, line and revision printed on one spool's sheet. */
-export function sheetInfoOf(doc: IsoDocument, spool: string): Required<Omit<SheetInfo, 'bomOrder'>> {
+export function sheetInfoOf(doc: IsoDocument, spool: string): Required<Pick<SheetInfo, 'drawingNumber' | 'lineNumber' | 'revision'>> {
   const own = (spool && doc.sheets?.[spool]) || {}
   const spools = [...new Set(doc.runs.map(r => r.spool))]
   return {
@@ -1620,6 +1659,7 @@ export function parseIsoJson(raw: string): IsoDocument {
         (n.continuation.coordinateFace != null && !['flange', 'mate'].includes(n.continuation.coordinateFace)))) ||
       (n.elevationCallout != null && typeof n.elevationCallout !== 'boolean') ||
       (n.dimensioned != null && typeof n.dimensioned !== 'boolean') ||
+      (n.dimensionChain != null && !['both', 'body', 'mate'].includes(n.dimensionChain)) ||
       (n.approximate != null && typeof n.approximate !== 'boolean') ||
       (n.inBom != null && typeof n.inBom !== 'boolean') ||
       (n.tiePoint != null && (!isPlain(n.tiePoint) || !isString(n.tiePoint.id, 40) ||
@@ -1636,6 +1676,7 @@ export function parseIsoJson(raw: string): IsoDocument {
         !Object.values(n.portFlanges).every(f => isPlain(f) &&
           (f.component == null || isString(f.component, 60)) &&
           (f.gasket == null || typeof f.gasket === 'boolean') &&
+          (f.mate == null || f.mate === 'flange' || f.mate === 'lug') &&
           (f.bolts == null || typeof f.bolts === 'boolean'))))
     )
       throw new Error('Invalid component callout.')
@@ -1668,7 +1709,10 @@ export function parseIsoJson(raw: string): IsoDocument {
       typeof d.style.weldNumbers !== 'boolean' || !['cad', 'sans'].includes(d.style.lettering) ||
       (d.style.elevations != null && typeof d.style.elevations !== 'boolean') ||
       (d.style.componentFaces != null && typeof d.style.componentFaces !== 'boolean') ||
-      (d.style.scaleNote != null && typeof d.style.scaleNote !== 'boolean'))
+      (d.style.scaleNote != null && typeof d.style.scaleNote !== 'boolean') ||
+      (d.style.dimensionRounding != null && !['chain', 'individual'].includes(d.style.dimensionRounding)) ||
+      (d.style.stackSizeLabels != null && typeof d.style.stackSizeLabels !== 'boolean') ||
+      (d.style.northMark != null && !['arrow', 'ticks'].includes(d.style.northMark)))
   )
     throw new Error('Invalid drawing style.')
   if (
@@ -1676,7 +1720,18 @@ export function parseIsoJson(raw: string): IsoDocument {
     (!isPlain(d.sheets) || Object.keys(d.sheets).length > 1000 ||
       !Object.entries(d.sheets).every(([k, s]) => isString(k) && isPlain(s) &&
         ['drawingNumber', 'lineNumber', 'revision'].every(f => s[f as keyof SheetInfo] == null || isString(s[f as keyof SheetInfo], 120)) &&
-        (s.bomOrder == null || (Array.isArray(s.bomOrder) && s.bomOrder.length <= 500 && s.bomOrder.every(k => isString(k, 2000))))))
+        (s.bomOrder == null || (Array.isArray(s.bomOrder) && s.bomOrder.length <= 500 && s.bomOrder.every(k => isString(k, 2000)))) &&
+        (s.nodePositions == null || (isPlain(s.nodePositions) && Object.keys(s.nodePositions).length <= 5000 &&
+          Object.entries(s.nodePositions).every(([key, point]) => isString(key) && Array.isArray(point) && point.length === 2 && point.every(finite)))) &&
+        (s.dimensions == null || (Array.isArray(s.dimensions) && s.dimensions.length <= 500 && s.dimensions.every(dim =>
+          isPlain(dim) && [dim.from, dim.to].every(a => isPlain(a) && isString(a.nodeId) &&
+            d.nodes.some(n => n.id === a.nodeId) && (a.face == null || ['body', 'mate'].includes(a.face) && a.runId != null) &&
+            (a.runId == null || isString(a.runId) && d.runs.some(r => r.id === a.runId && [r.from, r.to].includes(a.nodeId)))) &&
+          Array.isArray(dim.axis) && dim.axis.length === 3 && dim.axis.every(finite) && Math.hypot(...dim.axis) > 0 &&
+          finite(dim.offset) && Math.abs(dim.offset) <= 5000))) &&
+        (s.issuedValues == null || (isPlain(s.issuedValues) && Object.keys(s.issuedValues).length <= 500 &&
+          Object.entries(s.issuedValues).every(([key, value]) => isString(key, 2000) && isPlain(value) &&
+            (['qtyText', 'nd', 'description'] as const).every(k => value[k] == null || isString(value[k], k === 'description' ? 2000 : 120)))))))
   )
     throw new Error('Invalid sheet information.')
   if (
@@ -1824,6 +1879,23 @@ export function parseIsoJson(raw: string): IsoDocument {
     )
       throw new Error('Tee branch must be a connected pipe.')
   }
+  if (d.references != null) {
+    if (!Array.isArray(d.references) || d.references.length > 100) throw new Error('Invalid adjacent drawings.')
+    const references = new Set<string>()
+    for (const r of d.references) {
+      if (!isPlain(r) || !isString(r.id, 200) || !r.id || references.has(r.id) || !ids.has(r.atNodeId) ||
+        !isString(r.name, 200) || !isString(r.anchorNodeId) || !Array.isArray(r.nodes) || r.nodes.length > 100 ||
+        !Array.isArray(r.runs) || r.runs.length > 100 || !Array.isArray(r.specs) ||
+        (r.components != null && (!Number.isInteger(r.components) || r.components < 1 || r.components > 3)) ||
+        (r.dimensionTo != null && !isString(r.dimensionTo))) throw new Error('Invalid adjacent drawing.')
+      // Validate each isolated reference using the same graph and catalogue rules as an ordinary document.
+      const source = parseIsoJson(JSON.stringify({ ...d, nodes: r.nodes, runs: r.runs, specs: r.specs,
+        references: undefined, sheets: undefined, sheetNotes: undefined }))
+      if (!source.nodes.some(n => n.id === r.anchorNodeId) || (r.dimensionTo && !source.nodes.some(n => n.id === r.dimensionTo)))
+        throw new Error('Adjacent drawing refers to a missing point.')
+      references.add(r.id)
+    }
+  }
   return d
 }
 export function csv(rows: unknown[][]): string {
@@ -1839,10 +1911,24 @@ export function csv(rows: unknown[][]): string {
     )
     .join('\r\n')
 }
+/** Discard paper anchors when their underlying geometry has been removed. */
+export function pruneSheetAnchors(doc: IsoDocument): void {
+  for (const info of Object.values(doc.sheets ?? {})) {
+    if (info.nodePositions) for (const key of Object.keys(info.nodePositions))
+      if (!doc.nodes.some(n => n.id === key)) delete info.nodePositions[key];
+    if (info.dimensions) info.dimensions = info.dimensions.filter(dim => [dim.from, dim.to].every(a =>
+      doc.nodes.some(n => n.id === a.nodeId) && (!a.runId || doc.runs.some(r => r.id === a.runId && [r.from, r.to].includes(a.nodeId)))));
+  }
+}
 /** Remove an inline component without losing either outer connection's fabrication data. */
 export function removeComponent(doc: IsoDocument, nodeId: string): void {
   const node = getNode(doc, nodeId), edges = connected(doc, nodeId);
-  if (node.associatedRunId || edges.length === 0) { doc.nodes = doc.nodes.filter(n => n.id !== nodeId); return; }
+  if (node.associatedRunId || edges.length === 0) {
+    doc.nodes = doc.nodes.filter(n => n.id !== nodeId);
+    if (doc.references) doc.references = doc.references.filter(r => r.atNodeId !== nodeId);
+    pruneSheetAnchors(doc);
+    return;
+  }
   if (edges.length !== 2) throw new Error('Remove the connected branch pipes before deleting this junction.');
   const [a,b] = edges;
   for (const key of ['specId','nps','spool','line','heat','rootGap','connector'] as const)
@@ -1867,4 +1953,8 @@ export function removeComponent(doc: IsoDocument, nodeId: string): void {
   }
   doc.runs=doc.runs.filter(r=>r.id!==b.id);
   doc.nodes=doc.nodes.filter(n=>n.id!==nodeId);
+  if (doc.references) doc.references = doc.references.filter(r => r.atNodeId !== nodeId);
+  for (const info of Object.values(doc.sheets ?? {})) for (const dim of info.dimensions ?? [])
+    for (const anchor of [dim.from, dim.to]) if (anchor.runId === b.id) anchor.runId = a.id;
+  pruneSheetAnchors(doc);
 }

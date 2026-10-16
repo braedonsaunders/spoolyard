@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { Plus, Trash2, Upload } from "lucide-react";
 import { cn } from "./cn";
-import { holdItemNumbers } from "../core/material-list";
+import { holdItemNumbers, sheetMaterials } from "../core/material-list";
 import {
   clone,
   lengthInputValue,
@@ -14,6 +14,7 @@ import {
   type DrawingStyle,
   type IsoDocument,
   type SheetInfo,
+  type SheetDimension,
   type TitleBlock,
   type TitleBlockRevision,
   type Vec3,
@@ -117,7 +118,7 @@ export function sheetSpools(doc: IsoDocument) {
 export function defaultSheetInfo(doc: IsoDocument, spool: string) {
   return sheetInfoOf({ ...doc, sheets: undefined }, spool);
 }
-export function setSheetInfo(d: IsoDocument, spool: string, key: Exclude<keyof SheetInfo, 'bomOrder'>, value: string) {
+export function setSheetInfo(d: IsoDocument, spool: string, key: 'drawingNumber' | 'lineNumber' | 'revision', value: string) {
   const v = limit(value.trim(), SHEET_LIMIT, "Sheet text"),
     sheets = (d.sheets ??= {}),
     info: SheetInfo = { ...sheets[spool] };
@@ -552,6 +553,22 @@ export function SheetSettings({
           <input type="checkbox" checked={style.scaleNote !== false} onChange={(e) => setStyle({ scaleNote: e.target.checked })} />
           Print SCALE: NTS on not-to-scale sheets
         </label>
+        <label className="iso-check">
+          <input type="checkbox" checked={!!style.stackSizeLabels} onChange={e => setStyle({ stackSizeLabels: e.target.checked })} />
+          Stack line size under the stub-end item tag
+        </label>
+        <Field label="Dimension rounding">
+          <select aria-label="Dimension rounding" value={style.dimensionRounding ?? "chain"} onChange={e => setStyle({ dimensionRounding: e.target.value as "chain" | "individual" })}>
+            <option value="chain">Close rounded dimension chains</option>
+            <option value="individual">Round each dimension (legacy issued drawings)</option>
+          </select>
+        </Field>
+        <Field label="North symbol">
+          <select aria-label="North symbol" value={style.northMark ?? "arrow"} onChange={e => setStyle({ northMark: e.target.value as "arrow" | "ticks" })}>
+            <option value="arrow">Plant north arrow</option>
+            <option value="ticks">Ellipse with compass ticks</option>
+          </select>
+        </Field>
       </Section>
 
       <Section title="Sheets" hint={String(spools.length)} open>
@@ -559,7 +576,7 @@ export function SheetSettings({
         {spools.map((s) => {
           const own = doc.sheets?.[s] ?? {},
             auto = defaultSheetInfo(doc, s);
-          const cell = (key: Exclude<keyof SheetInfo, 'bomOrder'>, label: string) =>
+          const cell = (key: 'drawingNumber' | 'lineNumber' | 'revision', label: string) =>
             text(label, own[key] ?? "", (d, v) => setSheetInfo(d, s, key, v), { placeholder: auto[key], max: SHEET_LIMIT });
           return (
             <div key={s} className={cn("iso-sheet-card", s === spool && "current")} aria-current={s === spool || undefined}>
@@ -580,6 +597,92 @@ export function SheetSettings({
                 />
                 Hold item numbers as issued (new items are numbered after them)
               </label>
+              {own.bomOrder && (
+                <details>
+                  <summary>Issued item order</summary>
+                  {sheetMaterials(doc, s).map((row, i, rows) => (
+                    <div key={row.key}>
+                      <div className="iso-sheet-row">
+                      <span title={row.description}>{row.id}. {row.nd} {row.description.slice(0, 28)}</span>
+                      <button aria-label={`Move item ${row.id} up`} disabled={!i} onClick={() => edit(d => {
+                        const order = sheetMaterials(d, s).map(r => r.key);
+                        [order[i - 1], order[i]] = [order[i], order[i - 1]];
+                        d.sheets![s].bomOrder = order;
+                      })}>↑</button>
+                      <button aria-label={`Move item ${row.id} down`} disabled={i === rows.length - 1} onClick={() => edit(d => {
+                        const order = sheetMaterials(d, s).map(r => r.key);
+                        [order[i], order[i + 1]] = [order[i + 1], order[i]];
+                        d.sheets![s].bomOrder = order;
+                      })}>↓</button>
+                      </div>
+                      <details>
+                        <summary>Verbatim issued cells</summary>
+                        <p className="iso-help">Calculated: {row.calculated?.qtyText ?? row.qtyText} · {row.calculated?.nd ?? row.nd} · {row.calculated?.description ?? row.description}</p>
+                        {([['qtyText', 'Issued QTY'], ['nd', 'Issued ND'], ['description', 'Issued description']] as const).map(([key, label]) => (
+                          <TextInput key={key} label={label + ' for item ' + row.id} value={own.issuedValues?.[row.key]?.[key] ?? ''}
+                            placeholder={row.calculated?.[key] ?? row[key]} max={key === 'description' ? 2000 : 120} onError={onError}
+                            onCommit={value => edit(d => {
+                              const cells = (d.sheets![s].issuedValues ??= {}), overrides = (cells[row.key] ??= {});
+                              if (value) overrides[key] = value; else delete overrides[key];
+                              if (!Object.keys(overrides).length) delete cells[row.key];
+                            })} />
+                        ))}
+                      </details>
+                    </div>
+                  ))}
+                </details>
+              )}
+              <details>
+                <summary>Drafted dimensions</summary>
+                <p className="iso-help">Choose the measured points and paper offset. Lengths follow the model. A drafted set replaces automatic dimensions on this sheet.</p>
+                <label className="iso-check">
+                  <input type="checkbox" checked={own.dimensions != null} onChange={e => edit(d => {
+                    const info = ((d.sheets ??= {})[s] ??= {});
+                    if (e.target.checked) info.dimensions = []; else delete info.dimensions;
+                  })} />Use drafted dimensions
+                </label>
+                {own.dimensions?.map((dim, i) => {
+                  const ids = new Set(doc.runs.filter(r => r.spool === s).flatMap(r => [r.from, r.to]));
+                  const nodes = doc.nodes.filter(n => ids.has(n.id) || n.associatedRunId && doc.runs.some(r => r.id === n.associatedRunId && r.spool === s));
+                  const change = (fn: (dim: SheetDimension) => void) => edit(d => fn(d.sheets![s].dimensions![i]));
+                  return <div key={i} className="iso-sheet-card">
+                    <strong>Dimension {i + 1}</strong>
+                    {(['from', 'to'] as const).map(end => <div key={end}>
+                      <Field label={end === 'from' ? 'From' : 'To'}>
+                        <select aria-label={`Dimension ${i + 1} ${end} node`} value={dim[end].nodeId} onChange={e => change(v => { v[end] = { nodeId: e.target.value }; })}>
+                          {nodes.map(n => <option key={n.id} value={n.id}>{n.tag || n.component || n.kind} · {n.id.slice(0, 8)}</option>)}
+                        </select>
+                      </Field>
+                      <Field label="Measured point">
+                        <select aria-label={`Dimension ${i + 1} ${end} point`} value={dim[end].face ? `${dim[end].face}:${dim[end].runId}` : 'work'} onChange={e => change(v => {
+                          const value = e.target.value;
+                          if (value === 'work') v[end] = { nodeId: v[end].nodeId };
+                          else { const split = value.indexOf(':'); v[end].face = value.slice(0, split) as 'body' | 'mate'; v[end].runId = value.slice(split + 1); }
+                        })}>
+                          <option value="work">Work point</option>
+                          {doc.runs.filter(r => [r.from, r.to].includes(dim[end].nodeId)).flatMap(r => (['body', 'mate'] as const).map(face =>
+                            <option key={`${face}:${r.id}`} value={`${face}:${r.id}`}>{face === 'body' ? 'Body face' : 'Mating face'} · {r.id.slice(0, 8)}</option>))}
+                        </select>
+                      </Field>
+                    </div>)}
+                    <Field label="Extension direction">
+                      <select aria-label={`Dimension ${i + 1} direction`} value={dim.axis.join(',')} onChange={e => change(v => { v.axis = e.target.value.split(',').map(Number) as Vec3; })}>
+                        {([[1,0,0,'East'],[-1,0,0,'West'],[0,1,0,'North'],[0,-1,0,'South'],[0,0,1,'Up'],[0,0,-1,'Down']] as const).map(([x,y,z,label]) => <option key={label} value={`${x},${y},${z}`}>{label}</option>)}
+                      </select>
+                    </Field>
+                    <TextInput label={`Dimension ${i + 1} paper offset`} value={String(dim.offset)} onError={onError} onCommit={value => {
+                      const offset = Number(value);
+                      if (!value.trim() || !Number.isFinite(offset) || Math.abs(offset) > 5000) { onError('Enter a paper offset between -5000 and 5000.'); return false; }
+                      change(v => { v.offset = offset; });
+                    }} />
+                    <button onClick={() => edit(d => { d.sheets![s].dimensions!.splice(i, 1); })}>Remove dimension {i + 1}</button>
+                  </div>;
+                })}
+                {own.dimensions && <button onClick={() => edit(d => {
+                  const run = d.runs.find(r => r.spool === s);
+                  if (run) d.sheets![s].dimensions!.push({ from: { nodeId: run.from }, to: { nodeId: run.to }, axis: [0,0,1], offset: 43.5 });
+                })}>Add dimension</button>}
+              </details>
             </div>
           );
         })}

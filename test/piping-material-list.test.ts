@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendRun, applyComponent, getNode, newIso, takeout, welds, type PipeSpec } from '../src/core/model.ts';
+import { appendRun, applyComponent, bom, getNode, newIso, parseIsoJson, takeout, welds, type PipeSpec } from '../src/core/model.ts';
 import { sheetMaterials } from '../src/core/material-list.ts';
 import { boltSizeText, coordinateText, draftLength, purchaseLength, sizeText } from '../src/core/format.ts';
 
@@ -172,4 +172,19 @@ test('uncut pieces list by length, pipes can carry their own text, and held item
   holdItemNumbers(doc, 'S-1', false);
   assert.equal(doc.sheets, undefined);
   assert.match(sheetMaterials(doc, 'S-1')[2].description, /CAP/);
+});
+
+test('verbatim issued cells retain the calculated quantity and survive reopening', () => {
+  const doc = newIso(); doc.specs = [lapJointSpec()];
+  appendRun(doc, null, [inch(20), 0, 0], 'S1', 2, 'S', '');
+  const before = sheetMaterials(doc, 'S')[0], takeoff = bom(doc);
+  doc.sheets = { S: { issuedValues: { [before.key]: { qtyText: '9 ft', nd: 'DN50', description: 'VERBATIM ISSUED PIPE' } } } };
+  const after = sheetMaterials(doc, 'S')[0];
+  assert.equal(after.qty, before.qty);
+  assert.deepEqual(after.calculated, { qtyText: before.qtyText, nd: before.nd, description: before.description });
+  assert.equal(after.qtyText, '9 ft'); assert.equal(after.nd, 'DN50');
+  assert.deepEqual(bom(doc), takeoff);
+  assert.deepEqual(sheetMaterials(parseIsoJson(JSON.stringify(doc)), 'S'), sheetMaterials(doc, 'S'));
+  (doc.sheets.S.issuedValues![before.key] as any).qtyText = 12;
+  assert.throws(() => parseIsoJson(JSON.stringify(doc)), /Invalid sheet/);
 });

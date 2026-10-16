@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { appendRun, applyComponent, attachComponent, clone, getNode, newIso, parseIsoJson, type IsoDocument, type PipeSpec } from '../src/core/model.ts';
+import { appendRun, applyComponent, attachComponent, clone, getNode, newIso, parseIsoJson, removeComponent, runResult, type IsoDocument, type PipeSpec } from '../src/core/model.ts';
 import { COMPONENT_TYPES } from '../src/core/components.ts';
 import { placeComponentOnPipe } from '../src/core/component-position.ts';
 import { createDrawing } from '../src/core/drawing.ts';
@@ -40,6 +40,10 @@ test('a chain of dimensions adds up to its overall, in millimetres and in sixtee
   const texts = dims(imperial), overall = texts.map(sixteenths).reduce((a, b) => Math.max(a, b));
   assert.equal(overall, 481);
   assert.equal(texts.map(sixteenths).filter(v => v !== overall).reduce((a, b) => a + b, 0), overall);
+  // Issued legacy drawings may retain independently rounded dimensions; this is an explicit style choice.
+  imperial.style!.dimensionRounding = 'individual';
+  const legacy = dims(imperial).map(sixteenths);
+  assert.equal(legacy.filter(v => v !== overall).reduce((a, b) => a + b, 0), 480);
 });
 
 test('a gasket at the end of a leg is dimensioned and the overall takes it in', () => {
@@ -198,9 +202,11 @@ test("a tee's own short skewed branch is dimensioned by its length alone", () =>
   const d = doc();
   const tee = run(d, null, [1000, 0, 0]);
   run(d, tee.id, [1000, 0, 0]);
-  run(d, tee.id, [45, -45, 0], true);
+  const end = run(d, tee.id, [45, -45, 0], true);
   assert.ok(!dims(d).some(t => /°/.test(t)));
   assert.ok(dims(d).includes('64'));
+  const drawing = createDrawing(d), a = drawing.positions.get(tee.id)!, b = drawing.positions.get(end.id)!;
+  assert.ok(Math.hypot(b[0] - a[0], b[1] - a[1]) < 60, 'the tee port stays a short stub on paper');
 });
 
 test('an overall runs across tees only between two open ends', () => {
@@ -257,4 +263,30 @@ test('an approximate location is saved as a yes or no', () => {
   assert.equal(parseIsoJson(JSON.stringify(d)).nodes.find(n => n.id === wall.id)!.approximate, true);
   Object.assign(wall, { approximate: 'about' });
   assert.throws(() => parseIsoJson(JSON.stringify(d)));
+});
+
+test('drafted face dimensions follow model edits and preserve fabrication geometry', () => {
+  const d = doc();
+  run(d, null, [4000, 0, 0]);
+  const valve = placeComponentOnPipe(d, d.runs[0].id, type('GATE-FL'), 0.5);
+  const edges = d.runs.filter(r => [r.from, r.to].includes(valve.id));
+  const before = JSON.stringify(d.runs.map(r => ({ id: r.id, cut: runResult(d, r).cut })));
+  d.sheets = { 'SP-1': { dimensions: [{
+    from: { nodeId: valve.id, runId: edges[0].id, face: 'body' },
+    to: { nodeId: valve.id, runId: edges[1].id, face: 'body' }, axis: [0, 0, 1], offset: 65,
+  }] } };
+  const half = row(d, 'GATE-FL').takeout;
+  assert.deepEqual(dims(d), [String(Math.round(half * 2))]);
+  assert.equal(JSON.stringify(d.runs.map(r => ({ id: r.id, cut: runResult(d, r).cut }))), before);
+  const reopened = parseIsoJson(JSON.stringify(d));
+  assert.deepEqual(dims(reopened), dims(d));
+  reopened.sheets!['SP-1'].dimensions![0].from.face = 'mate';
+  reopened.sheets!['SP-1'].dimensions![0].to.face = 'mate';
+  assert.deepEqual(dims(reopened), [String(Math.round(half * 2 + 6.34))]);
+  const bad = clone(d);
+  bad.sheets!['SP-1'].dimensions![0].from.nodeId = 'missing';
+  assert.throws(() => parseIsoJson(JSON.stringify(bad)), /sheet information/);
+  removeComponent(d, valve.id);
+  assert.deepEqual(d.sheets!['SP-1'].dimensions, []);
+  assert.doesNotThrow(() => parseIsoJson(JSON.stringify(d)));
 });

@@ -6,6 +6,7 @@ import { measureText } from '../stroke-font'
 import { symbolStrokes } from '../symbols'
 import { SIZE, emitters, type IsoContext, type RunGeometry } from './context'
 import { sheetLegs } from './dimensions'
+import { referenceDocument } from '../references'
 import { add2, crossAxis, dot2, frame, isAxial, left2, len2, planeText, scale2, sub2, unit2, uprightOf } from './plane'
 
 const flangedPort = (code?: string) => !!code && COMPONENT_TYPE_BY_CODE[code]?.endPrep === 'FL'
@@ -149,7 +150,12 @@ export function drawPipes(ctx: IsoContext) {
     let pieces: Array<[number, number]> = [[ea, g.length - eb]]
     for (const [lo, hi] of gaps.get(g.run.id) ?? [])
       pieces = pieces.flatMap(([a, b]) => hi <= a || lo >= b ? [[a, b] as [number, number]] : [[a, lo], [hi, b]].filter(([x, y]) => y - x > 0.5) as Array<[number, number]>)
-    for (const [a, b] of pieces) line(add2(g.a, scale2(g.dir, a)), add2(g.a, scale2(g.dir, b)), 'PIPE', g.run.id)
+    for (const [a, b] of pieces) {
+      if (g.run.nipple) {
+        const f = frame(g.a, g.dir, acrossOf(ctx, g.dir, g.dir3))
+        poly([f(a, -NIPPLE), f(b, -NIPPLE), f(b, NIPPLE), f(a, NIPPLE)], 'SYMBOL', g.run.id, { closed: true, weight: 0.8 })
+      } else line(add2(g.a, scale2(g.dir, a)), add2(g.a, scale2(g.dir, b)), 'PIPE', g.run.id)
+    }
   }
   // Shop welds are dots; socket welds add the socket mark; field welds are open, crossed circles, flagged FW with the callouts.
   for (const w of welds(ctx.doc)) {
@@ -194,8 +200,20 @@ export function drawPipes(ctx: IsoContext) {
   // Where the line runs on into another spool of this drawing, that spool's next components are drawn beyond the
   // shared point in place of the continuation break.
   const shared = new Set(ctx.nodes.filter(n => ctx.pos.has(n.id) && connected(ctx.doc, n.id).some(r => !ctx.runs.includes(r))).map(n => n.id))
+  const references = (ctx.doc.references ?? []).filter(r => ctx.nodes.some(n => n.id === r.atNodeId))
+  for (const r of references) shared.add(r.atNodeId)
   for (const node of ctx.nodes) drawSymbol(ctx, node)
   for (const id of shared) ghosts(getNode(ctx.doc, id))
+  for (const r of references) {
+    const at = ctx.pos.get(r.atNodeId)
+    if (!at) continue
+    const ownDoc = ctx.doc
+    ctx.doc = referenceDocument(ownDoc, r)
+    ctx.pos.set(r.anchorNodeId, at)
+    try { ghosts(getNode(ctx.doc, r.anchorNodeId), r.components ?? 1, r.dimensionTo, r.atNodeId,
+      getNode(ownDoc, r.atNodeId).kind !== getNode(ctx.doc, r.anchorNodeId).kind) }
+    finally { ctx.doc = ownDoc; ctx.pos.delete(r.anchorNodeId); ctx.extent.delete(r.anchorNodeId) }
+  }
 
   function weld(p: Point, field: boolean, owner: string) {
     if (!field) { circle(p, SIZE.weld, 'WELD', owner, true); return }
@@ -215,7 +233,7 @@ export function drawPipes(ctx: IsoContext) {
     const s = 3.6, f = frame(p, out, unit2(across))
     poly([f(s, -s), f(0, -s), f(0, s), f(s, s)], 'SYMBOL', node.id, { weight: 0.8 })
   }
-  function arrowhead(tip: Point, dir: Point, owner: string, length = 9, width = 2.6) {
+  function arrowhead(tip: Point, dir: Point, owner: string, length = 4.5, width = 1.3) {
     const u = unit2(dir), base = sub2(tip, scale2(u, length)), n = scale2(left2(u), width)
     poly([tip, add2(base, n), sub2(base, n)], 'SYMBOL', owner, { closed: true, fill: true })
   }
@@ -320,12 +338,20 @@ export function drawPipes(ctx: IsoContext) {
   function equipmentAt(node: PipeNode, at: Point, out: Point, across: Point, from: number) {
     const f = frame(at, out, across), F = SIZE.flange, t = SIZE.flangeThickness * 1.6, neck = from + t + 16, owner = node.id
     poly([f(from, -F * 1.15), f(from + t, -F * 1.15), f(from + t, F * 1.15), f(from, F * 1.15)], 'SYMBOL', owner, { closed: true })
-    for (const s of [-1, 1]) line(f(from + t, s * F * 0.5), f(neck, s * F * 0.5), 'SYMBOL', owner)
+    const outline = codeOf(node) === 'EQUIP'
+    for (const s of [-1, 1]) {
+      if (outline) dashed(f(from + t, s * F * 0.5), f(neck, s * F * 0.5), owner)
+      else line(f(from + t, s * F * 0.5), f(neck, s * F * 0.5), 'SYMBOL', owner)
+    }
     if (codeOf(node) !== 'EQUIP') return
     // The outline: a vessel or casing seen in isometric, an ellipse beyond the neck.
     const R = 18, pts: Point[] = []
     for (let i = 0; i <= 32; i++) { const a = i / 32 * Math.PI * 2; pts.push(f(neck + R * 0.6 + Math.sin(a) * R * 0.6, Math.cos(a) * R * 1.4)) }
-    poly(pts, 'SYMBOL', owner, { closed: true })
+    for (let i = 0; i < pts.length - 1; i += 2) line(pts[i], pts[i + 1], 'SYMBOL', owner, 0.6)
+  }
+  function dashed(a: Point, b: Point, owner: string) {
+    const d = sub2(b, a), span = len2(d), u = unit2(d)
+    for (let s = 0; s < span; s += 6) line(add2(a, scale2(u, s)), add2(a, scale2(u, Math.min(span, s + 3.5))), 'SYMBOL', owner, 0.6)
   }
   function valve(node: PipeNode, code: string, at: Point, along: Point, across: Point, edges: PipeRun[]) {
     const owner = node.id, f = frame(at, along, across), e = ctx.extent.get(node.id) ?? 0
@@ -378,7 +404,12 @@ export function drawPipes(ctx: IsoContext) {
     const stemDir = operatorDirection(node.operator)
     const stem = stemDir && len2(ctx.axis(stemDir)) > 0.05 ? unit2(ctx.axis(stemDir)) : across
     const top = add2(at, scale2(stem, w + 9)), side = Math.abs(dot2(stem, along)) > 0.9 ? left2(stem) : along
-    if (disc) { line(add2(at, scale2(stem, DISC)), add2(at, scale2(stem, DISC + 9)), 'SYMBOL', owner); return }
+    if (disc) {
+      const tip = add2(at, scale2(stem, DISC + 9))
+      line(add2(at, scale2(stem, DISC)), tip, 'SYMBOL', owner)
+      line(tip, add2(tip, scale2(side, 8)), 'SYMBOL', owner)
+      return
+    }
     line(ball ? add2(at, scale2(stem, 4)) : at, top, 'SYMBOL', owner)
     const ft = frame(top, side, stem)
     if (butterfly || /^CONTROL|^CV/.test(code)) poly([ft(-6, 0), ft(-5, 3), ft(-2.5, 5), ft(0, 5.6), ft(2.5, 5), ft(5, 3), ft(6, 0), ft(-6, 0)], 'SYMBOL', owner, { closed: true })
@@ -399,11 +430,11 @@ export function drawPipes(ctx: IsoContext) {
     for (const [a, b] of [[-F, -F * 0.55], [-F * 0.25, F * 0.25], [F * 0.55, F]]) line(f(x, a), f(x, b), 'SYMBOL', owner, 0.5, false)
   }
   /** Up to three components of the next spool beyond a shared point, thin, with dashed pipe and no tags. */
-  function ghosts(start: PipeNode) {
+  function ghosts(start: PipeNode, limit = 3, dimensionTo?: string, atNodeId?: string, drawAnchor = false) {
     const placed: string[] = [], walked: PipeRun[] = []
     const queue: Array<[PipeNode, PipeRun]> = connected(ctx.doc, start.id).filter(r => !ctx.runs.includes(r)).map(r => [start, r])
     let count = 0
-    while (queue.length && count < 3) {
+    while (queue.length && count < limit) {
       const [from, run] = queue.shift()!, far = getNode(ctx.doc, run.from === from.id ? run.to : run.from)
       if (ctx.pos.has(far.id) && !placed.includes(far.id)) continue
       const d = far.position.map((v, i) => v - from.position[i]) as Vec3, l = Math.hypot(...d) || 1, page = unit2(ctx.axis(d))
@@ -417,13 +448,20 @@ export function drawPipes(ctx: IsoContext) {
       for (const next of connected(ctx.doc, far.id)) if (next !== run && !ctx.runs.includes(next) && !walked.includes(next)) queue.push([far, next])
     }
     for (const id of placed) ctx.extent.set(id, symbolExtent(ctx, getNode(ctx.doc, id)))
+    if (atNodeId) ctx.extent.set(start.id, symbolExtent(ctx, start))
     const mark = ctx.out.length
     for (const run of walked) {
       const g = ctx.geometry.get(run.id)!, ea = ctx.extent.get(run.from) ?? 0, eb = ctx.extent.get(run.to) ?? 0
-      for (let x = ea; x < g.length - eb; x += 6) line(add2(g.a, scale2(g.dir, x)), add2(g.a, scale2(g.dir, Math.min(x + 3.5, g.length - eb))), 'SYMBOL', start.id, 0.6, false)
+      if (atNodeId) line(add2(g.a, scale2(g.dir, ea)), add2(g.b, scale2(g.dir, -eb)), 'SYMBOL', start.id, 0.6, false)
+      else for (let x = ea; x < g.length - eb; x += 6) line(add2(g.a, scale2(g.dir, x)), add2(g.a, scale2(g.dir, Math.min(x + 3.5, g.length - eb))), 'SYMBOL', start.id, 0.6, false)
     }
+    if (drawAnchor && start.kind !== 'end') drawSymbol(ctx, start)
     for (const id of placed) { const n = getNode(ctx.doc, id); if (n.kind !== 'end') drawSymbol(ctx, n) }
     for (const p of ctx.out.slice(mark)) if (p.type === 'line' || p.type === 'polyline' || p.type === 'circle') p.weight = Math.min(p.weight ?? 0.6, 0.6)
+    if (dimensionTo && atNodeId && placed.includes(dimensionTo)) {
+      ctx.referenceDimensions ??= []
+      ctx.referenceDimensions.push({ atNodeId, model: getNode(ctx.doc, dimensionTo).position, page: ctx.pos.get(dimensionTo)! })
+    }
     for (const id of placed) { ctx.pos.delete(id); ctx.extent.delete(id) }
     for (const run of walked) ctx.geometry.delete(run.id)
   }
@@ -493,7 +531,7 @@ export function drawPipes(ctx: IsoContext) {
     const owner = node.id, label = node.calloutText ?? '', across = acrossOf(ctx, g.dir, g.dir3), f = frame(at, g.dir, across)
     if (flowArrow(code)) {
       const size = /^VSM/.test(code) ? 0.7 : /^SM/.test(code) ? 0.85 : /^LG/.test(code) ? 1.3 : 1
-      arrowhead(add2(at, scale2(flowDirection(g) ?? g.dir, 4.5 * size)), flowDirection(g) ?? g.dir, owner, 9 * size, 2.6 * size)
+      arrowhead(add2(at, scale2(flowDirection(g) ?? g.dir, 2.25 * size)), flowDirection(g) ?? g.dir, owner, 4.5 * size, 1.3 * size)
       return
     }
     if (insulationLimit(code, label)) return insulationEnd(node, label, at, g)

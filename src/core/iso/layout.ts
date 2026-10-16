@@ -218,13 +218,15 @@ export function layoutSheet(doc: IsoDocument, runs: PipeRun[], nodes: PipeNode[]
         // readable, plus the room its end symbols and the hangers on it need. Fittings joined direct stay close.
         const weights = order.slice(1).map((id, i) => {
           const p = length(sub(position(id), position(order[i]))), ends = room(order[i]) + room(id) + hung(order[i], id)
-          if (!between(order[i], id)?.connector) return (PIECE + base * schematicLength(p)) * stretched + ends
+          const run = between(order[i], id)
+          if (!run?.connector && !run?.nipple) return (PIECE + base * schematicLength(p)) * stretched + ends
           return p < GASKET ? JOIN / 2 : JOIN * factor + ends
         })
         const total = weights.reduce((x, y) => x + y, 0) || 1
         // Offsets are drawn at full length whatever their foreshortening, and never shorter than a pipe piece, so
         // their constructions stay legible without dwarfing the runs beside them.
-        const drawn = offsetLeg ? Math.max(total, PIECE + base * schematicLength(mm) * 0.5) : total * span / mm
+        const assembly = leg.runs.every(r => r.connector || r.nipple)
+        const drawn = offsetLeg ? assembly ? total : Math.max(total, PIECE + base * schematicLength(mm) * 0.5) : total * span / mm
         const station = order.map((_, i) => weights.slice(0, i).reduce((x, y) => x + y, 0))
         const from = station[order.indexOf(at)]
         order.forEach((id, i) => {

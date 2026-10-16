@@ -31,6 +31,7 @@ export interface MaterialRow {
   cut?: number
   /** Stable identity of the row, for holding item numbers as issued. */
   key: string
+  calculated?: { qtyText: string; nd: string; description: string }
 }
 /** A full mill random length (20 ft, 6 m) is used as it comes, not cut. */
 const RANDOM_LENGTH = { imperial: 240 * 25.4 - 1, mm: 6000 - 1 }
@@ -185,7 +186,7 @@ export function sheetMaterials(doc: IsoDocument, spool = ''): MaterialRow[] {
     }
     if (joint.bolts) {
       const b = joint.bolts, own = rowDescription(b.item, 'STUD BOLTS C/W 2 NUTS')
-      const description = b.kind === 'lug' ? (/STUD/.test(own) ? own.replace(/STUD/g, 'LUG') : 'LUG BOLTS, ' + own) : own
+      const description = b.kind === 'lug' ? (/LUG/.test(own) ? own : /STUD/.test(own) ? own.replace(/STUD/g, 'LUG') : 'LUG BOLTS, ' + own) : own
       // ASME bolting is sized in inches on metric drawings too.
       const nd = boltSizeText(b.diameter, b.length)
       // Bolting follows joint size, then the joints' order along the line.
@@ -208,7 +209,7 @@ export function sheetMaterials(doc: IsoDocument, spool = ''): MaterialRow[] {
     const at = (key: string) => { const i = held.indexOf(key); return i < 0 ? Infinity : i }
     sorted.sort((a, b) => at(a.key) - at(b.key))
   }
-  return sorted.map((row, index) => {
+  const result: MaterialRow[] = sorted.map((row, index) => {
     const { size, flangeRank, first, pieces, uncut, ...rest } = row
     if (row.category !== 'pipe') return { ...rest, id: index + 1, qtyText: String(row.qty) }
     const n = pieces.length, cut = pieces[0], known = Number.isFinite(cut) && cut > 0
@@ -220,6 +221,9 @@ export function sheetMaterials(doc: IsoDocument, spool = ''): MaterialRow[] {
         : `${row.description} - CUT TO ${known ? draftLength(cut, doc.units) : '(PENDING)'}${n > 1 ? ` (TOTAL OF ${n} PIECES)` : ''}`
     }
   })
+  const issued = spool ? doc.sheets?.[spool]?.issuedValues : undefined
+  return result.map(row => issued?.[row.key] ? { ...row, ...issued[row.key],
+    calculated: { qtyText: row.qtyText, nd: row.nd, description: row.description } } : row)
 }
 /** The item order a sheet holds as issued, if any. */
 const sheetHeldOrder = (doc: IsoDocument, spool: string) => (spool && doc.sheets?.[spool]?.bomOrder) || []

@@ -1,6 +1,6 @@
 import type { Point } from '../drawing'
 import { draftLength, angleText } from '../format'
-import { connected, distance, getNode, length, runResult, sub, takeout, type PipeNode, type PipeRun, type Vec3 } from '../model'
+import { connected, distance, getNode, length, runResult, sub, takeout, type DimensionAnchor, type PipeNode, type PipeRun, type Vec3 } from '../model'
 import { nodeCode } from '../joints'
 import { SIZE, emitters, type IsoContext } from './context'
 import { measureText } from '../stroke-font'
@@ -114,6 +114,7 @@ function stations(ctx: IsoContext, leg: Leg, vents: Set<string>, bodyFaces = fal
   leg.nodes.forEach((id, i) => {
     const node = getNode(ctx.doc, id), page = ctx.pos.get(id)!
     let end = i === 0 || i === leg.nodes.length - 1
+    if (!end && (bodyFaces ? node.dimensionChain === 'mate' : node.dimensionChain === 'body')) return
     if (!end && node.kind === 'gasket') return
     const code = nodeCode(ctx.doc, node) ?? ''
     // A branch standing on a part screwed into an olet is measured from the pipe's centreline, at the olet.
@@ -175,6 +176,12 @@ function stations(ctx: IsoContext, leg: Leg, vents: Set<string>, bodyFaces = fal
   const kept: Station[] = []
   for (const s of out) {
     const last = kept.at(-1), gap = last ? s.along - last.along : Infinity
+    // Two explicitly drawn flange faces are one bolted joint even at the end of a leg. Use the face on the pipe.
+    const flangeGap = last?.node && s.node && getNode(ctx.doc, last.node).kind === 'flange' && getNode(ctx.doc, s.node).kind === 'flange'
+    if (flangeGap && gap <= 3.2) {
+      if (onPipe(s) && !onPipe(last!)) kept[kept.length - 1] = s
+      continue
+    }
     if (gap > 3.2 || ((s.end || last!.end) && gap > 0.5)) kept.push(s)
     else if (s.end || (!last!.end && onPipe(s) && !onPipe(last!))) kept[kept.length - 1] = s
   }
@@ -246,8 +253,36 @@ export function drawDimensions(ctx: IsoContext) {
   // Chains are measured between rounded station positions, so the pieces always add up to the rounded whole.
   const quantum = units === 'mm' ? 1 : 25.4 / 16
   const snap = (mm: number) => Math.round(mm / quantum) * quantum
-  const measure = (a: Station, b: Station) => Math.abs(snap(b.along) - snap(a.along))
+  const measure = (a: Station, b: Station) => ctx.style.dimensionRounding === 'individual'
+    ? snap(Math.abs(b.along - a.along)) : Math.abs(snap(b.along) - snap(a.along))
   const node = (id: string) => getNode(ctx.doc, id)
+  const drafted = ctx.doc.sheets?.[ctx.spool]?.dimensions
+  if (drafted) {
+    const anchor = (a: DimensionAnchor): Station | undefined => {
+      const n = ctx.nodes.find(n => n.id === a.nodeId), page = ctx.pos.get(a.nodeId)
+      if (!n || !page) return
+      if (!a.face || !a.runId) return { model: n.position, page, along: 0, node: n.id }
+      const run = ctx.runs.find(r => r.id === a.runId), g = run && ctx.geometry.get(run.id)
+      if (!run || !g) return
+      const far = getNode(ctx.doc, run.from === n.id ? run.to : run.from), out = unit3(sub(far.position, n.position))
+      const joint = ctx.joints.find(j => j.nodeId === n.id && j.kind === 'component-port' && j.runIds.includes(run.id))
+      const body = joint?.position ?? n.position.map((v, i) => v + out[i] * (n.kind === 'flange' || n.kind === 'end' ? 0 : takeout(ctx.doc, n, run.id) ?? 0)) as Vec3
+      const gap = a.face === 'mate' ? joint?.gasket?.thickness ?? 0 : 0
+      const model = body.map((v, i) => v + out[i] * gap) as Vec3
+      const dir = run.from === n.id ? g.dir : scale2(g.dir, -1)
+      const extent = ctx.extent.get(n.id) ?? 0
+      const inset = joint ? SIZE.flangeThickness + 0.4 + (a.face === 'body' && joint.gasket ? SIZE.flangeThickness : 0) : 0
+      return { model, page: add2(page, scale2(dir, Math.max(0, extent - inset))), along: 0, of: n.id }
+    }
+    for (const d of drafted) {
+      const a = anchor(d.from), b = anchor(d.to)
+      if (!a || !b) continue
+      const mm = distance(a.model, b.model), ext = unit2(ctx.axis(d.axis))
+      if (mm < 0.01 || Math.hypot(...ext) < 0.01 || Math.abs(dot2(unit2(sub2(b.page, a.page)), ext)) > 0.999) continue
+      dimension(a, b, snap(mm), ext, d.offset)
+    }
+    return
+  }
   const legs = sheetLegs(ctx), vents = ventOlets(ctx, legs)
   for (const leg of legs) {
     // A capped vent or drain stub takes no dimensions: its parts give its length.
@@ -284,6 +319,19 @@ export function drawDimensions(ctx: IsoContext) {
       .filter(s => s.mm > 0.5 && !segments.some(t => distance(s.a.model, t.a.model) < 0.001 && distance(s.b.model, t.b.model) < 0.001))
     if (bodyChain.length && points.some(p => p.of)) tiers.push(bodyChain)
     else if (overall.length) tiers.push(overall)
+    const contextSpans: Span[] = []
+    for (const ref of ctx.referenceDimensions ?? []) {
+      const index = leg.nodes.indexOf(ref.atNodeId)
+      if (index !== 0 && index !== leg.nodes.length - 1) continue
+      const end = index === 0 ? points[0] : points.at(-1)!, far = index === 0 ? points.at(-1)! : points[0]
+      const delta = sub(ref.model, end.model), along = delta.reduce((s, v, i) => s + v * leg.dir3[i], 0)
+      if (length(delta) < 0.01 || Math.abs(Math.abs(along) - length(delta)) > 0.1) continue
+      // Only extend beyond the continuation, never back into the fabricated leg.
+      if (index === 0 ? along >= 0 : along <= 0) continue
+      const point: Station = { model: ref.model, page: ref.page, along: end.along + along, end: true }
+      contextSpans.push({ a: far, b: point, mm: measure(far, point) })
+    }
+    if (contextSpans.length) tiers.push(contextSpans)
     // Extension lines run along an isometric axis across the leg: vertical for horizontal legs, horizontal for risers.
     // A level leg drawn upright on the page takes a level axis.
     const horizontal = Math.abs(leg.dir3[2]) < 0.7

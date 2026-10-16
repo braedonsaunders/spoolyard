@@ -75,6 +75,18 @@ test('a lug butterfly valve is bolted from each side with lug bolts', () => {
   assert.ok(doc.runs.every(r => Number.isFinite(runResult(doc, r).cut)));
 });
 
+test('a flanged hose may bolt to a tapped equipment body with lug bolts at that port', () => {
+  const doc = straight();
+  const hose = placeComponentOnPipe(doc, doc.runs[0].id, type('HOSE-FL'), 0.5);
+  const port = doc.runs.find(r => r.to === hose.id)!;
+  hose.portFlanges = { [port.id]: { component: 'NONE', mate: 'lug' } };
+  const joint = flangedJoints(doc).find(j => j.nodeId === hose.id && j.runIds.includes(port.id))!;
+  assert.equal(joint.bolts!.kind, 'lug');
+  assert.equal(joint.flanges.length, 0);
+  const saved = parseIsoJson(JSON.stringify(doc));
+  assert.equal(getNode(saved, hose.id).portFlanges![port.id].mate, 'lug');
+});
+
 test('a wafer valve takes one set of through studs and two gaskets', () => {
   const doc = straight();
   placeComponentOnPipe(doc, doc.runs[0].id, type('BFLY-WAFER'), 0.5);

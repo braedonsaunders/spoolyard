@@ -1,12 +1,27 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createDrawing, type Primitive } from '../src/core/drawing.ts';
-import { appendRun, newIso, type IsoDocument, type PipeNode, type Vec3 } from '../src/core/model.ts';
+import { appendRun, clone, newIso, parseIsoJson, runResult, type IsoDocument, type PipeNode, type Vec3 } from '../src/core/model.ts';
 import { layoutDirection, layoutSheet, tangles, viewProject } from '../src/core/iso/layout.ts';
 
 type Point = [number, number];
 const angleOffVertical = (p: Point) => Math.abs(Math.atan2(p[0], Math.abs(p[1]))) * 180 / Math.PI;
 const draw = (doc: IsoDocument) => createDrawing(doc, doc.runs[0].spool);
+
+test('paper positions arrange a schematic without changing model geometry, cuts or model-space views', () => {
+  const doc = newIso(), end = appendRun(doc, null, [1000, 0, 0], 'CS40', 2, 'SP-1', 'L');
+  const before = clone(doc), start = doc.runs[0].from, cut = runResult(doc, doc.runs[0]).cut;
+  doc.sheets = { 'SP-1': { nodePositions: { [start]: [200, 300], [end.id]: [600, 300] } } };
+  const drawing = createDrawing(doc);
+  assert.deepEqual(drawing.positions.get(start), [200, 300]);
+  assert.deepEqual(drawing.positions.get(end.id), [600, 300]);
+  assert.deepEqual(drawing.project([500, 0, 0]), [400, 300]);
+  assert.deepEqual(doc.nodes, before.nodes);
+  assert.equal(runResult(doc, doc.runs[0]).cut, cut);
+  assert.deepEqual(createDrawing(doc, '', 'iso', undefined, {model: true}).positions,
+    createDrawing(before, '', 'iso', undefined, {model: true}).positions);
+  assert.deepEqual(createDrawing(parseIsoJson(JSON.stringify(doc))).positions, drawing.positions);
+});
 const nodesOf = (doc: IsoDocument) => doc.nodes.filter(n => doc.runs.some(r => r.from === n.id || r.to === n.id || r.id === n.associatedRunId));
 const direct = (doc: IsoDocument, from: string, d: Vec3, nps = 1) => {
   const node = appendRun(doc, from, d, 'CS40', nps, 'SP-1', 'L-1');

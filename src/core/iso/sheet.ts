@@ -164,7 +164,7 @@ export function drawSheet(input: {
     for (const t of ticks) out.push({ type: 'line', a: off(t.inner), b: off(t.outer), layer: 'TEXT', weight: WEIGHT.north })
     // Plant north's tick ends in an arrowhead.
     const { u, outer } = ticks[1], base: Point = [outer[0] - u[0] * NORTH.arrow, outer[1] - u[1] * NORTH.arrow]
-    out.push({ type: 'polyline', layer: 'TEXT', weight: 0.2, closed: true, fill: true, points: [off(outer),
+    if (styleOf(doc).northMark !== 'ticks') out.push({ type: 'polyline', layer: 'TEXT', weight: 0.2, closed: true, fill: true, points: [off(outer),
       off([base[0] - u[1] * NORTH.barb, base[1] + u[0] * NORTH.barb]), off([base[0] + u[1] * NORTH.barb, base[1] - u[0] * NORTH.barb])] })
     out.push({ type: 'polyline', layer: 'TEXT', weight: 0.2, closed: true, fill: true, points: NORTH_N.map(([x, y]) => at(x, y)) })
     exclusions.push(rect(northBox))
@@ -248,7 +248,7 @@ export function drawSheet(input: {
         const row = rows[next]
         const cells = [
           cell(String(row.id), widths[0] - 6 * f), cell(up(row.qtyText), widths[1] - 6 * f),
-          cell(up(row.nd), widths[2] - 6 * f), cell(up(row.description), widths[3] - (BOM_INSET + 2) * f)
+          cell(row.nd, widths[2] - 6 * f), cell(row.description, widths[3] - (BOM_INSET + 2) * f)
         ]
         const h = Math.max(tall ? (BOM_ROW + BOM_PITCH) * f : 0, ...cells.map(c => c.height))
         if (y + h > bottom) break

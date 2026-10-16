@@ -1,7 +1,9 @@
 import { COMPONENT_TYPE_BY_CODE, COMPONENT_TYPES } from "../core/components";
+import { useRef, useState } from "react";
+import { drawingReference } from "../core/references";
 import { flangedJoints, isLapJoint, nodeCode, nodeItem } from "../core/joints";
 import { boltSizeText, draftLength } from "../core/format";
-import { connected, formatAllowance, getNode, getSpec, type IsoDocument, type FlatSide, type PipeNode } from "../core/model";
+import { connected, formatAllowance, getNode, getSpec, parseIsoJson, type IsoDocument, type FlatSide, type PipeNode } from "../core/model";
 
 const TEMPLATES = ["CONT'D ON\nDWG# ", "CONT'D FROM\nDWG# ", "CONNECT TO ", "CLOSED"];
 const OPERATORS = ["OPERATOR UP", "OPERATOR DOWN", "OPERATOR NORTH", "OPERATOR SOUTH", "OPERATOR EAST", "OPERATOR WEST"];
@@ -33,10 +35,13 @@ function Text({ label, value, multiline, placeholder, onCommit }: { label: strin
 }
 
 /** Sheet callouts and flanged-joint makeup for the selected connection. */
-export function NodeCallouts({ doc, nodeId, commit }: { doc: IsoDocument; nodeId: string; commit: (edit: (d: IsoDocument) => void) => unknown }) {
+export function NodeCallouts({ doc, nodeId, commit, sheetPoint }: { doc: IsoDocument; nodeId: string; commit: (edit: (d: IsoDocument) => void) => unknown; sheetPoint?: [number, number] }) {
+  const referenceInput = useRef<HTMLInputElement>(null);
+  const [referenceError, setReferenceError] = useState("");
   const node = doc.nodes.find((n) => n.id === nodeId);
   if (!node) return null;
   const edges = connected(doc, node.id), code = nodeCode(doc, node) ?? "";
+  const paperRun = edges[0] ?? doc.runs.find(r => r.id === node.associatedRunId);
   const type = COMPONENT_TYPE_BY_CODE[code];
   const open = edges.length === 1 && !node.associatedRunId;
   const edit = (change: (n: PipeNode) => void) => commit((d) => change(getNode(d, nodeId)));
@@ -50,6 +55,28 @@ export function NodeCallouts({ doc, nodeId, commit }: { doc: IsoDocument; nodeId
   return (
     <div className="iso-inspector-section">
       <strong>On the sheet</strong>
+      {node.kind === "tee" && <Row label="Branch dimension tier">
+        <select aria-label="Branch dimension tier" value={node.dimensionChain ?? "both"} onChange={e => edit(n => { n.dimensionChain = e.target.value as "both" | "body" | "mate"; })}>
+          <option value="both">Both chains</option>
+          <option value="body">Component body-face chain</option>
+          <option value="mate">Mating flange-face chain</option>
+        </select>
+      </Row>}
+      {sheetPoint && paperRun && <details>
+        <summary>Isometric paper position</summary>
+        <p className="iso-help">Arrange the drawing without changing plant coordinates or cut lengths.</p>
+        {([0, 1] as const).map(axis => <Text key={axis} label={axis ? "Sheet Y" : "Sheet X"} value={String(Math.round(sheetPoint[axis] * 10) / 10)}
+          onCommit={value => {
+            const at = Number(value);
+            if (!Number.isFinite(at) || Math.abs(at) > 10000) return;
+            commit(d => {
+              const spool = paperRun.spool; d.sheets ??= {}; d.sheets[spool] ??= {};
+              const pins = (d.sheets[spool].nodePositions ??= {}), point: [number, number] = [...sheetPoint];
+              point[axis] = at; pins[nodeId] = point;
+            });
+          }} />)}
+        <button onClick={() => commit(d => { const pins = d.sheets?.[paperRun.spool]?.nodePositions; if (pins) delete pins[nodeId]; })}>Use automatic position</button>
+      </details>}
       {item && node.takeout == null && !["end", "weld", "support", "annotation"].includes(node.kind) && (
         <p className="iso-help">
           {item.source.startsWith("ASME") || item.id.startsWith("std:") ? "Standard" : "Specification"} takeout {formatAllowance(item.takeout, doc.units)}
@@ -90,6 +117,40 @@ export function NodeCallouts({ doc, nodeId, commit }: { doc: IsoDocument; nodeId
               )}
             </>
           )}
+          <Row label="Adjacent drawing">
+            <button onClick={() => referenceInput.current?.click()}>Link a .piping drawing…</button>
+          </Row>
+          <input ref={referenceInput} type="file" accept=".piping,.json" hidden onChange={async (e) => {
+            const file = e.target.files?.[0]; e.target.value = "";
+            if (!file) return;
+            try {
+              const source = parseIsoJson(await file.text());
+              const reference = drawingReference(doc, nodeId, source);
+              commit(d => { d.references = [...(d.references ?? []).filter(r => r.atNodeId !== nodeId), reference]; });
+              setReferenceError("");
+            } catch (error) { setReferenceError(error instanceof Error ? error.message : "Could not open the adjacent drawing."); }
+          }} />
+          {referenceError && <p role="alert" className="iso-help">{referenceError}</p>}
+          {(doc.references ?? []).filter(r => r.atNodeId === nodeId).map(r => (
+            <div key={r.id}>
+              <p className="iso-help">{r.name} · drawn thin, excluded from material and weld quantities.</p>
+              <Row label="Context parts">
+                <select aria-label="Adjacent components shown" value={r.components ?? 1} onChange={e => commit(d => {
+                  d.references!.find(x => x.id === r.id)!.components = Number(e.target.value);
+                })}>{[1, 2, 3].map(n => <option key={n} value={n}>{n}</option>)}</select>
+              </Row>
+              <Row label="Dimension to">
+                <select aria-label="Adjacent dimension point" value={r.dimensionTo ?? ""} onChange={e => commit(d => {
+                  d.references!.find(x => x.id === r.id)!.dimensionTo = e.target.value || undefined;
+                })}>
+                  <option value="">No dimension into the adjacent drawing</option>
+                  {r.nodes.filter(n => n.id !== r.anchorNodeId && !["end", "weld", "annotation", "support"].includes(n.kind)).map((n, i) =>
+                    <option key={n.id} value={n.id}>{n.tag || COMPONENT_TYPE_BY_CODE[n.component ?? ""]?.label || n.kind} {i + 1}</option>)}
+                </select>
+              </Row>
+              <button onClick={() => commit(d => { d.references = d.references?.filter(x => x.id !== r.id); })}>Remove adjacent drawing</button>
+            </div>
+          ))}
         </>
       )}
       <label className="iso-check">
@@ -194,6 +255,12 @@ export function NodeCallouts({ doc, nodeId, commit }: { doc: IsoDocument; nodeId
                 <option value="">Specification flange</option>
                 {flangeChoices.map((c) => <option key={c} value={c}>{COMPONENT_TYPES.find((t) => t.code === c)?.label ?? c}</option>)}
                 <option value="NONE">Not supplied (existing flange)</option>
+              </select>
+            </Row>
+            <Row label="Bolting makeup">
+              <select aria-label={`Bolting makeup ${i + 1}`} value={choice?.mate ?? "flange"} onChange={e => set({ mate: e.target.value as "flange" | "lug" })}>
+                <option value="flange">Through studs</option>
+                <option value="lug">Lug bolts into a tapped body</option>
               </select>
             </Row>
             <label className="iso-check">

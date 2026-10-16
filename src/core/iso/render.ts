@@ -1,7 +1,7 @@
 import type { Drawing, Point, Primitive, SheetFit } from '../drawing'
 import { flangedJoints } from '../joints'
 import { sheetMaterials } from '../material-list'
-import { getNode, styleOf, type IsoDocument, type PipeRun, type Vec3 } from '../model'
+import { distance, getNode, styleOf, type IsoDocument, type PipeRun, type Vec3 } from '../model'
 import { SIZE, type IsoContext, type RunGeometry } from './context'
 import { drawDimensions } from './dimensions'
 import { drawAnnotations } from './annotations'
@@ -27,6 +27,8 @@ export function renderIso(
   hold?: SheetFit,
   model = false
 ): Drawing {
+  const spools = [...new Set(doc.runs.map(r => r.spool))]
+  if (!spool && spools.length === 1) spool = spools[0]
   const style = styleOf(doc)
   const facing: View = model ? 'iso' : view
   const runs = doc.runs.filter(r => !spool || r.spool === spool)
@@ -105,7 +107,32 @@ export function renderIso(
   const paint = (fit: SheetFit) => {
     const toSheet = (q: Point): Point => [(q[0] - fit.centre[0]) * fit.scale + cx, (q[1] - fit.centre[1]) * fit.scale + cy]
     const pos = new Map([...layout.raw].map(([id, p]) => [id, toSheet(p)] as [string, Point]))
-    const project = (p: Vec3) => toSheet(layout.rawProject(p))
+    const pins = !model && facing === 'iso' && spool ? doc.sheets?.[spool]?.nodePositions : undefined
+    const automatic = new Map(pos)
+    for (const [id, p] of Object.entries(pins ?? {})) if (pos.has(id)) pos.set(id, [...p])
+    if (pins) for (const node of nodes) {
+      if (!node.associatedRunId || pins[node.id]) continue
+      const run = runs.find(r => r.id === node.associatedRunId)
+      if (!run) continue
+      const a = getNode(doc, run.from).position, b = getNode(doc, run.to).position, d = b.map((v, i) => v - a[i])
+      const squared = d.reduce((s, v) => s + v * v, 0), t = squared ? d.reduce((s, v, i) => s + v * (node.position[i] - a[i]), 0) / squared : 0
+      const from = pos.get(run.from)!, to = pos.get(run.to)!, oldFrom = automatic.get(run.from)!, oldTo = automatic.get(run.to)!, old = automatic.get(node.id)!
+      pos.set(node.id, [0, 1].map(i => from[i] + (to[i] - from[i]) * t + old[i] - oldFrom[i] - (oldTo[i] - oldFrom[i]) * t) as Point)
+    }
+    const project = (p: Vec3): Point => {
+      if (!pins || !nodes.length) return toSheet(layout.rawProject(p))
+      const node = nodes.find(n => distance(n.position, p) < 0.001)
+      if (node) return pos.get(node.id)!
+      for (const run of runs) {
+        const a = getNode(doc, run.from).position, b = getNode(doc, run.to).position, span = distance(a, b)
+        if (Math.abs(distance(a, p) + distance(p, b) - span) > 0.001 || !span) continue
+        const t = distance(a, p) / span, from = pos.get(run.from)!, to = pos.get(run.to)!
+        return [from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t]
+      }
+      const nearest = nodes.reduce((a, b) => distance(a.position, p) < distance(b.position, p) ? a : b)
+      const old = toSheet(layout.rawProject(p)), before = automatic.get(nearest.id)!, after = pos.get(nearest.id)!
+      return [old[0] + after[0] - before[0], old[1] + after[1] - before[1]]
+    }
     const geometry = new Map<string, RunGeometry>()
     for (const run of runs) {
       const a = pos.get(run.from), b = pos.get(run.to)
