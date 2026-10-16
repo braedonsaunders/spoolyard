@@ -187,6 +187,8 @@ export interface DrawingStyle {
   layout: 'scale' | 'schematic'
   weldNumbers: boolean
   lettering: 'cad' | 'sans'
+  /** Centreline elevation at every change of level, not only where the drafter places one. */
+  elevations?: boolean
 }
 /** Plant east, north and elevation (mm) of the model origin. */
 export interface PlantCoordinates {
@@ -1477,7 +1479,8 @@ export function parseIsoJson(raw: string): IsoDocument {
   if (
     d.style != null &&
     (!isPlain(d.style) || !['scale', 'schematic'].includes(d.style.layout) ||
-      typeof d.style.weldNumbers !== 'boolean' || !['cad', 'sans'].includes(d.style.lettering))
+      typeof d.style.weldNumbers !== 'boolean' || !['cad', 'sans'].includes(d.style.lettering) ||
+      (d.style.elevations != null && typeof d.style.elevations !== 'boolean'))
   )
     throw new Error('Invalid drawing style.')
   if (

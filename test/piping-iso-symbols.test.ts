@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendRun, applyComponent, attachComponent, getNode, newIso, type IsoDocument, type PipeNode } from '../src/core/model.ts';
+import { appendRun, applyComponent, attachComponent, getNode, newIso, type IsoDocument } from '../src/core/model.ts';
 import { createDrawing, type Primitive } from '../src/core/drawing.ts';
 import { measureText } from '../src/core/stroke-font.ts';
 import { insulationWords, operatorDirection } from '../src/core/iso/symbols.ts';
@@ -186,4 +186,15 @@ test('weld numbers sit in balloons on leaders to their welds', () => {
   assert.ok(p.filter(q => q.type === 'line' && q.layer === 'LEADER').length >= 2);
 });
 
-const unused: PipeNode | undefined = undefined; void unused;
+test('centreline elevations at every change of level are a style option, off by default', () => {
+  const doc = sheet();
+  const elbow = appendRun(doc, null, [inch(30), 0, 0], 'CS40', 2, 'S1', 'L1');
+  appendRun(doc, elbow.id, [0, 0, inch(30)], 'CS40', 2, 'S1', 'L1');
+  const elevations = () => texts(owned(draw(doc), elbow.id)).filter(t => t.text.startsWith('℄ EL')).length;
+  doc.style = { layout: 'schematic', weldNumbers: false, lettering: 'cad' };
+  assert.equal(elevations(), 0);
+  doc.style.elevations = true;
+  assert.equal(elevations(), 1);
+  delete doc.coordinates;
+  assert.equal(elevations(), 0);
+});

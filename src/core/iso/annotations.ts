@@ -258,7 +258,7 @@ export function drawAnnotations(ctx: IsoContext) {
       if (node.continuation.coordinates !== false && ctx.doc.coordinates) lines.push(...coordinateText(ctx.doc, point))
       callout(at, lines, node.id)
     }
-    if (node.elevationCallout) callout(at, [elevationText(ctx.doc, node.position)], node.id)
+    if (node.elevationCallout || levelChange(node)) callout(at, [elevationText(ctx.doc, node.position)], node.id)
     if (node.tiePoint) tiePoint(at, node)
     if (node.kind === 'support') {
       const code = nodeCode(ctx.doc, node) ?? ''
@@ -279,6 +279,12 @@ export function drawAnnotations(ctx: IsoContext) {
     const code = nodeCode(ctx.doc, node) ?? ''
     if (/^ISA/.test(code) && (node.tag || node.calloutText)) bubble(at, (node.tag || node.calloutText)!, node.id, false, instrumentOut(node))
     if (equipmentCode(code)) equipmentLabel(node)
+  }
+  /** With elevations on, a fitting where a riser meets a level pipe gets its centreline elevation, given a plant origin. */
+  function levelChange(node: PipeNode): boolean {
+    if (!ctx.style.elevations || !ctx.doc.coordinates || node.continuation || ['end', 'annotation', 'support'].includes(node.kind)) return false
+    const dirs = connected(ctx.doc, node.id).map(r => ctx.geometry.get(r.id)?.dir3).filter(Boolean) as Array<[number, number, number]>
+    return dirs.some(d => Math.abs(d[2]) > 0.7) && dirs.some(d => Math.abs(d[2]) < 0.05)
   }
   /** An ISA instrument circle lettered with its tag, joined to its point: in line beyond an open end, else beside. */
   function bubble(target: Point, tagText: string, owner: string, arrowed: boolean, inLine?: Point) {

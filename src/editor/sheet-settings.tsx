@@ -539,6 +539,10 @@ export function SheetSettings({
           <input type="checkbox" checked={style.weldNumbers} onChange={(e) => setStyle({ weldNumbers: e.target.checked })} />
           Weld numbers on sheet
         </label>
+        <label className="iso-check">
+          <input type="checkbox" checked={!!style.elevations} onChange={(e) => setStyle({ elevations: e.target.checked })} />
+          Centreline elevations at every change of level
+        </label>
       </Section>
 
       <Section title="Sheets" hint={String(spools.length)} open>
