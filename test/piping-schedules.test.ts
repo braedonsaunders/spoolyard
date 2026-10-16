@@ -124,7 +124,7 @@ test('the weld map gives each weld its type, size, schedule and the parts it joi
   const olet = attachComponent(doc, doc.runs[0].id, 'olet', 0.5);
   applyComponent(doc, olet, 'SOL');
   appendRun(doc, olet.id, [0, 0, 300], 'CS40', 0.75, 'SP-1', 'L-1', 'SW');
-  const branch = weldRow(doc, { tag: 'W9', runId: doc.runs[0].id, nodeId: olet.id, nps: 4, field: false, prep: 'BW', position: olet.position });
+  const branch = weldRow(doc, welds(doc).find(w => w.type === 'BR')!);
   assert.deepEqual([branch.type, branch.size, branch.joint], ['BRANCH', '4"X3/4"', 'PIPE–SOL']);
   assert.deepEqual(['STD.', 'SCH.10S', '40', 'XS', 'Sch 80'].map(scheduleText), ['STD', 'SCH 10S', 'SCH 40', 'XS', 'SCH 80']);
 });

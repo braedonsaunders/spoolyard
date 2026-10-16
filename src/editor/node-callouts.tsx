@@ -1,7 +1,7 @@
 import { COMPONENT_TYPE_BY_CODE, COMPONENT_TYPES } from "../core/components";
 import { flangedJoints, isLapJoint, nodeCode, nodeItem } from "../core/joints";
 import { boltSizeText, draftLength } from "../core/format";
-import { connected, formatAllowance, getNode, getSpec, type IsoDocument, type PipeNode } from "../core/model";
+import { connected, formatAllowance, getNode, getSpec, type IsoDocument, type FlatSide, type PipeNode } from "../core/model";
 
 const TEMPLATES = ["CONT'D ON\nDWG# ", "CONT'D FROM\nDWG# ", "CONNECT TO ", "CLOSED"];
 const OPERATORS = ["OPERATOR UP", "OPERATOR DOWN", "OPERATOR NORTH", "OPERATOR SOUTH", "OPERATOR EAST", "OPERATOR WEST"];
@@ -107,11 +107,12 @@ export function NodeCallouts({ doc, nodeId, commit }: { doc: IsoDocument; nodeId
       {ECCENTRIC.test(code) && (
         <>
           <Row label="Flat side">
-            <select aria-label="Eccentric flat side" value={node.flat ?? ""}
-              onChange={(e) => edit((n) => { if (e.target.value) n.flat = e.target.value as "top" | "bottom"; else delete n.flat; })}>
+            <select aria-label="Eccentric flat side" value={node.flatSide ?? ""}
+              onChange={(e) => edit((n) => { if (e.target.value) n.flatSide = e.target.value as FlatSide; else delete n.flatSide; })}>
               <option value="">Not stated</option>
               <option value="top">Flat on top (FOT)</option>
               <option value="bottom">Flat on bottom (FOB)</option>
+              {(["north", "south", "east", "west"] as const).map((side) => <option key={side} value={side}>Flat to the {side} (on a riser)</option>)}
             </select>
           </Row>
           <p className="iso-help">Flat on top keeps vapour out of a pump suction; flat on bottom lets a line drain.</p>

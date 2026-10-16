@@ -1,6 +1,6 @@
 import { COMPONENT_TYPES, COMPONENT_TYPE_BY_CODE, type ComponentType } from './components';
 import { catalogRow, defaultCode, flangedJoints, nodeCode } from './joints';
-import { connected, fitting, getNode, getSpec, length, sub, add, mul, prepAt, runResult, insertComponent, attachComponent, applyComponent, setAutoFitting, takeout, type CatalogItem, type IsoDocument, type PipeNode, type PipeRun, type PipeSpec, type Vec3 } from './model';
+import { connected, fitting, getNode, getSpec, length, sub, add, mul, prepAt, runResult, insertComponent, attachComponent, applyComponent, makeNipple, setAutoFitting, takeout, type CatalogItem, type IsoDocument, type PipeNode, type PipeRun, type PipeSpec, type Vec3 } from './model';
 
 export interface ComponentTrack {
   /** Ends of the whole straight leg, between changes of direction, branches and open ends. */
@@ -205,13 +205,17 @@ export function placeComponentOnPipe(doc: IsoDocument, runId: string, type: Comp
   if (!run) throw new Error('Select a pipe to insert this component.');
   if (type.kind === 'pipe') throw new Error('Use the Pipe tool to route a pipe.');
   if (!(fraction >= 0 && fraction <= 1)) throw new Error('Click on the pipe to place this component.');
+  // A nipple is the clicked pipe itself, bought to its catalogued length.
+  if (type.code === 'NIPPLE') return getNode(doc, makeNipple(doc, runId).to);
   const spec = getSpec(doc, run.specId), specRows = spec.fittings;
   const code = (f: CatalogItem) => f.component ?? COMPONENT_TYPES.find(t => t.kind === f.kind)?.code;
   // A reducer, tee or olet goes in at the size chosen for it; a reducer reduces or expands the pipe beyond it.
-  const size = sized(type) ? row ?? sizeChoices(spec, type, run.nps)[0]?.row : undefined;
+  // Unchosen, the size is the smallest the specification itself lists, then the smallest standard one.
+  const choices = sized(type) ? sizeChoices(spec, type, run.nps) : []
+  const size = sized(type) ? row ?? (choices.find(c => specRows.some(f => f.id === c.row.id)) ?? choices[0])?.row : undefined;
   const beyond = size && sizeBeyond(type, size, run.nps);
   const match = size
-    ? specRows.find(f => f.id === size.id)
+    ? specRows.find(f => f.id === size.id) ?? size
     : (row && row.nps === run.nps && specRows.some(f => f.id === row.id) ? row : undefined) ??
       specRows.find(f => code(f) === type.code && f.nps === run.nps && (row?.smallerNps == null || f.smallerNps === row.smallerNps));
   // An olet sits on its header pipe; its branch is routed from it.
@@ -233,9 +237,18 @@ export function placeComponentOnPipe(doc: IsoDocument, runId: string, type: Comp
     : insertComponent(doc, runId, type.kind, fraction);
   applyComponent(doc, node, type.code, match);
   if (type.kind === 'reducer' && beyond != null) carrySize(doc, node.id, doc.runs.find(r => r.from === node.id)!.id, beyond);
+  // A flanged component dropped against another bolts straight to it, face to face, with no pipe between.
+  for (const edge of connected(doc, node.id)) {
+    const other = getNode(doc, edge.from === node.id ? edge.to : edge.from), cut = runResult(doc, edge).cut;
+    if (!(Number.isFinite(cut) && cut <= 0) || type.endPrep !== 'FL' || COMPONENT_TYPES.find(t => t.code === nodeCode(doc, other))?.endPrep !== 'FL') continue;
+    edge.connector = true;
+    const span = (takeout(doc, other, edge.id) ?? NaN) + (takeout(doc, node, edge.id) ?? NaN), u = sub(node.position, other.position);
+    if (Number.isFinite(span)) node.position = add(other.position, mul(u, span / (length(u) || 1)));
+    else delete edge.connector;
+  }
   for (const edge of connected(doc, node.id)) {
     const cut = runResult(doc, edge).cut;
-    if (Number.isFinite(cut) && cut <= 0)
+    if (!edge.connector && Number.isFinite(cut) && cut <= 0)
       throw new Error('That position leaves no pipe after fitting takeouts and root gaps. Choose a point farther from the end.');
   }
   return node;

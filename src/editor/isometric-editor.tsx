@@ -2281,7 +2281,7 @@ export function IsometricEditor({
                                   )
                                 : undefined;
                               applyComponent(d, n, t.code, row);
-                              if (!ECCENTRIC.test(t.code)) delete n.flat;
+                              if (!ECCENTRIC.test(t.code)) delete n.flatSide;
                             })
                           }
                         >
@@ -2328,7 +2328,7 @@ export function IsometricEditor({
                               const row = d.specs.flatMap(s => s.fittings).find(f => f.id === e.target.value);
                               if (row?.component) applyComponent(d, node, row.component, row);
                               else node.catalogId = e.target.value || undefined;
-                              if (!ECCENTRIC.test(node.component ?? "")) delete node.flat;
+                              if (!ECCENTRIC.test(node.component ?? "")) delete node.flatSide;
                             })
                           }
                         >

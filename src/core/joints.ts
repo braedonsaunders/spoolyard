@@ -1,5 +1,6 @@
 import { COMPONENT_TYPE_BY_CODE } from './components'
 import { bolting, ratingClass, standardRow, stubEnd as standardStub } from './standards'
+import { compose, draftLength, schedule, sizeText } from './format'
 import {
   add, connected, fitting, getNode, getSpec, length, mul, sub,
   type CatalogItem, type EndPrep, type IsoDocument, type Kind, type PipeNode, type PipeRun, type PipeSpec, type Vec3
@@ -35,23 +36,66 @@ export const specFace = (spec: PipeSpec): 'RF' | 'FF' =>
 const sameBranch = (f: CatalogItem, nps: number, smallerNps?: number) =>
   smallerNps == null || smallerNps === nps ? !f.smallerNps || f.smallerNps === nps : f.smallerNps === smallerNps
 
+const NIPPLE_LENGTH = 'Screwed/Socket Weld General Parameters.Pipe Nipple Length'
+/** A nipple's catalogued length (mm): the specification's nipple row, else its Pipe Nipple Length (in). */
+export function nippleLength(spec: PipeSpec, nps: number): number | undefined {
+  const own = spec.nipples?.find(n => n.nps === nps)?.length
+  if (own && own > 0) return own
+  const inches = Number(spec.parameters?.[NIPPLE_LENGTH])
+  return inches > 0 ? inches * 25.4 : undefined
+}
+/** Nipple end finish from the end preparations: threaded both ends, plain one end, plain or bevelled both ends. */
+export function nippleEnds(a: EndPrep, b: EndPrep): string {
+  const threaded = [a, b].filter(p => p === 'THD').length, bevelled = [a, b].filter(p => p === 'BW').length
+  return threaded === 2 ? 'TBE' : threaded ? 'POE' : bevelled === 2 ? 'BBE' : bevelled ? 'BOE' : 'PBE'
+}
+/**
+ * BOM text of a nipple: size by length (catalogued in inches, as its size is), schedule, material and ends, e.g.
+ * NIPPLE, 3/4" X 3" LG, XS, A106 GR. B, TBE.
+ */
+export function nippleText(spec: PipeSpec, nps: number, length: number, ends: string): string {
+  const own = spec.nipples?.find(n => n.nps === nps), size = spec.sizes.find(s => s.nps === nps)
+  if (own?.bomDescription) return own.bomDescription.toUpperCase()
+  return compose(own?.description ?? 'NIPPLE', `${sizeText(nps)} X ${draftLength(length, 'imperial', Infinity)} LG`, schedule(own?.schedule ?? size?.schedule ?? spec.schedule),
+    own?.material ?? size?.material ?? spec.material, ends)
+}
+/** A nipple placed as an in-line component (older drawings) takes half its catalogued length each side. */
+function nippleRow(spec: PipeSpec, nps: number, named?: CatalogItem): CatalogItem | undefined {
+  const length = nippleLength(spec, nps)
+  if (!length) return named
+  return {
+    ...named, id: named?.id ?? `std:NIPPLE:${nps}`, kind: 'valve', nps, component: 'NIPPLE', takeout: length / 2, faceToFace: length,
+    description: named?.description ?? nippleText(spec, nps, length, 'TBE'), takeoutMissing: undefined,
+    source: "Specification nipple length; takeout = half the nipple, whose ends carry the thread engagement"
+  }
+}
+
 /** A specification row with known dimensions, else the built-in ASME row for the same component. */
 export function catalogRow(spec: PipeSpec, code: string, nps: number, smallerNps?: number): CatalogItem | undefined {
   const rows = spec.fittings.filter(f => f.component === code && f.nps === nps && sameBranch(f, nps, smallerNps))
   const row = rows.find(f => !f.takeoutMissing)
   if (row) return row
-  const std = standardRow(code, nps, specRating(spec), smallerNps)
+  if (code === 'NIPPLE') return nippleRow(spec, nps, rows[0])
+  const pipe = spec.sizes.find(s => s.nps === nps), std = standardRow(code, nps, specRating(spec), smallerNps, pipe?.schedule ?? spec.schedule)
   if (!std) return rows[0]
-  const named = rows[0]
+  const named = rows[0], wrought = /^(W-|STUB-END|[CE]-RED$|REDELL$|LR180R$|SR180R$)/.test(code)
   return {
     ...named,
     ...std,
     id: named?.id ?? `std:${code}:${nps}${smallerNps && smallerNps !== nps ? 'x' + smallerNps : ''}`,
     component: code,
     description: named?.description ?? std.description,
+    // A standard part is bought in the specification's material, and a butt-weld fitting in its pipe's wall.
+    material: named?.material ?? specMaterial(spec, std.kind, wrought, nps),
+    schedule: named?.schedule ?? (wrought ? pipe?.schedule ?? spec.schedule : undefined),
     takeoutMissing: undefined,
     source: std.source
   }
+}
+/** The material the specification names for parts of a kind: butt-weld fittings, flanges, valves, gaskets or bolts. */
+function specMaterial(spec: PipeSpec, kind: Kind, wrought: boolean, nps: number): string | undefined {
+  const like = (f: CatalogItem) => !!f.material && (wrought ? /^W-|[CE]-RED$/.test(f.component ?? '') : f.kind === kind && !/^STUB-END/.test(f.component ?? ''))
+  return (spec.fittings.find(f => like(f) && f.nps === nps) ?? spec.fittings.find(like))?.material
 }
 
 /** Size of the pipes a node joins: largest and (for reducing items) smallest bore. */
@@ -96,7 +140,7 @@ export function matingFlange(doc: IsoDocument, node: PipeNode, run: PipeRun): Ma
   const chosen = node.portFlanges?.[run.id]?.component
   if (chosen === 'NONE') return null
   const other = getNode(doc, run.from === node.id ? run.to : run.from)
-  if (run.connector && other.kind === 'flange') return null
+  if (run.connector && (other.kind === 'flange' || flangedPort(nodeCode(doc, other)))) return null
   const spec = getSpec(doc, run.specId), code = chosen ?? defaultFlangeCode(spec, run.nps)
   return { code, item: catalogRow(spec, code, run.nps), stub: isLapJoint(code) ? stubEnd(spec, run.nps) : undefined }
 }
@@ -114,6 +158,9 @@ export const flangePipePrep = (code: string): EndPrep =>
 
 /** The node across a run from `node`. */
 const across = (doc: IsoDocument, node: PipeNode, run: PipeRun) => getNode(doc, run.from === node.id ? run.to : run.from)
+/** Two flanged components (a check valve and a gate valve) bolted face to face: one gasket, one bolt set, no pipe. */
+export const boltedDirect = (doc: IsoDocument, node: PipeNode, run: PipeRun) =>
+  !!run.connector && flangedPort(nodeCode(doc, node)) && flangedPort(nodeCode(doc, across(doc, node, run)))
 /** A flange joined directly to a flanged component (an imported assembly) is that component's mate. */
 const matesComponent = (doc: IsoDocument, node: PipeNode) => connected(doc, node.id).some(r =>
   r.connector && flangedPort(nodeCode(doc, across(doc, node, r))))
@@ -130,15 +177,27 @@ export function isFlangePair(doc: IsoDocument, node: PipeNode): boolean {
   const edges = connected(doc, node.id)
   // A stub end welded between fittings is one part; only a stub-end node between two pipes stands for a pair.
   if (/^STUB-END/.test(code ?? '') && edges.some(r => r.connector)) return false
-  // Its sides are the pieces the joint bolts together: not a continuation point drawn beyond it, and not the other
-  // flange of the same joint drawn as its own node.
-  const sides = edges.filter(r => {
+  const sides = pairSides(doc, node)
+  return sides.length === 2 && sides.every(r => (r.from === node.id ? r.fromPrep : r.toPrep) !== 'FL') && !matesComponent(doc, node)
+}
+/**
+ * A flange pair's sides are the pieces the joint bolts together: not a continuation point drawn beyond it, and not the
+ * other flange of the same joint drawn as its own node.
+ */
+function pairSides(doc: IsoDocument, node: PipeNode): PipeRun[] {
+  return connected(doc, node.id).filter(r => {
     if (!r.connector) return true
     const other = across(doc, node, r)
     return other.kind !== 'end' && !(other.kind === 'flange' && !/^STUB-END/.test(nodeCode(doc, other) ?? ''))
   })
-  return sides.length === 2 && sides.every(r => (r.from === node.id ? r.fromPrep : r.toPrep) !== 'FL') && !matesComponent(doc, node)
 }
+/** A node whose pipes belong to more than one spool: a joint or component at a spool break. */
+export const spansSpools = (doc: IsoDocument, node: PipeNode) => new Set(connected(doc, node.id).map(r => r.spool)).size > 1
+/** The spool whose sheet lists a break's gasket, bolting and spanning component: as chosen, else its first pipe's. */
+export const breakOwner = (doc: IsoDocument, node: PipeNode) => node.jointSupply?.spool ?? connected(doc, node.id)[0]?.spool ?? ''
+/** Flanges of a pair on one spool's sheet: both, or at a spool break only the one on that sheet's pipe. */
+export const pairFlangesOn = (doc: IsoDocument, node: PipeNode, spool: string) =>
+  !spool || !spansSpools(doc, node) ? 2 : pairSides(doc, node).filter(r => r.spool === spool).length
 /** Length a flanged connection adds beyond a component's own face: gasket and the mating flange. */
 export function flangedAllowance(doc: IsoDocument, node: PipeNode, run: PipeRun): number {
   const code = nodeCode(doc, node)
@@ -153,9 +212,9 @@ export function flangedAllowance(doc: IsoDocument, node: PipeNode, run: PipeRun)
     return (isLapJoint(code) && !/^STUB-END/.test(code!) ? stubEnd(spec, run.nps)?.takeout ?? NaN : 0) + gap
   }
   if (!flangedPort(code)) return 0
-  const mate = matingFlange(doc, node, run)
-  if (!mate) return 0
-  const spec = getSpec(doc, run.specId)
+  const mate = matingFlange(doc, node, run), spec = getSpec(doc, run.specId)
+  // Bolted straight to another flanged component, each takes half the gasket between them.
+  if (!mate) return boltedDirect(doc, node, run) ? gasketThickness(gasketRow(spec, run.nps, faceOf(code, spec))) / 2 : 0
   return gasketThickness(gasketRow(spec, run.nps, faceOf(mate.code, spec))) + flangeLength(mate)
 }
 const faceOf = (code: string | undefined, spec: PipeSpec): 'RF' | 'FF' => /FF/.test(code ?? '') ? 'FF' : /RF/.test(code ?? '') ? 'RF' : specFace(spec)
@@ -188,6 +247,8 @@ export interface FlangedJoint {
   bolts: JointBolts | null
   /** What this drawing's material list provides; the rest is on another drawing or by others. */
   supplied: { flange: boolean; gasket: boolean; bolts: boolean }
+  /** The spool whose sheet lists the gasket and bolting (at a spool break, the break's owner). */
+  supplySpool: string
   /** The explicit flange node a callout names, when the flange is drawn as its own node. */
   flangeNodeId?: string
   /** The pipes whose stub ends this joint supplies, one tag each. */
@@ -219,14 +280,17 @@ export function flangedJoints(doc: IsoDocument, spool = ''): FlangedJoint[] {
     const edges = connected(doc, node.id), code = nodeCode(doc, node)
     if (!edges.length || (spool && !edges.some(r => r.spool === spool))) continue
     const host = edges.reduce((a, b) => a.nps >= b.nps ? a : b), spec = getSpec(doc, host.specId)
-    const base = { nps: host.nps, rating: specRating(spec), spool: host.spool, line: host.line, specId: spec.id }
+    // A joint at a spool break lists its gasket and bolting once, on the sheet that owns the break.
+    const owner = spansSpools(doc, node) ? breakOwner(doc, node) : host.spool, owned = !spool || owner === spool
+    const here = (r: PipeRun) => !spool || r.spool === spool
+    const base = { nps: host.nps, rating: specRating(spec), spool: host.spool, supplySpool: owner, line: host.line, specId: spec.id }
     if (node.kind === 'flange' && !flangedPort(code) && code && !/^ORFC|^ORIFICE/.test(code)) {
       if (matesComponent(doc, node) || stubOfFlange(doc, node)) continue
       const face = faceOf(code, spec), lj = isLapJoint(code)
       const item = nodeItem(doc, node), stub = lj && !/^STUB-END/.test(code) ? stubEnd(spec, host.nps) : undefined
       const pair = isFlangePair(doc, node)
       const own = node.jointSupply
-      const supply = pair ? { flange: true, gasket: true, bolts: true } : { flange: own?.flange !== false, gasket: own?.gasket !== false, bolts: own?.bolts !== false }
+      const supply = pair ? { flange: true, gasket: owned, bolts: owned } : { flange: own?.flange !== false, gasket: own?.gasket !== false, bolts: own?.bolts !== false }
       // A stub-end node is the welded part; its loose lap-joint flange is supplied with the joint.
       const stubNode = /^STUB-END/.test(code)
       const flange = stubNode
@@ -237,14 +301,16 @@ export function flangedJoints(doc: IsoDocument, spool = ''): FlangedJoint[] {
         if (!r.connector) return true
         const other = across(doc, node, r)
         return other.kind !== 'end' && other.kind !== 'flange'
-      }).slice(0, pair ? 2 : 1) : []
+      }).slice(0, pair ? 2 : 1).filter(here) : []
+      // A pair split by a spool break: each sheet has the flange on its own pipe.
+      const sides = pair ? (spool ? pairSides(doc, node).filter(here).length : 2) : 1
       const gasket = gasketRow(spec, host.nps, face)
       const lug = !pair && own?.mate === 'lug'
       const bolts = jointBolts(spec, host.nps, face, lug ? 'lug-valve-side' : lj ? 'lj-pair' : 'flange-pair')
       out.push({
         ...base, id: node.id, nodeId: node.id, runIds: edges.map(r => r.id), position: node.position, face,
         kind: pair ? 'flange-pair' : 'equipment',
-        flanges: pair ? [flange, flange] : supply.flange ? [flange] : [],
+        flanges: pair ? Array(sides).fill(flange) : supply.flange ? [flange] : [],
         stubEnds: stubRuns.map(() => stub!), stubRunIds: stubRuns.map(r => r.id),
         gasket: { item: gasket, thickness: gasketThickness(gasket) },
         bolts, supplied: supply, boltsUnknown: supply.bolts && !bolts,
@@ -256,27 +322,33 @@ export function flangedJoints(doc: IsoDocument, spool = ''): FlangedJoint[] {
     const wafer = code === 'BFLY-WAFER', lug = /^BFLY(-LUG)?$/.test(code!)
     const item = nodeItem(doc, node)
     for (const [index, run] of edges.entries()) {
+      // A port on another sheet's pipe is listed here only for the gasket and bolting this sheet owns.
+      const mine = here(run)
+      if (!mine && !owned) continue
       const mate = matingFlange(doc, node, run), runSpec = getSpec(doc, run.specId)
       const choice = node.portFlanges?.[run.id], face = faceOf(mate?.code ?? code, runSpec)
       const far = getNode(doc, run.from === node.id ? run.to : run.from).position
       const toward = sub(far, node.position), span = length(toward) || 1
       const faceDistance = (node.branchEdgeId === run.id ? item?.branchTakeout : item?.takeout) ?? 0
       const gasket = gasketRow(runSpec, run.nps, face)
-      const makeup = lug ? 'lug-valve-side' : wafer ? 'wafer-valve' : mate && isLapJoint(mate.code) ? 'lj-pair' : 'flange-pair'
-      // A wafer valve's through-studs belong to its first joint.
-      const physical = !(wafer && index > 0)
-      const bolts = physical ? jointBolts(runSpec, run.nps, face, makeup) : null
       const other = getNode(doc, run.from === node.id ? run.to : run.from), explicit = run.connector && other.kind === 'flange'
+      // Two components bolted face to face share one joint; its gasket and bolts are listed with the first of them.
+      const direct = boltedDirect(doc, node, run), second = direct && doc.nodes.indexOf(other) < doc.nodes.indexOf(node)
+      const lugged = lug || (direct && /^BFLY(-LUG)?$/.test(nodeCode(doc, other) ?? ''))
+      const makeup = lugged ? 'lug-valve-side' : wafer ? 'wafer-valve' : mate && isLapJoint(mate.code) ? 'lj-pair' : 'flange-pair'
+      // A wafer valve's through-studs belong to its first joint.
+      const physical = !(wafer && index > 0) && !second
+      const bolts = physical ? jointBolts(runSpec, run.nps, face, makeup) : null
       out.push({
         ...base, nps: run.nps, spool: run.spool, line: run.line, specId: runSpec.id, rating: specRating(runSpec),
         id: `${node.id}:${run.id}`, nodeId: node.id, runIds: [run.id], face, kind: 'component-port',
         position: add(node.position, mul(toward, Math.min(faceDistance, span) / span)),
-        flanges: mate ? [{ code: mate.code, item: mate.item, implicit: true }]
+        flanges: !mine ? [] : mate ? [{ code: mate.code, item: mate.item, implicit: true }]
           : explicit ? [{ code: nodeCode(doc, other) ?? 'FLANGE', item: nodeItem(doc, other), implicit: false }] : [],
-        stubEnds: mate?.stub ? [mate.stub] : [], stubRunIds: mate?.stub ? [run.id] : [],
+        stubEnds: mine && mate?.stub ? [mate.stub] : [], stubRunIds: mine && mate?.stub ? [run.id] : [],
         gasket: { item: gasket, thickness: gasketThickness(gasket) },
-        bolts, supplied: { flange: !!mate || !!explicit, gasket: choice?.gasket !== false, bolts: choice?.bolts !== false && physical },
-        boltsUnknown: choice?.bolts !== false && physical && !bolts,
+        bolts, supplied: { flange: mine && (!!mate || !!explicit), gasket: owned && choice?.gasket !== false && !second, bolts: owned && choice?.bolts !== false && physical },
+        boltsUnknown: owned && choice?.bolts !== false && physical && !bolts,
         ...(explicit ? { flangeNodeId: other.id } : {})
       })
     }

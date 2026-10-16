@@ -63,4 +63,9 @@ export function boltSizeText(diameter: number, length: number, units: IsoDocumen
   }
   return `${inch(diameter)}X${inch(length)}`
 }
-export const angleText = (degrees: number, plane: 'H' | 'V') => `${round(degrees, 1)}° ${plane}`
+/** BOM text from its parts, comma separated and upper case. */
+export const compose = (...parts: Array<string | undefined>) =>
+  parts.map(p => p?.trim()).filter(Boolean).join(', ').toUpperCase()
+/** A schedule as BOM text: STD, XS and SCH-prefixed names as written, a bare number as SCH 40. */
+export const schedule = (text?: string) => !text ? '' : /^(sch|std|xs|xxs)/i.test(text) ? text : 'SCH ' + text
+export const angleText =(degrees: number, plane: 'H' | 'V') => `${round(degrees, 1)}° ${plane}`

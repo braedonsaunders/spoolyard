@@ -198,9 +198,9 @@ test('flow choices name the plant direction a pipe runs', async () => {
 
 test('flow direction and an eccentric flat side are validated when a drawing is read', () => {
   const doc = straight(4), node = placeComponentOnPipe(doc, doc.runs[0].id, type('E-RED'), 0.5, row(`${spec.id}/E-RED-4x3`));
-  node.flat = 'top';
+  node.flatSide = 'top';
   doc.runs[0].flow = 'forward';
   parseIsoJson(JSON.stringify(doc));
   assert.throws(() => parseIsoJson(JSON.stringify({ ...doc, runs: [{ ...doc.runs[0], flow: 'up' }, ...doc.runs.slice(1)] })), /flow/);
-  assert.throws(() => parseIsoJson(JSON.stringify({ ...doc, nodes: doc.nodes.map(n => n.id === node.id ? { ...n, flat: 'left' } : n) })), /flat/);
+  assert.throws(() => parseIsoJson(JSON.stringify({ ...doc, nodes: doc.nodes.map(n => n.id === node.id ? { ...n, flatSide: 'left' } : n) })), /flat/);
 });

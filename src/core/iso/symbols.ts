@@ -88,7 +88,9 @@ export function symbolExtent(ctx: IsoContext, node: PipeNode): number {
 }
 
 /** Where a weld is drawn: just off the fitting it joins, clear of its symbol, whatever the sheet scale. */
-export const weldPoint = (ctx: IsoContext, w: Weld) => jointPoint(ctx, getNode(ctx.doc, w.nodeId), w.runId, w.position)
+// A branch outlet is welded to its header where it stands; a pad or welded support where it sits on the pipe.
+export const weldPoint = (ctx: IsoContext, w: Weld) => ['BR', 'RP', 'AT'].includes(w.type)
+  ? ctx.pos.get(w.nodeId) : jointPoint(ctx, getNode(ctx.doc, w.nodeId), w.runId, w.position)
 /** Where a pipe end joins its fitting on the page, for the fitting's joint at model point `position`. */
 function jointPoint(ctx: IsoContext, node: PipeNode, runId: string, position: Vec3): Point | undefined {
   const g = ctx.geometry.get(runId), at = ctx.pos.get(node.id)

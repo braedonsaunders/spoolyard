@@ -6,7 +6,8 @@ import { COMPONENT_TYPES } from '../src/core/components.ts';
 import { componentTrack, moveComponentAlongPipe, placeComponentOnPipe } from '../src/core/component-position.ts';
 
 const spec = JSON.parse(readFileSync(new URL('../public/library/specs/a.json', import.meta.url), 'utf8')) as PipeSpec;
-const offered = COMPONENT_TYPES.filter(t => !['pipe', 'elbow90', 'elbow45', 'tee'].includes(t.kind) &&
+// A nipple placed on a pipe makes that pipe the nipple; it is not an in-line node.
+const offered = COMPONENT_TYPES.filter(t => !['pipe', 'elbow90', 'elbow45', 'tee'].includes(t.kind) && t.code !== 'NIPPLE' &&
   (t.ports === 2 || ['support', 'bolt', 'annotation'].includes(t.kind)));
 const fixture = () => {
   const doc = newIso(); doc.specs = [clone(spec)];

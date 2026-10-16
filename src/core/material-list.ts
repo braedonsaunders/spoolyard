@@ -1,18 +1,18 @@
 import { COMPONENT_TYPE_BY_CODE } from './components'
-import { flangedJoints, isFlangePair, nodeCode, nodeItem, type FlangedJoint } from './joints'
-import { boltSizeText, draftLength, purchaseLength, sizeText } from './format'
-import { connected, getNode, getSpec, runResult, type CatalogItem, type IsoDocument, type PipeNode, type PipeRun } from './model'
+import { breakOwner, flangedJoints, isFlangePair, nodeCode, nodeItem, pairFlangesOn, spansSpools, type FlangedJoint } from './joints'
+import { boltSizeText, compose, draftLength, purchaseLength, schedule, sizeText } from './format'
+import { connected, flatSideText, getNode, getSpec, nippleDescription, runResult, supportListed, type CatalogItem, type IsoDocument, type PipeNode, type PipeRun } from './model'
 
 export type MaterialCategory =
   | 'pipe' | 'cap' | 'nipple' | 'bend' | 'elbow90' | 'elbow45' | 'stub' | 'hose' | 'reducer' | 'tee' | 'olet' | 'regulator'
-  | 'reducing-coupling' | 'union' | 'flange' | 'bolt' | 'gasket' | 'valve' | 'other'
+  | 'reducing-coupling' | 'union' | 'flange' | 'bolt' | 'gasket' | 'valve' | 'other' | 'support'
 /**
- * Issued order: pipe; fittings by type (caps; nipples and full couplings; bends; elbows; stub ends; hoses and hose
- * adaptors; reducers; tees and laterals; olets; regulators; reducing couplings; unions); flanges, bolting, gaskets,
- * valves; specialty items (relief valves, vessels) last.
+ * Issued order (AutoCAD Plant 3D groups): pipe; fittings by type (caps; nipples and full couplings; bends; elbows; stub
+ * ends; hoses and hose adaptors; reducers; tees and laterals; regulators; reducing couplings; unions); olets; flanges,
+ * bolting, gaskets, valves; specialty items (relief valves, vessels); pipe supports that are material last.
  */
-const ORDER: MaterialCategory[] = ['pipe', 'cap', 'nipple', 'bend', 'elbow90', 'elbow45', 'stub', 'hose', 'reducer', 'tee', 'olet', 'regulator',
-  'reducing-coupling', 'union', 'flange', 'bolt', 'gasket', 'valve', 'other']
+const ORDER: MaterialCategory[] = ['pipe', 'cap', 'nipple', 'bend', 'elbow90', 'elbow45', 'stub', 'hose', 'reducer', 'tee', 'regulator',
+  'reducing-coupling', 'union', 'olet', 'flange', 'bolt', 'gasket', 'valve', 'other', 'support']
 /** 90° and 45° elbows share a place in the list and follow the order they appear along the line. */
 const rank = (c: MaterialCategory) => c === 'elbow45' ? ORDER.indexOf('elbow90') : ORDER.indexOf(c)
 const FLANGE_ORDER = [/SO$/, /WN$/, /LJ$/, /SW$/, /SC$/, /BL$/]
@@ -35,9 +35,6 @@ export interface MaterialRow {
 /** A full mill random length (20 ft, 6 m) is used as it comes, not cut. */
 const RANDOM_LENGTH = { imperial: 240 * 25.4 - 1, mm: 6000 - 1 }
 const KERF = 3.175
-const compose = (...parts: Array<string | undefined>) =>
-  parts.map(p => p?.trim()).filter(Boolean).join(', ').toUpperCase()
-const schedule = (text?: string) => !text ? '' : /^(sch|std|xs|xxs)/i.test(text) ? text : 'SCH ' + text
 /** The drawing text of a catalogue row: its own BOM text, else description, material, schedule and rating. */
 export function rowDescription(item: CatalogItem | undefined, fallback: string): string {
   if (item?.bomDescription) return item.bomDescription.toUpperCase()
@@ -64,6 +61,7 @@ function categoryOf(kind: PipeNode['kind'], code = ''): MaterialCategory {
     case 'bolt': return 'bolt'
     case 'gasket': return 'gasket'
     case 'valve': return 'valve'
+    case 'support': return 'support'
     default: return 'other'
   }
 }
@@ -123,6 +121,12 @@ export function sheetMaterials(doc: IsoDocument, spool = ''): MaterialRow[] {
   const sizes = [...new Set(spoolRuns.filter(r => !r.connector).map(r => r.nps))].sort((a, b) => a - b)
   for (const run of sizes.flatMap(nps => routeOrder(doc, spoolRuns, nps).filter(r => !r.connector && r.nps === nps))) {
     const spec = getSpec(doc, run.specId), size = spec.sizes.find(s => s.nps === run.nps), cut = runResult(doc, run).cut
+    if (run.nipple) {
+      // A nipple is a bought piece, counted like a fitting.
+      const description = nippleDescription(doc, run)
+      add(JSON.stringify(['nipple', spec.id, run.nps, description]), { category: 'nipple', nd: sizeText(run.nps), description, qty: 0, size: run.nps }, run.id, 1)
+      continue
+    }
     const base = run.description?.toUpperCase() ?? size?.bomDescription?.toUpperCase() ??
       compose(size?.description ?? 'PIPE', size?.material ?? spec.material, schedule(size?.schedule ?? spec.schedule))
     const known = Number.isFinite(cut) && cut > 0
@@ -134,26 +138,31 @@ export function sheetMaterials(doc: IsoDocument, spool = ''): MaterialRow[] {
     row.pieces.push(cut)
   }
   for (const node of doc.nodes) {
-    if (['end', 'weld', 'annotation', 'support'].includes(node.kind)) continue
+    if (['end', 'weld', 'annotation'].includes(node.kind) || (node.kind === 'support' && !supportListed(doc, node))) continue
     const edges = connected(doc, node.id), host = edges[0] ?? doc.runs.find(r => r.id === node.associatedRunId)
     if (!host || (spool && !(edges.length ? edges : [host]).some(r => r.spool === spool))) continue
     const item = nodeItem(doc, node), code = nodeCode(doc, node) ?? item?.component ?? ''
     if (COMPONENT_TYPE_BY_CODE[code]?.byOthers) continue
-    // An angle body is sized inlet by outlet, the outlet being its branch.
+    // An olet is contoured to its header and bought as header by branch size; an angle body is sized inlet by outlet,
+    // the outlet being its branch.
+    const header = node.kind === 'olet' ? doc.runs.find(r => r.id === node.associatedRunId) : undefined
     const outlet = COMPONENT_TYPE_BY_CODE[code]?.angle ? edges.find(r => r.id === node.branchEdgeId) : undefined
     const inlet = outlet && edges.find(r => r !== outlet)
-    const sizes = edges.map(r => r.nps), nps = item?.nps ?? inlet?.nps ?? Math.max(...sizes, host.nps)
-    const small = item?.smallerNps ?? outlet?.nps ?? (sizes.length > 1 ? Math.min(...sizes) : undefined)
+    const sizes = edges.map(r => r.nps), nps = header?.nps ?? item?.nps ?? inlet?.nps ?? Math.max(...sizes, host.nps)
+    const small = header ? edges[0]?.nps ?? item?.smallerNps ?? item?.nps : item?.smallerNps ?? outlet?.nps ?? (sizes.length > 1 ? Math.min(...sizes) : undefined)
     const pair = isFlangePair(doc, node)
     // A flange the next drawing supplies is not listed here (its stub end is, with the joint).
     if (node.kind === 'flange' && !pair && node.jointSupply?.flange === false && !/^STUB-END/.test(code)) continue
+    // At a spool break a flange pair lists each sheet's own flange; anything else spanning it, the owning sheet.
+    const flanges = pair ? pairFlangesOn(doc, node, spool) : 0
+    if (pair ? !flanges : spool && spansSpools(doc, node) && breakOwner(doc, node) !== spool) continue
     const label = node.description ?? COMPONENT_TYPE_BY_CODE[code]?.label ?? node.kind
-    const description = node.description ? node.description.toUpperCase() : rowDescription(item, label)
+    const description = [node.description ? node.description.toUpperCase() : rowDescription(item, label), flatSideText(node)].filter(Boolean).join(', ')
     const category = categoryOf(node.kind, code)
     add(JSON.stringify([category, item?.id ?? code, description, sizeText(nps, small), node.takeout ?? null, node.branchTakeout ?? null]), {
       category, nd: sizeText(nps, node.kind === 'tee' && small === nps ? undefined : small), description, qty: 0, size: nps,
       flangeRank: FLANGE_ORDER.findIndex(r => r.test(code)) + 1 || 9
-    }, node.id, node.quantity ?? (pair ? 2 : 1))
+    }, node.id, node.quantity ?? (pair ? flanges : 1))
   }
   for (const joint of flangedJoints(doc, spool)) addJoint(joint)
   function addJoint(joint: FlangedJoint) {

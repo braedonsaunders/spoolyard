@@ -50,7 +50,8 @@ test('PCF olets sit on the header centreline at its bore, with the outlet clear 
   const olet = attachComponent(doc, header.id, 'olet', 0.5);
   applyComponent(doc, olet, 'SOL', row);
   appendRun(doc, olet.id, [0, 0, 300], 'CS40', 1, 'SP-1', 'L-1', 'SW');
-  const pcf = exportPcf(doc), reach = 168.3 / 2 + 27;
+  // The outlet stands its height plus the root gap under it off the header outside.
+  const pcf = exportPcf(doc), reach = 168.3 / 2 + doc.specs[0].rootGap + 27;
   const block = pcf.split(/\n(?=\S)/).find(b => b.startsWith('OLET'))!;
   assert.match(block, /\n {4}CENTRE-POINT 1000\.0000 0\.0000 0\.0000 6 /);
   assert.match(block, new RegExp(`\\n {4}BRANCH1-POINT 1000\\.0000 0\\.0000 ${reach.toFixed(4).replace('.', '\\.')} 1 SW`));

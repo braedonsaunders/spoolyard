@@ -149,6 +149,7 @@ export const cutText = (row: Pick<CutRow, 'cut' | 'uncut'>, units: Units) =>
   row.uncut ? 'NOT CUT' : Number.isFinite(row.cut) && row.cut > 0 ? draftLength(row.cut, units) : UNKNOWN
 
 export type WeldType = 'BUTT' | 'SOCKET FILLET' | 'BRANCH' | 'ATTACHMENT' | 'SLIP-ON FILLET'
+const WELD_TYPE: Record<Weld['type'], WeldType> = { BW: 'BUTT', SW: 'SOCKET FILLET', SO: 'SLIP-ON FILLET', BR: 'BRANCH', RP: 'ATTACHMENT', AT: 'ATTACHMENT' }
 export interface WeldRow {
   weld: Weld
   spool: string
@@ -188,16 +189,17 @@ function partName(doc: IsoDocument, node: PipeNode, run: PipeRun): string {
 /** The weld map: every weld with its type, size, schedule and the parts it joins. */
 export const weldSchedule = (doc: IsoDocument): WeldRow[] => welds(doc).map(weld => weldRow(doc, weld))
 export function weldRow(doc: IsoDocument, weld: Weld): WeldRow {
-  const run = doc.runs.find(r => r.id === weld.runId)!, node = getNode(doc, weld.nodeId), code = nodeCode(doc, node) ?? ''
+  const node = getNode(doc, weld.nodeId)
+  // A branch or pad weld joins the header the outlet sits on.
+  const branch = weld.type === 'BR' || weld.type === 'RP'
+  const run = (branch ? doc.runs.find(r => r.id === node.associatedRunId) : undefined) ?? doc.runs.find(r => r.id === weld.runId)!
   const spec = getSpec(doc, run.specId), size = spec.sizes.find(s => s.nps === run.nps)
-  const branch = node.kind === 'olet' && run.id === node.associatedRunId
-  const type: WeldType = node.kind === 'support' ? 'ATTACHMENT' : branch ? 'BRANCH'
-    : weld.prep === 'SW' ? 'SOCKET FILLET' : weld.prep === 'PLAIN' || /SO$/.test(code) ? 'SLIP-ON FILLET' : 'BUTT'
+  const type = WELD_TYPE[weld.type]
   // A pipe-to-pipe weld, a pipe into a fitting, or two fittings welded straight together.
   const far = run.from === node.id ? run.to : run.from
   const own = node.kind === 'weld' ? 'PIPE' : partName(doc, node, run)
   const other = run.connector ? partName(doc, getNode(doc, far), run) : 'PIPE'
-  const outlet = branch ? connected(doc, node.id)[0]?.nps ?? nodeItem(doc, node)?.smallerNps ?? nodeItem(doc, node)?.nps : undefined
+  const outlet = weld.type === 'BR' ? weld.nps : undefined
   return {
     weld, spool: run.spool, drawing: sheetTitle(doc, run.spool), line: run.line, type,
     size: sizeText(run.nps, outlet), schedule: scheduleText(size?.schedule ?? spec.schedule),
