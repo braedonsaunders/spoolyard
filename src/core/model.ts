@@ -1,6 +1,6 @@
 import type { GridSettings } from './grid'
 import { COMPONENT_TYPES } from './components'
-import { defaultCode, flangedAllowance, flangedJoints, isFlangePair, matingFlange, nippleEnds, nippleLength, nippleText, nodeItem, pipeEndPrep } from './joints'
+import { boltedDirect, defaultCode, flangedAllowance, flangedJoints, isFlangePair, matingFlange, nippleEnds, nippleLength, nippleText, nodeItem, pipeEndPrep } from './joints'
 import { boltSizeText } from './format'
 import { flange, pipeOd } from './standards'
 /** Spoolyard piping semantics (file schema id "bidwright-piping" is kept for compatibility). Coordinates and fabrication lengths are millimetres. */
@@ -1087,6 +1087,8 @@ export function validateIso(doc: IsoDocument): string[] {
         issues.push(
           `${r.spool}: a ${r.nps}″ pipe is ${formatLength(result.cut, doc.units)} after fitting allowances, so the fittings at its ends overlap. Move them apart or lengthen the pipe.`
         )
+      if (boltedDirect(doc, getNode(doc, r.from), r) && Math.abs(result.cut) > 1)
+        issues.push(`${r.spool}: the ${itemName(doc, getNode(doc, r.from))} and the ${itemName(doc, getNode(doc, r.to))} are bolted face to face but stand ${formatLength(result.cut, doc.units)} ${result.cut > 0 ? 'apart' : 'into each other'}. Move one onto the other's face.`)
       const nipple = nippleOf(doc, r)
       if (nipple?.length && result.cut > 0 && Math.abs(result.cut - nipple.length) > 0.8)
         issues.push(`${r.spool}: a ${r.nps}″ nipple is ${formatLength(nipple.length, doc.units)} long, but its fittings leave ${formatLength(result.cut, doc.units)} for it. Move them, or set the nipple's length.`)

@@ -1,5 +1,6 @@
 import { COMPONENT_TYPES, type ComponentType } from './components';
-import { connected, getNode, getSpec, length, sub, add, mul, runResult, insertComponent, attachComponent, applyComponent, makeNipple, setAutoFitting, type CatalogItem, type IsoDocument, type PipeRun, type Vec3 } from './model';
+import { nodeCode } from './joints';
+import { connected, getNode, getSpec, length, sub, add, mul, runResult, insertComponent, attachComponent, applyComponent, makeNipple, setAutoFitting, takeout, type CatalogItem, type IsoDocument, type PipeRun, type Vec3 } from './model';
 
 export interface ComponentTrack {
   /** Ends of the whole straight leg, between changes of direction, branches and open ends. */
@@ -156,9 +157,18 @@ export function placeComponentOnPipe(doc: IsoDocument, runId: string, type: Comp
     next.nps = match.smallerNps;
     setAutoFitting(doc, next.to);
   }
+  // A flanged component dropped against another bolts straight to it, face to face, with no pipe between.
+  for (const edge of connected(doc, node.id)) {
+    const other = getNode(doc, edge.from === node.id ? edge.to : edge.from), cut = runResult(doc, edge).cut;
+    if (!(Number.isFinite(cut) && cut <= 0) || type.endPrep !== 'FL' || COMPONENT_TYPES.find(t => t.code === nodeCode(doc, other))?.endPrep !== 'FL') continue;
+    edge.connector = true;
+    const span = (takeout(doc, other, edge.id) ?? NaN) + (takeout(doc, node, edge.id) ?? NaN), u = sub(node.position, other.position);
+    if (Number.isFinite(span)) node.position = add(other.position, mul(u, span / (length(u) || 1)));
+    else delete edge.connector;
+  }
   for (const edge of connected(doc, node.id)) {
     const cut = runResult(doc, edge).cut;
-    if (Number.isFinite(cut) && cut <= 0)
+    if (!edge.connector && Number.isFinite(cut) && cut <= 0)
       throw new Error('That position leaves no pipe after fitting takeouts and root gaps. Choose a point farther from the end.');
   }
   return node;

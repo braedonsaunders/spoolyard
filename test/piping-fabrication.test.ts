@@ -211,6 +211,28 @@ test('a nipple drawn as an in-line component takes the specification nipple leng
   assert.deepEqual(validateIso(doc), []);
 });
 
+test('a check valve bolted to a gate valve is one joint: one gasket, one bolt set, no pipe or flanges between', () => {
+  const doc = newIso(); doc.specs = [clone(specA)];
+  appendRun(doc, null, [2000, 0, 0], 'A', 6, 'SP', 'L');
+  const type = (code: string) => COMPONENT_TYPES.find(t => t.code === code)!;
+  const check = placeComponentOnPipe(doc, doc.runs[0].id, type('CHECK-FL'), 0.3, row(doc, 'CHECK-FL', 6));
+  const next = doc.runs.find(r => r.from === check.id)!;
+  // Dropped onto the check valve's face, the gate valve bolts to it.
+  const gate = placeComponentOnPipe(doc, next.id, type('GATE-FL'), 0.05, row(doc, 'GATE-FL', 6));
+  const between = doc.runs.find(r => r.from === check.id)!;
+  assert.equal(between.connector, true);
+  close(gate.position[0] - check.position[0], row(doc, 'CHECK-FL', 6).takeout + 3.17 + row(doc, 'GATE-FL', 6).takeout);
+  const rows = sheetMaterials(doc, 'SP');
+  assert.equal(rows.find(r => r.category === 'gasket')!.qty, 3);
+  assert.equal(rows.find(r => r.category === 'bolt')!.qty, 24);
+  assert.equal(rows.find(r => r.category === 'flange')!.qty, 2);
+  assert.equal(rows.filter(r => r.category === 'pipe').length, 2);
+  assert.equal(welds(doc).length, 2);
+  assert.deepEqual(validateIso(doc), []);
+  gate.position = [gate.position[0] + 10, 0, 0];
+  assert.match(validateIso(doc).join(), /bolted face to face but stand 10 mm apart/);
+});
+
 test('a slip-on flange sets the pipe back a wall and 1/16" from its face', () => {
   assert.equal(standardRow('FLG-RFSO', 2, '150#', undefined, 'STD')!.takeout, 3.91 + 1.59);
   assert.equal(standardRow('FLG-RFSO', 2, '150#', undefined, '10S')!.takeout, 2.77 + 1.59);
