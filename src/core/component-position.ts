@@ -1,5 +1,6 @@
-import { COMPONENT_TYPES, type ComponentType } from './components';
-import { connected, getNode, getSpec, length, sub, add, mul, runResult, insertComponent, attachComponent, applyComponent, setAutoFitting, type CatalogItem, type IsoDocument, type PipeRun, type Vec3 } from './model';
+import { COMPONENT_TYPES, COMPONENT_TYPE_BY_CODE, type ComponentType } from './components';
+import { catalogRow, defaultCode, flangedJoints, nodeCode } from './joints';
+import { connected, fitting, getNode, getSpec, length, sub, add, mul, prepAt, runResult, insertComponent, attachComponent, applyComponent, setAutoFitting, takeout, type CatalogItem, type IsoDocument, type PipeNode, type PipeRun, type PipeSpec, type Vec3 } from './model';
 
 export interface ComponentTrack {
   /** Ends of the whole straight leg, between changes of direction, branches and open ends. */
@@ -119,7 +120,84 @@ export function moveComponentAlongPipe(doc: IsoDocument, nodeId: string, distanc
 }
 
 /** Components that can terminate a pipe: flanges, blinds, caps and plugs. */
-export const endCapable = (type: ComponentType) => type.kind === 'flange' || type.kind === 'cap' || type.ports === 1;
+export const endCapable = (type: ComponentType) =>
+  type.kind !== 'olet' && (type.kind === 'flange' || type.kind === 'cap' || type.ports === 1);
+
+/** Reducers, tees and olets come in sizes: a reducer reduces or expands, a tee or olet sets its branch. */
+export const sized = (type: ComponentType) =>
+  type.kind === 'tee' || (type.kind === 'olet' && type.ports === 1) || (type.kind === 'reducer' && !!type.reducing);
+/** A size a reducer, tee or olet comes in on a pipe; `to` is the size beyond it: downstream of a reducer, or the branch. */
+export interface SizeChoice { row: CatalogItem; to: number }
+/**
+ * Sizes a reducer (reducing or expanding), tee or olet fits on a pipe of size `nps`, from the specification's rows, else
+ * the standard ones. Reductions and reducing branches come closest size first; olet branches smallest first.
+ */
+export function sizeChoices(spec: PipeSpec, type: ComponentType, nps: number): SizeChoice[] {
+  if (!sized(type)) return [];
+  const sizes = spec.sizes.map(s => s.nps).sort((a, b) => a - b), smaller = sizes.filter(s => s < nps);
+  const pairs: Array<[number, number | undefined, number]> =
+    type.kind === 'olet' ? smaller.map(s => [s, undefined, s])
+      : type.kind === 'tee' ? (type.reducing ? [...smaller].reverse().map(s => [nps, s, s]) : [[nps, undefined, nps]])
+        : [...[...smaller].reverse().map((s): [number, number, number] => [nps, s, s]),
+          ...sizes.filter(s => s > nps).map((s): [number, number, number] => [s, nps, s])];
+  const own = { ...spec, fittings: spec.fittings.filter(f => f.component === type.code) };
+  return pairs.flatMap(([large, small, to]) => {
+    const row = catalogRow(own, type.code, large, small);
+    return row ? [{ row, to }] : [];
+  });
+}
+
+/** The size beyond a sized component on a pipe of `nps`; an error when the row does not fit that pipe. */
+function sizeBeyond(type: ComponentType, row: CatalogItem, nps: number): number {
+  const fits = type.kind === 'olet' ? row.nps < nps
+    : type.kind === 'tee' ? row.nps === nps
+      : row.smallerNps != null && row.smallerNps !== row.nps && (row.nps === nps || row.smallerNps === nps);
+  if (!fits)
+    throw new Error(type.kind === 'olet'
+      ? `A ${row.nps}″ ${type.label.toLowerCase()} branch is too large for a ${nps}″ pipe. Choose a smaller branch.`
+      : `That ${type.label.toLowerCase()} does not fit a ${nps}″ pipe. Choose a size with a ${nps}″ end.`);
+  return type.kind === 'olet' ? row.nps : type.kind === 'tee' ? row.smallerNps ?? row.nps : row.nps === nps ? row.smallerNps! : row.nps;
+}
+
+/** A node refitted to a new pipe size: routed fittings are chosen again, catalogue rows of the old size dropped. */
+function refit(doc: IsoDocument, node: PipeNode, nps: number, specId: string) {
+  setAutoFitting(doc, node.id);
+  const row = fitting(doc, node);
+  if (!row || row.nps === nps || ['end', 'weld', 'elbow90', 'elbow45', 'tee', 'reducer'].includes(node.kind)) return;
+  const same = getSpec(doc, specId).fittings.find(f => f.component === row.component && f.nps === nps && !f.smallerNps);
+  if (same) node.catalogId = same.id;
+  else delete node.catalogId;
+}
+/**
+ * Carry a new size along the line beyond a fitting: the pipe leaving `fromId` and the pipes it runs on into through
+ * joints, elbows and in-line components, up to the next reducer, branch or open end.
+ */
+export function carrySize(doc: IsoDocument, fromId: string, runId: string, nps: number): void {
+  let at = fromId, run = doc.runs.find(r => r.id === runId);
+  const old = run?.nps, seen = new Set<string>();
+  while (run && !seen.has(run.id)) {
+    seen.add(run.id);
+    run.nps = nps;
+    const nextId = run.from === at ? run.to : run.from, node = getNode(doc, nextId), edges = connected(doc, nextId);
+    const onward = edges.length === 2 && node.kind !== 'reducer' && !node.associatedRunId
+      ? edges.find(r => r.id !== run!.id && r.nps === old && !r.connector && !seen.has(r.id)) : undefined;
+    if (onward) onward.nps = nps;
+    refit(doc, node, nps, run.specId);
+    at = nextId;
+    run = onward;
+  }
+}
+
+/** Where a straight changes size at a plain joint, as when a pipe of another size is routed on, a reducer goes there. */
+export function reduceAtJoint(doc: IsoDocument, nodeId: string): PipeNode | undefined {
+  const node = getNode(doc, nodeId), edges = connected(doc, nodeId);
+  if (node.kind !== 'weld' || edges.length !== 2 || edges[0].nps === edges[1].nps) return undefined;
+  const [large, small] = edges[0].nps > edges[1].nps ? edges : [edges[1], edges[0]];
+  const code = defaultCode('reducer', prepAt(large, large.from === nodeId ? 0 : 1))!;
+  const row = getSpec(doc, large.specId).fittings.find(f => f.component === code && f.nps === large.nps && f.smallerNps === small.nps);
+  applyComponent(doc, node, code, row);
+  return node;
+}
 
 /** Place an inline fitting or attached item at an explicit point along a measured pipe; 0 and 1 are the pipe ends. */
 export function placeComponentOnPipe(doc: IsoDocument, runId: string, type: ComponentType, fraction: number, row?: CatalogItem) {
@@ -127,12 +205,17 @@ export function placeComponentOnPipe(doc: IsoDocument, runId: string, type: Comp
   if (!run) throw new Error('Select a pipe to insert this component.');
   if (type.kind === 'pipe') throw new Error('Use the Pipe tool to route a pipe.');
   if (!(fraction >= 0 && fraction <= 1)) throw new Error('Click on the pipe to place this component.');
-  const specRows = getSpec(doc, run.specId).fittings;
+  const spec = getSpec(doc, run.specId), specRows = spec.fittings;
   const code = (f: CatalogItem) => f.component ?? COMPONENT_TYPES.find(t => t.kind === f.kind)?.code;
-  const match =
-    (row && row.nps === run.nps && specRows.some(f => f.id === row.id) ? row : undefined) ??
-    specRows.find(f => code(f) === type.code && f.nps === run.nps && (row?.smallerNps == null || f.smallerNps === row.smallerNps));
-  const attached = ['support', 'bolt', 'annotation'].includes(type.kind);
+  // A reducer, tee or olet goes in at the size chosen for it; a reducer reduces or expands the pipe beyond it.
+  const size = sized(type) ? row ?? sizeChoices(spec, type, run.nps)[0]?.row : undefined;
+  const beyond = size && sizeBeyond(type, size, run.nps);
+  const match = size
+    ? specRows.find(f => f.id === size.id)
+    : (row && row.nps === run.nps && specRows.some(f => f.id === row.id) ? row : undefined) ??
+      specRows.find(f => code(f) === type.code && f.nps === run.nps && (row?.smallerNps == null || f.smallerNps === row.smallerNps));
+  // An olet sits on its header pipe; its branch is routed from it.
+  const attached = ['support', 'bolt', 'annotation', 'olet'].includes(type.kind);
   const atEnd = fraction <= 0 || fraction >= 1;
   if (atEnd && !attached) {
     // A flange, blind or cap dropped on an open end becomes that end; its face is the end point.
@@ -149,15 +232,105 @@ export function placeComponentOnPipe(doc: IsoDocument, runId: string, type: Comp
     ? attachComponent(doc, runId, type.kind, fraction)
     : insertComponent(doc, runId, type.kind, fraction);
   applyComponent(doc, node, type.code, match);
-  if (type.kind === 'reducer' && match?.smallerNps) {
-    const next = doc.runs.find(r => r.from === node.id)!;
-    next.nps = match.smallerNps;
-    setAutoFitting(doc, next.to);
-  }
+  if (type.kind === 'reducer' && beyond != null) carrySize(doc, node.id, doc.runs.find(r => r.from === node.id)!.id, beyond);
   for (const edge of connected(doc, node.id)) {
     const cut = runResult(doc, edge).cut;
     if (Number.isFinite(cut) && cut <= 0)
       throw new Error('That position leaves no pipe after fitting takeouts and root gaps. Choose a point farther from the end.');
   }
   return node;
+}
+
+/** Smallest step a click places a component along a pipe: 1 mm, or 1/16 in on imperial drawings. */
+export const placementStep = (units: IsoDocument['units']) => units === 'mm' ? 1 : 25.4 / 16;
+/** A clicked point on a pipe, moved along its straight to the nearest placement step. Pipe ends stay where they are. */
+export function snapAlongLeg(doc: IsoDocument, runId: string, fraction: number): { runId: string; fraction: number } {
+  const at = legPosition(doc, runId, fraction), leg = pipeLeg(doc, runId);
+  if (!at || !leg || !(fraction > 0 && fraction < 1)) return { runId, fraction };
+  const step = placementStep(doc.units), snapped = Math.round(at.distance / step) * step;
+  if (leg.stations.some(s => Math.abs(s - snapped) < 1e-6)) return { runId, fraction };
+  return legPoint(doc, runId, snapped) ?? { runId, fraction };
+}
+
+/**
+ * The faces the sheet dimensions an in-line component to, as distances along its straight: a flanged component's
+ * mating flange faces across the gaskets, a reducer's two ends. Null when the sheet measures it to its centre.
+ */
+export function componentFaces(doc: IsoDocument, nodeId: string): [number, number] | null {
+  const node = getNode(doc, nodeId), track = componentTrack(doc, nodeId);
+  if (!track || node.associatedRunId) return null;
+  const u = mul(sub(track.to, track.from), 1 / track.length), along = (p: Vec3) => dot(sub(p, track.from), u);
+  const outward = (run: PipeRun) => {
+    const v = sub(getNode(doc, run.from === nodeId ? run.to : run.from).position, node.position);
+    return mul(v, 1 / (length(v) || 1));
+  };
+  const ports = flangedJoints(doc).filter(j => j.nodeId === nodeId && j.kind === 'component-port');
+  const faces = ports.length
+    ? ports.flatMap(j => {
+      const run = doc.runs.find(r => r.id === j.runIds[0]);
+      return run ? [along(add(j.position, mul(outward(run), j.gasket?.thickness ?? 0)))] : [];
+    })
+    : node.kind === 'reducer' && !/CPLG/.test(nodeCode(doc, node) ?? '')
+      ? connected(doc, nodeId).map(run => along(add(node.position, mul(outward(run), takeout(doc, node, run.id) ?? 0))))
+      : [];
+  return faces.length === 2 ? [Math.min(...faces), Math.max(...faces)] : null;
+}
+
+/**
+ * A connection a pipe can be routed from: an open end, a joint, elbow or tee that can take a branch, a fitting with a
+ * free port, or an olet still waiting for its branch. An in-line valve between two pipes has no free end.
+ */
+export function canRouteFrom(doc: IsoDocument, nodeId: string): boolean {
+  const node = getNode(doc, nodeId), edges = connected(doc, nodeId).length;
+  if (node.associatedRunId) return node.kind === 'olet' && edges === 0 && COMPONENT_TYPE_BY_CODE[node.component ?? '']?.ports !== 0;
+  if (['end', 'weld', 'elbow90', 'elbow45', 'tee'].includes(node.kind)) return edges < (node.kind === 'tee' ? 4 : 3);
+  if (['support', 'annotation', 'gasket', 'bolt'].includes(node.kind)) return false;
+  return edges < (COMPONENT_TYPE_BY_CODE[nodeCode(doc, node) ?? '']?.ports ?? (node.kind === 'cap' ? 1 : 2));
+}
+/** Why a pipe cannot be routed from a connection in a direction: along a pipe already there, or along an olet's header. */
+export function routeError(doc: IsoDocument, nodeId: string, delta: Vec3): string | undefined {
+  const node = getNode(doc, nodeId), l = length(delta);
+  const cos = (v: Vec3) => dot(v, delta) / ((length(v) * l) || 1);
+  if (connected(doc, nodeId).some(run => cos(sub(getNode(doc, run.from === nodeId ? run.to : run.from).position, node.position)) > 0.9999))
+    return 'A pipe already runs that way from here. Route the new pipe in another direction.';
+  const host = doc.runs.find(r => r.id === node.associatedRunId);
+  if (host && Math.abs(cos(sub(getNode(doc, host.to).position, getNode(doc, host.from).position))) > 0.9999)
+    return 'A branch leaves its header across it. Route the branch in another direction.';
+  return undefined;
+}
+
+/** Whether the flow along a pipe arrives at this end of it. */
+const flowsInto = (run: PipeRun, nodeId: string) => (run.flow === 'forward') === (run.to === nodeId);
+/**
+ * Set the flow along a line: this pipe and the pipes it runs on into through joints, elbows and in-line components,
+ * up to a branch or open end. Clearing it clears the same pipes.
+ */
+export function setLineFlow(doc: IsoDocument, runId: string, flow: PipeRun['flow']): void {
+  const run = doc.runs.find(r => r.id === runId);
+  if (!run) throw new Error('Select a pipe to set its flow.');
+  const set = (r: PipeRun, f: PipeRun['flow']) => { if (f) r.flow = f; else delete r.flow; };
+  set(run, flow);
+  const seen = new Set([run.id]);
+  for (const end of [run.from, run.to]) {
+    for (let at = end, previous = run; ;) {
+      const edges = connected(doc, at), next = edges.find(r => r.id !== previous.id);
+      if (getNode(doc, at).kind === 'end' || edges.length !== 2 || !next || seen.has(next.id) || next.connector) break;
+      seen.add(next.id);
+      // Flow arriving through the previous pipe leaves through the next one, and the other way about.
+      set(next, flow && ((next.from === at) === flowsInto(previous, at) ? 'forward' : 'reverse'));
+      at = next.from === at ? next.to : next.from;
+      previous = next;
+    }
+  }
+}
+/** A pipe routed on from a line carries the line's flow on. */
+export function continueFlow(doc: IsoDocument, runId: string): void {
+  const run = doc.runs.find(r => r.id === runId);
+  if (!run || run.flow) return;
+  for (const end of [run.from, run.to]) {
+    const edges = connected(doc, end), previous = edges.find(r => r.id !== run.id);
+    if (edges.length !== 2 || !previous?.flow) continue;
+    run.flow = (run.from === end) === flowsInto(previous, end) ? 'forward' : 'reverse';
+    return;
+  }
 }
