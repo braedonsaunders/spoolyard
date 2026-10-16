@@ -2,6 +2,7 @@ import type { GridSettings } from './grid'
 import { COMPONENT_TYPES } from './components'
 import { defaultCode, flangedAllowance, flangedJoints, isFlangePair, nodeItem, pipeEndPrep } from './joints'
 import { boltSizeText } from './format'
+import { routeOrder } from './material-list'
 /** Spoolyard piping semantics (file schema id "bidwright-piping" is kept for compatibility). Coordinates and fabrication lengths are millimetres. */
 export type Vec3 = [number, number, number]
 export type Kind =
@@ -884,8 +885,17 @@ export function weldNumber(
 export function welds(doc: IsoDocument): Weld[] {
   let seq = doc.weldStart
   const out: Weld[] = []
-  for (const r of doc.runs) {
-    for (const [index, key] of [r.from, r.to].entries()) {
+  // Numbered in sequence along each spool, from an open end, in the order a fitter meets them.
+  const met = new Set<string>()
+  let last = ''
+  for (const r of [...new Set(doc.runs.map(r => r.spool))].flatMap(spool => routeOrder(doc, doc.runs.filter(r => r.spool === spool)))) {
+    // A pipe continues the walk from where the last one ended; a new walk starts at an open end.
+    const open = (id: string) => getNode(doc, id).kind !== 'weld' && connected(doc, id).filter(x => x.spool === r.spool).length === 1
+    const reversed = r.to === last || (r.from !== last && (open(r.to) !== open(r.from) ? open(r.to) : met.has(r.to) && !met.has(r.from)))
+    last = reversed ? r.from : r.to
+    met.add(r.from).add(r.to)
+    for (const index of reversed ? [1, 0] : [0, 1]) {
+      const key = index === 0 ? r.from : r.to
       const n = getNode(doc, key), prep = pipePrepAt(doc, r, index)
       if (
         n.kind === 'end' ||
