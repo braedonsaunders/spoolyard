@@ -23,6 +23,26 @@ test('library specifications leave a 1/16" root gap at butt welds and a 1/16" ga
   }
 });
 
+test('library specifications describe what to buy: valve ends, trim and standard; ringed spiral-wound gaskets; plain studs', () => {
+  for (const file of readdirSync(dir)) {
+    const spec = library(file.replace('.json', ''));
+    for (const f of spec.fittings) {
+      assert.notEqual(f.material, 'A105 GR. II', `${file} ${f.id}`);
+      if (/^(GATE|GLOBE|CHECK|BALL|PLUG)-(FL|SW|SC)$/.test(f.component ?? ''))
+        assert.match(f.description, /(API|BS|ASME|MSS) [\w.-]+$/, `${file} ${f.id}`);
+      if (f.component === 'GASK-RF' && /SPIRAL/.test(f.description))
+        assert.match(`${f.description}, ${f.material}`, /4\.5 MM, ASME B16\.20, WITH INNER AND CENTRING RINGS.*GRAPHITE/, `${file} ${f.id}`);
+      if (f.component === 'GASK-FF') assert.doesNotMatch(f.description, /SPIRAL/, `${file} ${f.id}`);
+      if (f.kind === 'bolt') assert.equal(f.schedule, undefined, `${file} ${f.id}`);
+      if (f.material?.includes('B8')) assert.match(f.material, /A194 GR\. 8/, `${file} ${f.id}`);
+    }
+    for (const s of spec.sizes) assert.match(s.description!, /^PIPE, (SMLS|EFW), (BE|PE|TE), ASME B36\.(10|19)M$/, file);
+  }
+  const doc = newIso(); doc.specs = [clone(specA)];
+  assert.equal(row(doc, 'GATE-FL', 6).description, 'GATE VALVE, FLANGED RF, OS&Y, BB, TRIM 8, API 600');
+  assert.equal(row(doc, 'GATE-FL', 6).material, 'A216 WCB');
+});
+
 test('socket-weld pipe stops short of each socket bottom by the specification gap', () => {
   const doc = newIso(); doc.specs = [clone(specA)];
   const a = appendRun(doc, null, [inch(24), 0, 0], 'A', 1, 'SP', 'L', 'SW');
