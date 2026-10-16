@@ -259,7 +259,8 @@ test('dimensions sit beside the pipe and a size is called out once per run', () 
       const t = Math.max(0, Math.min(1, ((label.p[0] - a[0]) * dx + (label.p[1] - a[1]) * dy) / l2));
       return Math.hypot(label.p[0] - (a[0] + t * dx), label.p[1] - (a[1] + t * dy));
     }));
-    assert.ok(distance < 60, label.text + ' drifted ' + distance);
+    // The overall stands in the second tier, about 0.95 in off the pipe as issued.
+    assert.ok(distance < 80, label.text + ' drifted ' + distance);
   }
   const model = createDrawing(doc, '', 'iso', undefined, { model: true });
   assert.equal(model.primitives.some(p => p.layer === 'BORDER'), false);

@@ -41,6 +41,12 @@ export function sheetLegs(ctx: IsoContext): Leg[] {
   return legs
 }
 
+/**
+ * Dimension tiers stand off the pipe along their extension lines by these sheet units (850 = 11 in), measured on the
+ * issued sheets: the first 0.56 in out, each further tier 0.37 in beyond it.
+ */
+const TIER = 43.5, TIER_STEP = 29
+
 /** Offset angles in whole degrees, but the half degree of a 22 1/2° or 67 1/2° offset made with standard fittings. */
 const degrees = (a: number) => [22.5, 67.5].find(h => Math.abs(a - h) < 0.15) ?? Math.round(a)
 
@@ -259,7 +265,7 @@ export function drawDimensions(ctx: IsoContext) {
       if (Math.abs(dot2(ext, leg.dir)) > 0.95) continue
       let cost = penalty
       tiers.forEach((tier, t) => {
-        const off = SIZE.tier + t * SIZE.tierStep
+        const off = TIER + t * TIER_STEP
         for (const s of tier) {
           const a = add2(s.a.page, scale2(ext, off)), b = add2(s.b.page, scale2(ext, off))
           // A dimension line may cross a pipe; its lettering may not.
@@ -275,7 +281,7 @@ export function drawDimensions(ctx: IsoContext) {
     if (!best) { if (skewed) offset(leg, points); continue }
     const ext = best.ext
     tiers.forEach((tier, t) => {
-      const off = SIZE.tier + t * SIZE.tierStep
+      const off = TIER + t * TIER_STEP
       // Neighbouring pieces of a chain are no place for a short dimension's text.
       const spans = tier.map(s => [s.a.page, s.b.page] as [Point, Point])
       for (const s of tier) dimension(s.a, s.b, s.mm, ext, off, runBetween(leg, s), ownerOf(leg, s), spans.filter(([a]) => a !== s.a.page), s.approximate)
@@ -470,7 +476,7 @@ export function drawDimensions(ctx: IsoContext) {
       let ext: Point = [along[1], -along[0]]
       const bulk = legs.reduce<Point>((sum, [a, b]) => add2(sum, sub2(lerp2(a, b, 0.5), mid)), [0, 0])
       if (dot2(ext, bulk) > 0) ext = scale2(ext, -1)
-      dimension(start, end, total, ext, SIZE.tier, leg.runs.length === 1 ? leg.runs[0] : undefined, owner)
+      dimension(start, end, total, ext, TIER, leg.runs.length === 1 ? leg.runs[0] : undefined, owner)
     }
     if (comps.length === 2 && !chainExt) {
       const normal: Vec3 = [0, 0, 0]
@@ -480,7 +486,7 @@ export function drawDimensions(ctx: IsoContext) {
       let ext = unit2(ctx.axis(across3))
       if (Math.hypot(...ctx.axis(across3)) < 0.2) ext = [along[1], -along[0]]
       if (dot2(ext, sub2(corner, lerp2(start.page, end.page, 0.5))) > 0) ext = scale2(ext, -1)
-      dimension(start, end, total, ext, SIZE.tier, leg.runs.length === 1 ? leg.runs[0] : undefined, owner)
+      dimension(start, end, total, ext, TIER, leg.runs.length === 1 ? leg.runs[0] : undefined, owner)
     }
     const ends = legs.flatMap(([a, b]) => [a, b]), centre = scale2(ends.reduce(add2, [0, 0]), 1 / ends.length)
     for (const [p, q, mm, standing] of legs) {
