@@ -1,12 +1,12 @@
 import type { Point } from '../drawing'
 import { COMPONENT_TYPE_BY_CODE } from '../components'
 import { isBlind, isLapJoint, nodeCode, nodeItem } from '../joints'
-import { connected, getNode, pipePrepAt, welds, type IsoDocument, type PipeNode, type PipeRun, type Vec3, type Weld } from '../model'
+import { connected, getNode, pipePrepAt, takeout, welds, type IsoDocument, type PipeNode, type PipeRun, type Vec3, type Weld } from '../model'
 import { measureText } from '../stroke-font'
 import { symbolStrokes } from '../symbols'
 import { SIZE, emitters, type IsoContext, type RunGeometry } from './context'
 import { sheetLegs } from './dimensions'
-import { add2, crossAxis, dot2, frame, isAxial, left2, len2, planeText, scale2, sub2, unit2 } from './plane'
+import { add2, crossAxis, dot2, frame, isAxial, left2, len2, planeText, scale2, sub2, unit2, uprightOf } from './plane'
 
 const flangedPort = (code?: string) => !!code && COMPONENT_TYPE_BY_CODE[code]?.endPrep === 'FL'
 const OPERATORS: Record<string, Vec3> = { UP: [0, 0, 1], DOWN: [0, 0, -1], NORTH: [0, 1, 0], SOUTH: [0, -1, 0], EAST: [1, 0, 0], WEST: [-1, 0, 0] }
@@ -72,8 +72,9 @@ export function symbolExtent(ctx: IsoContext, node: PipeNode): number {
       const spans = connected(ctx.doc, node.id).map(r => ctx.geometry.get(r.id)?.length ?? 0)
       return Math.max(3, Math.min(9, 0.45 * Math.min(...spans)))
     }
-    if (/UNION/.test(code)) return 5
-    if (/CPLG|^CAMLOCK/.test(code)) return 6
+    if (/UNION/.test(code)) return 6
+    if (/CPLG/.test(code)) return 7
+    if (/^CAMLOCK/.test(code)) return 8
     if (/^CHICAGO/.test(code)) return 6
     if (/REGUL/.test(code)) return 11
     if (/^PULS/.test(code)) return 0
@@ -81,22 +82,24 @@ export function symbolExtent(ctx: IsoContext, node: PipeNode): number {
     if (/^FLOWMETER/.test(code)) return 10 + flanges
     return (discValve(ctx.doc, node, code) ? DISC : SIZE.valve) + flanges
   }
-  if (node.kind === 'reducer') return 9
+  if (node.kind === 'reducer') return /CPLG/.test(code) ? 7 : 9
   if (node.kind === 'flange' && isBlind(code)) return 2 + SIZE.flangeThickness * 2
   return 0
 }
 
 /** Where a weld is drawn: just off the fitting it joins, clear of its symbol, whatever the sheet scale. */
-export function weldPoint(ctx: IsoContext, w: Weld): Point | undefined {
-  const g = ctx.geometry.get(w.runId), node = getNode(ctx.doc, w.nodeId), at = ctx.pos.get(node.id)
+export const weldPoint = (ctx: IsoContext, w: Weld) => jointPoint(ctx, getNode(ctx.doc, w.nodeId), w.runId, w.position)
+/** Where a pipe end joins its fitting on the page, for the fitting's joint at model point `position`. */
+function jointPoint(ctx: IsoContext, node: PipeNode, runId: string, position: Vec3): Point | undefined {
+  const g = ctx.geometry.get(runId), at = ctx.pos.get(node.id)
   if (!g || !at) return
   const out = g.run.from === node.id ? g.dir : scale2(g.dir, -1)
   if (node.kind === 'weld') return at
-  // Fittings welded straight together meet where their takeouts do, along the drawn joint.
-  if (g.run.connector) return ctx.project(w.position)
+  // Fittings joined straight together meet where their takeouts do, along the drawn joint.
+  if (g.run.connector) return ctx.project(position)
   // An olet's socket or weld end is the top of its body.
   if (node.kind === 'olet') return add2(at, scale2(out, ctx.extent.get(node.id) ?? 0))
-  const projected = len2(sub2(ctx.project(w.position), at))
+  const projected = len2(sub2(ctx.project(position), at))
   return add2(at, scale2(out, (ctx.extent.get(node.id) ?? 0) + Math.min(14, Math.max(7, projected))))
 }
 /** Page direction of flow along a run, if its flow is set. */
@@ -150,6 +153,19 @@ export function drawPipes(ctx: IsoContext) {
     if (w.prep === 'SW' && node.kind !== 'weld') socket(p, toward(node, g.run), node, g)
     weld(p, w.field, w.nodeId)
   }
+  // Screwed joints are marked by a short tick across the pipe where it enters its fitting.
+  const ticks: Point[] = []
+  for (const g of ctx.geometry.values())
+    for (const [index, id] of [g.run.from, g.run.to].entries()) {
+      const node = getNode(ctx.doc, id)
+      if (pipePrepAt(ctx.doc, g.run, index) !== 'THD' || ['end', 'weld', 'support', 'annotation', 'gasket', 'bolt'].includes(node.kind)) continue
+      const other = getNode(ctx.doc, index === 0 ? g.run.to : g.run.from).position, span = Math.hypot(...other.map((v, i) => v - node.position[i])) || 1
+      const t = takeout(ctx.doc, node, g.run.id) ?? 0, p = jointPoint(ctx, node, g.run.id, node.position.map((v, i) => v + (other[i] - v) * t / span) as Vec3)
+      if (!p || ticks.some(q => len2(sub2(p, q)) < 2.5)) continue
+      ticks.push(p)
+      const out = index === 0 ? g.dir : scale2(g.dir, -1), f = frame(p, out, flatAcrossOf(ctx, out, g.dir3))
+      line(f(0, -4), f(0, 4), 'SYMBOL', node.id, 0.8)
+    }
   // A butt-welded end continuing on another drawing is welded there; only a field weld marked here is drawn.
   for (const node of ctx.nodes) {
     const run = node.kind === 'end' && node.continuation && !/OPEN END|CLOSED/i.test(node.continuation.text) ? connected(ctx.doc, node.id)[0] : undefined
@@ -249,6 +265,8 @@ export function drawPipes(ctx: IsoContext) {
         return
       }
       case 'reducer': {
+        // A reducing coupling is a coupling: a box on plan, its joints marked as screwed or socketed.
+        if (/CPLG/.test(code)) { box(frame(at, along, flatAcrossOf(ctx, along, g.dir3)), -7, 7, 7, owner); return }
         const big = edges.reduce((a, b) => a.nps >= b.nps ? a : b, edges[0])
         const dir = big ? scale2(toward(node, big), -1) : along, fr = frame(at, dir, acrossOf(ctx, dir, g.dir3))
         const h = 9, w1 = 7, w2 = 4
@@ -259,8 +277,8 @@ export function drawPipes(ctx: IsoContext) {
       case 'cap': {
         // A screwed or socket cap is drawn as its body round the pipe end; a butt-weld cap as its dish.
         if (/^SC-|^SW-|^CAMLOCK/.test(code)) {
-          const w = /^CAMLOCK/.test(code) ? 6.5 : 4.5
-          poly([f(w + 1, -w), f(0, -w), f(0, w), f(w + 1, w)], 'SYMBOL', owner)
+          const w = /^CAMLOCK/.test(code) ? 5.5 : 4.5
+          poly([f(w + 2, -w), f(0, -w), f(0, w), f(w + 2, w)], 'SYMBOL', owner)
           return
         }
         const out = scale2(along, -1), fc = frame(at, out, across), w = 6
@@ -303,9 +321,17 @@ export function drawPipes(ctx: IsoContext) {
     const owner = node.id, f = frame(at, along, across), e = ctx.extent.get(node.id) ?? 0
     const flat = frame(at, along, flatAcrossOf(ctx, along, ctx.geometry.get(edges[0]?.id ?? '')?.dir3 ?? [1, 0, 0]))
     if (/NIPPLE/.test(code)) { box(f, -e, e, NIPPLE, owner, 0.8); return }
-    if (/UNION/.test(code)) { box(f, -5, 5, 4.5, owner); line(f(0, -4.5), f(0, 4.5), 'SYMBOL', owner); return }
-    if (/CPLG/.test(code)) { box(f, -6, 6, 4.5, owner); return }
-    if (/^CAMLOCK/.test(code)) { box(f, -6, 6, 5, owner); for (const x of [2.5, 4]) line(f(x, -5), f(x, 5), 'SYMBOL', owner); return }
+    // Couplings and unions lie flat: a square on plan round a level pipe.
+    if (/UNION/.test(code)) { box(flat, -6, 6, 6, owner); line(flat(0, -6), flat(0, 6), 'SYMBOL', owner); return }
+    if (/CPLG/.test(code)) { box(flat, -7, 7, 7, owner); return }
+    if (/^CAMLOCK/.test(code)) {
+      // Its groove is at the open end, toward the cap or the end of the line.
+      const open = edges.find(r => ['cap', 'end'].includes(getNode(ctx.doc, r.from === node.id ? r.to : r.from).kind))
+      const fo = open ? frame(at, toward(node, open), across) : f
+      box(fo, -8, 8, 4, owner)
+      for (const x of [3, 4.6]) line(fo(x, -4), fo(x, 4), 'SYMBOL', owner)
+      return
+    }
     if (/^CHICAGO/.test(code)) { box(flat, -6, 6, 5, owner); return }
     if (/REGUL/.test(code)) { box(flat, -11, 11, 7.5, owner); return }
     if (/^HOSE/.test(code)) return hose(node, code, at, along, across)
@@ -450,13 +476,14 @@ export function drawPipes(ctx: IsoContext) {
   /** Where insulation stops: a two-way arrow beside the pipe with a tick at the limit, INSUL. one side and NONE the other. */
   function insulationEnd(node: PipeNode, label: string, at: Point, g: RunGeometry) {
     const owner = node.id, across = acrossOf(ctx, g.dir, g.dir3), down = scale2(across, -1)
-    const base = add2(at, scale2(down, 16)), f = frame(base, g.dir, down), L = 20
+    const base = add2(at, scale2(down, 14)), f = frame(base, g.dir, down), L = 26, size = SIZE.text * 0.85
     line(f(-L, 0), f(L, 0), 'SYMBOL', owner, 0.8)
     line(f(0, -4.5), f(0, 4.5), 'SYMBOL', owner, 0.8)
     for (const s of [-1, 1]) poly([f(s * L, 0), f(s * (L - 6), -1.8), f(s * (L - 6), 1.8)], 'SYMBOL', owner, { closed: true, weight: 0.8 })
-    const [first, second] = insulationWords(label), up = across, turn = planeText(g.dir, up)
+    // Each word stands beyond the arrow, away from the pipe, on its own side of the limit.
+    const [first, second] = insulationWords(label), turn = planeText(g.dir, across), toward = dot2(uprightOf(turn), down)
     for (const [word, s] of [[first, -1], [second, 1]] as Array<[string, number]>)
-      if (word) text(add2(f(s * L * 0.5, 0), scale2(up, -2.5)), word, SIZE.text * 0.85, 'TEXT', owner, { rotation: turn.rotation, oblique: turn.oblique, anchor: 'middle' })
+      if (word) text(add2(f(s * L * 0.5, 0), scale2(down, toward >= 0 ? 2.5 : 2.5 + size / Math.max(0.5, -toward))), word, size, 'TEXT', owner, { rotation: turn.rotation, oblique: turn.oblique, anchor: 'middle' })
   }
 }
 /** The two words of an insulation limit, insulated side first: "INSUL. | NONE", "INSUL. <- -> NONE". */
