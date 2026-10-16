@@ -45,7 +45,7 @@ export function discValve(doc: IsoDocument, node: PipeNode, code = nodeCode(doc,
   return !/ACTUAT/i.test(`${node.description ?? ''} ${item?.bomDescription ?? ''} ${item?.description ?? ''}`)
 }
 /** Annotation drawn as the insulation limit marker, "INSUL. ← → NONE". */
-export const insulationLimit = (code: string, text = '') => /^INS-LIM/.test(code) || (/^INS/.test(code) && /NONE/i.test(text))
+export const insulationLimit = (code: string, text = '') => /^INS-LIM/.test(code) || ((/^INS/.test(code) || !code) && /INSUL.*NONE|NONE.*INSUL/i.test(text))
 /** Annotation drawn as a wall penetration. */
 export const wallPenetration = (code: string, text = '') => /^WALL/.test(code) || (/^GRND/.test(code) && /WALL/i.test(text))
 /** Annotation drawn as an insulated length of pipe. */
@@ -133,6 +133,8 @@ export function drawPipes(ctx: IsoContext) {
     if (!at || !g) continue
     const code = codeOf(node), label = node.calloutText ?? '', t = along(g, at)
     if (node.kind === 'olet' && oletBody(code)) gap(g.run.id, t - 8, t + 8)
+    // A wall penetration may be entered as a support so it can be located by a dimension.
+    else if (node.kind === 'support' && wallPenetration(code, label)) gap(g.run.id, t - 7, t + 7)
     else if (node.kind !== 'annotation') continue
     else if (insulation(code, label)) { const half = insulationLength(insulationText(ctx.doc, label)) / 2; gap(g.run.id, t - half, t + half) }
     else if (wallPenetration(code, label)) gap(g.run.id, t - 7, t + 7)
@@ -291,7 +293,7 @@ export function drawPipes(ctx: IsoContext) {
         return
       }
       case 'olet': return olet(node, code, at, along, g)
-      case 'support': return support(node, code, at, along, across)
+      case 'support': return wallPenetration(code, node.calloutText) ? wall(owner, at, f) : support(node, code, at, along, across)
       case 'annotation': return annotation(node, code, at, g)
       default: catalogue(code, node.kind, glyph, owner)
     }
@@ -504,16 +506,16 @@ export function drawPipes(ctx: IsoContext) {
       }
       return
     }
-    if (wallPenetration(code, label)) {
-      // The wall line across the pipe, broken by the sleeve cloud round it.
-      const r = 7, pts: Point[] = []
-      for (let i = 0; i <= 40; i++) { const a = i / 40 * Math.PI * 2; pts.push(add2(at, scale2([Math.cos(a), Math.sin(a)], r * (1 + 0.12 * Math.abs(Math.sin(a * 4)))))) }
-      poly(pts, 'SYMBOL', owner, { closed: true })
-      for (const s of [-1, 1]) line(f(0, s * (r + 1.5)), f(0, s * 24), 'SYMBOL', owner, 0.8)
-      return
-    }
+    if (wallPenetration(code, label)) return wall(owner, at, f)
     if (equipmentCode(code) || /^ISA/.test(code)) return
     catalogue(code, 'annotation', frame(at, g.dir, scale2(across, -1)), owner)
+  }
+  /** A wall penetration: the wall line across the pipe, broken by the sleeve cloud round it. */
+  function wall(owner: string, at: Point, f: (x: number, y: number) => Point) {
+    const r = 7, pts: Point[] = []
+    for (let i = 0; i <= 40; i++) { const a = i / 40 * Math.PI * 2; pts.push(add2(at, scale2([Math.cos(a), Math.sin(a)], r * (1 + 0.12 * Math.abs(Math.sin(a * 4)))))) }
+    poly(pts, 'SYMBOL', owner, { closed: true })
+    for (const s of [-1, 1]) line(f(0, s * (r + 1.5)), f(0, s * 24), 'SYMBOL', owner, 0.8)
   }
   /** Where insulation stops: a two-way arrow beside the pipe with a tick at the limit, INSUL. one side and NONE the other. */
   function insulationEnd(node: PipeNode, label: string, at: Point, g: RunGeometry) {
