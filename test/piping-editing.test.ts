@@ -165,6 +165,29 @@ test('flow is set along a line through elbows, in-line fittings and the run of a
   parseIsoJson(JSON.stringify(doc));
 });
 
+test('a relief valve goes at a square turn, its outlet the pipe the flow leaves by', async () => {
+  const { isSquareTurn, placeAtTurn } = await import('../src/core/component-position.ts');
+  const doc = straight(1, 300), turn = doc.runs[0].to;
+  appendRun(doc, turn, [0, 0, 250], spec.id, 1.5, 'SP-001', 'L-10', 'THD');
+  const [inlet, outlet] = doc.runs;
+  assert.ok(isSquareTurn(doc, turn));
+  assert.ok(!isSquareTurn(doc, inlet.from), 'an open end is no turn');
+  const relief = placeAtTurn(doc, turn, type('PSV-SC'));
+  assert.equal(relief.kind, 'valve');
+  assert.equal(relief.component, 'PSV-SC');
+  assert.equal(relief.branchEdgeId, outlet.id, 'the pipe drawn on from the turn');
+  assert.doesNotMatch(validateIso(doc).join('\n'), /is an angle body|change of direction/);
+  assert.ok(isSquareTurn(doc, turn), 'still a turn, to change it again');
+  // Flow drawn the other way round makes the riser the inlet.
+  setLineFlow(doc, outlet.id, 'reverse');
+  assert.equal(placeAtTurn(doc, turn, type('PSV-SC')).branchEdgeId, inlet.id);
+  assert.equal(placeAtTurn(doc, turn, type('PSV-SC'), outlet.id).branchEdgeId, outlet.id);
+  const run = straight(1, 1000);
+  const valve = placeComponentOnPipe(run, run.runs[0].id, type('GATE-SC'), 0.5);
+  assert.throws(() => placeAtTurn(run, valve.id, type('PSV-SC')), /90° elbow/);
+  assert.throws(() => placeAtTurn(doc, turn, type('GATE-SC')), /straight pipe/);
+});
+
 test('flow choices name the plant direction a pipe runs', async () => {
   const { directionName } = await import('../src/core/component-position.ts');
   assert.equal(directionName([1000, 0, 0]), 'east');

@@ -135,7 +135,9 @@ export function ComponentPalette({
                 <span>
                   {t.label}
                   <small>
-                    {rows[0]
+                    {t.angle
+                      ? "Angle body · click a 90° elbow"
+                      : rows[0]
                       ? [rows[0].rating, rows[0].schedule, rows[0].description].filter(Boolean).join(" · ")
                       : t.kind === "annotation"
                         ? "Drawing symbol"

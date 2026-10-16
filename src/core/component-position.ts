@@ -241,6 +241,33 @@ export function placeComponentOnPipe(doc: IsoDocument, runId: string, type: Comp
   return node;
 }
 
+/** Whether a connection is a square turn between two pipes, where an angle body (angle or relief valve) can sit. */
+export function isSquareTurn(doc: IsoDocument, nodeId: string): boolean {
+  const node = getNode(doc, nodeId), edges = connected(doc, nodeId);
+  if (node.associatedRunId || edges.length !== 2 || !(node.kind === 'elbow90' || COMPONENT_TYPE_BY_CODE[nodeCode(doc, node) ?? '']?.angle)) return false;
+  const [a, b] = edges.map(r => sub(getNode(doc, r.from === nodeId ? r.to : r.from).position, node.position));
+  return Math.abs(dot(a, b)) / ((length(a) * length(b)) || 1) < 0.017;
+}
+/**
+ * Put an angle body, an angle or relief valve, at a square turn: the turn's connection becomes the body and its outlet
+ * the branch. The outlet is the pipe chosen, else the one the flow leaves by, else the pipe drawn on from the turn.
+ */
+export function placeAtTurn(doc: IsoDocument, nodeId: string, type: ComponentType, outletId?: string, row?: CatalogItem): PipeNode {
+  if (!type.angle) throw new Error(`${type.label} sits on a straight pipe, not at a turn.`);
+  if (!isSquareTurn(doc, nodeId)) throw new Error(`${type.label} has an angle body. Click a 90° elbow to put it there.`);
+  const node = getNode(doc, nodeId), edges = connected(doc, nodeId);
+  const arriving = edges.find(r => r.flow && flowsInto(r, nodeId)), leaving = edges.find(r => r.flow && !flowsInto(r, nodeId));
+  const outlet = edges.find(r => r.id === outletId) ?? leaving ?? edges.find(r => arriving && r !== arriving) ??
+    edges.find(r => r.from === nodeId) ?? edges[1];
+  const inlet = edges.find(r => r !== outlet)!, spec = getSpec(doc, inlet.specId);
+  // A body is sized inlet by outlet.
+  const fits = (f: CatalogItem) => f.component === type.code && f.nps === inlet.nps && (f.smallerNps ?? f.nps) === outlet.nps;
+  const match = (row && fits(row) && spec.fittings.includes(row) ? row : undefined) ?? spec.fittings.find(fits);
+  applyComponent(doc, node, type.code, match);
+  node.branchEdgeId = outlet.id;
+  return node;
+}
+
 /** Smallest step a click places a component along a pipe: 1 mm, or 1/16 in on imperial drawings. */
 export const placementStep = (units: IsoDocument['units']) => units === 'mm' ? 1 : 25.4 / 16;
 /** A clicked point on a pipe, moved along its straight to the nearest placement step. Pipe ends stay where they are. */

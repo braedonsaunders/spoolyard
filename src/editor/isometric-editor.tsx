@@ -106,6 +106,8 @@ import {
   componentFaces,
   componentTrack,
   continueFlow,
+  isSquareTurn,
+  placeAtTurn,
   directionName,
   endCapable,
   legPoint,
@@ -742,6 +744,7 @@ export function IsometricEditor({
   const selectedRun = doc.runs.find((r) => r.id === selection),
     selectedNode = doc.nodes.find((n) => n.id === selection);
   const selectedTrack = selectedNode ? componentTrack(doc, selectedNode.id) : null;
+  const selectedTurn = !!selectedNode && isSquareTurn(doc, selectedNode.id);
   const selectedFaces = useMemo(() => (selectedTrack && selectedNode ? componentFaces(doc, selectedNode.id) : null), [doc, selectedNode, selectedTrack]);
   const pendingCuts = cuts.filter(c => !Number.isFinite(c.cut) || c.cut <= 0);
   const missingTakeoutNodes = doc.nodes.filter(node => cuts.some(c =>
@@ -952,6 +955,17 @@ export function IsometricEditor({
     const target = event.target as Element,
       owner = target.closest("[data-owner]")?.getAttribute("data-owner"),
       node = target.closest("[data-node]")?.getAttribute("data-node");
+    if (armed && tool === "insert" && armed.type.angle) {
+      // An angle or relief valve goes at a square turn: click the elbow it replaces.
+      const turn = node ?? (owner && doc.nodes.some((n) => n.id === owner) ? owner : undefined);
+      if (turn && isSquareTurn(doc, turn)) {
+        if (commit((d) => setSelection(placeAtTurn(d, turn, armed.type, undefined, armed.row).id))) {
+          setArmed(null);
+          setInsertHover(null);
+        }
+      } else setError(`${armed.type.label} has an angle body. Click a 90° elbow to put it there.`);
+      return;
+    }
     if (armed && tool === "insert") {
       const hit = insertionTarget(event);
       if (hit) {
@@ -1430,7 +1444,7 @@ export function IsometricEditor({
               <strong>Insert</strong>
               <small>
                 {armed
-                  ? "Click a pipe to place " + armed.type.label + ". Esc cancels."
+                  ? (armed.type.angle ? "Click a 90° elbow to put " : "Click a pipe to place ") + armed.type.label + (armed.type.angle ? " there" : "") + ". Esc cancels."
                   : "Choose a component, then click where it belongs on the pipe. Drag it or enter a distance to adjust it."}
               </small>
               {armed && armedChoices.length > 0 && (
@@ -1566,7 +1580,7 @@ export function IsometricEditor({
               </button>}
               {armed && tab === "draw" && (
                 <div className="iso-place-hint" role="status">
-                  {insertHover ? "Click to place " : "Click a pipe to place "}{armed.type.label}
+                  {insertHover ? "Click to place " : armed.type.angle ? "Click a 90° elbow to place " : "Click a pipe to place "}{armed.type.label}
                   <button type="button" onClick={() => { setArmed(null); setInsertHover(null); }}>
                     Cancel
                   </button>
@@ -1674,7 +1688,7 @@ export function IsometricEditor({
                       return;
                     }
                     if (armed && tool === "insert") {
-                      const hit = insertionTarget(e);
+                      const hit = armed.type.angle ? null : insertionTarget(e);
                       setInsertHover(hit && snapHit(hit));
                       return;
                     }
@@ -2250,6 +2264,12 @@ export function IsometricEditor({
                               const n = getNode(d, selection),
                                 t = COMPONENT_TYPES.find((x) => x.code === e.target.value);
                               if (!t) return;
+                              // An angle or relief valve takes the turn's place; an elbow put back is a turn again.
+                              if (t.angle) {
+                                placeAtTurn(d, n.id, t, n.branchEdgeId);
+                                return;
+                              }
+                              if (COMPONENT_TYPES.find((x) => x.code === n.component)?.angle) delete n.branchEdgeId;
                               const edge = d.runs.find(r => r.id === selectedHeader?.id);
                               // A reducer or tee keeps its sizes when its type changes, concentric to eccentric say.
                               const smaller = n.kind === "reducer" ? Math.min(...connected(d, n.id).map((r) => r.nps))
@@ -2267,11 +2287,13 @@ export function IsometricEditor({
                         >
                           {!selectedNode.component && <option value="">{labels[selectedNode.kind]}</option>}
                           {COMPONENT_TYPES.filter((t) =>
-                            selectedNode.kind === "end"
-                              ? t.kind === "cap" || t.kind === "flange"
-                              : t.kind === selectedNode.kind ||
-                                (["elbow90", "elbow45"].includes(selectedNode.kind) &&
-                                  ["elbow90", "elbow45"].includes(t.kind)),
+                            selectedTurn
+                              ? ["elbow90", "elbow45"].includes(t.kind) || !!t.angle
+                              : selectedNode.kind === "end"
+                                ? t.kind === "cap" || t.kind === "flange"
+                                : (t.kind === selectedNode.kind && !t.angle) ||
+                                  (["elbow90", "elbow45"].includes(selectedNode.kind) &&
+                                    ["elbow90", "elbow45"].includes(t.kind)),
                           ).map((t) => (
                             <option value={t.code} key={t.code}>
                               {t.label}
@@ -2279,6 +2301,24 @@ export function IsometricEditor({
                           ))}
                         </select>
                       </Field>
+                      {selectedTurn && COMPONENT_TYPES.find((t) => t.code === selectedNode.component)?.angle && (
+                        <Field label="Outlet">
+                          <select
+                            aria-label="Angle body outlet"
+                            value={selectedNode.branchEdgeId ?? ""}
+                            onChange={(e) => commit((d) => {
+                              const n = getNode(d, selection);
+                              placeAtTurn(d, n.id, COMPONENT_TYPES.find((t) => t.code === n.component)!, e.target.value);
+                            })}
+                          >
+                            {selectedEdges.map((r) => (
+                              <option key={r.id} value={r.id}>
+                                {inches(r.nps)} pipe going {directionName(sub(getNode(doc, r.from === selectedNode.id ? r.to : r.from).position, selectedNode.position))}
+                              </option>
+                            ))}
+                          </select>
+                        </Field>
+                      )}
                       <Field label="Catalogue">
                         <select
                           value={selectedNode.catalogId ?? ""}
