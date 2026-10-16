@@ -279,8 +279,28 @@ test('standard sockolets, thredolets and plugs need no typed lengths', () => {
   const tol = attachComponent(doc, doc.runs[0].id, 'olet', 0.5);
   applyComponent(doc, tol, 'TOL', row(doc, 'TOL', 0.75));
   const valve = appendRun(doc, tol.id, [0, 0, 150], 'A', 0.75, 'SP', 'L', 'THD');
-  const plug = appendRun(doc, valve.id, [0, 0, 100], 'A', 0.75, 'SP', 'L', 'THD');
+  const plug = appendRun(doc, valve.id, [0, 0, 150], 'A', 0.75, 'SP', 'L', 'THD');
   applyComponent(doc, valve, 'GATE-SC', row(doc, 'GATE-SC', 0.75));
   applyComponent(doc, plug, 'PLUG', row(doc, 'PLUG', 0.75));
   assert.deepEqual(validateIso(doc), []);
+});
+
+test('a pipe piece shorter than the shop cuts, or with its welds too close together, is reported', () => {
+  // A 20 mm pup between two 4" elbows.
+  const doc = newIso(); doc.specs = [clone(specA)];
+  const a = appendRun(doc, null, [1000, 0, 0], 'A', 4, 'SP', 'L');
+  const b = appendRun(doc, a.id, [0, 0, 2 * 152.4 + 3.2 + 20], 'A', 4, 'SP', 'L');
+  appendRun(doc, b.id, [0, 1000, 0], 'A', 4, 'SP', 'L');
+  assert.match(validateIso(doc).join(), /a 4″ pipe is cut to 20 mm, shorter than the 50 mm shortest piece allowed/);
+  doc.specs[0].minPipeLength = 15;
+  assert.match(validateIso(doc).join(), /welds at the ends of a 4″ pipe are 20 mm apart, closer than the 50 mm allowed/);
+  doc.specs[0].minWeldSpacing = 20;
+  assert.deepEqual(validateIso(doc), []);
+  // Socket-weld pipe counts only what shows between the sockets.
+  const sw = newIso(); sw.specs = [clone(specA)];
+  const e = appendRun(sw, null, [500, 0, 0], 'A', 1, 'SP', 'L', 'SW');
+  const f = appendRun(sw, e.id, [0, 0, 2 * 22.22 + 3.2 + 60], 'A', 1, 'SP', 'L', 'SW');
+  appendRun(sw, f.id, [0, 500, 0], 'A', 1, 'SP', 'L', 'SW');
+  // 60 mm cut less two 5/8" sockets, each with the pipe 1.6 mm short of its bottom.
+  assert.match(validateIso(sw).join(), /welds at the ends of a 1″ pipe are 31\.4 mm apart/);
 });

@@ -85,6 +85,10 @@ export interface PipeSpec {
   rootGap: number
   /** Gap (mm) the pipe is withdrawn from the socket bottom before socket welding (ASME B31.3 Fig. 328.5.2C); 0 if unset. */
   socketGap?: number
+  /** Shortest pipe piece (mm) the shop will cut; 50 mm if unset. */
+  minPipeLength?: number
+  /** Least clear distance (mm) between the welds at a pipe piece's ends; 50 mm if unset. */
+  minWeldSpacing?: number
   density: number
   pipeCostM: number
   weldHoursPerDiameterInch: number
@@ -1054,6 +1058,22 @@ function slipOn(doc: IsoDocument, n: PipeNode, run: PipeRun): { setBack: number;
   const setBack = mate.item?.takeout ?? 0
   return { setBack, hub: mate.item?.lengthThroughHub ?? flange(run.nps, mate.item?.rating ?? getSpec(doc, run.specId).rating)?.soLength ?? setBack }
 }
+/**
+ * A pipe piece shorter than the shop cuts, or whose end welds come closer than the specification allows: a butt-welded
+ * piece by its cut, a socket-welded one by the pipe showing between the sockets.
+ */
+function shortPiece(doc: IsoDocument, r: PipeRun, result: RunResult): string | undefined {
+  const spec = getSpec(doc, r.specId), minPipe = spec.minPipeLength ?? 50, minWelds = spec.minWeldSpacing ?? 50
+  const length = (mm: number) => formatLength(mm, doc.units)
+  if (result.cut < minPipe - 0.01)
+    return `${r.spool}: a ${r.nps}″ pipe is cut to ${length(result.cut)}, shorter than the ${length(minPipe)} shortest piece allowed. Move the fittings apart, or join them without pipe.`
+  const ends = [getNode(doc, r.from), getNode(doc, r.to)], preps = [0, 1].map(i => pipePrepAt(doc, r, i))
+  if (ends.some(n => ['end', 'support', 'annotation', 'gasket', 'bolt'].includes(n.kind)) || !preps.every(p => p === 'BW' || p === 'SW')) return undefined
+  const clear = result.cut - ends.reduce((sum, n, i) => sum + (preps[i] === 'SW' && n.kind !== 'weld' ? (nodeItem(doc, n)?.socketDepth ?? 0) - result.gaps[i] : 0), 0)
+  if (clear < minWelds - 0.01)
+    return `${r.spool}: the welds at the ends of a ${r.nps}″ pipe are ${length(clear)} apart, closer than the ${length(minWelds)} allowed. Move the fittings apart.`
+  return undefined
+}
 /** A support is material when it says so, or when the specification supplies it as a row (welded shoes, guides). */
 export const supportListed = (doc: IsoDocument, n: PipeNode) => n.inBom ?? !!fitting(doc, n)
 /** Plain-language name of a node for fabrication checks, e.g. "flanged ball valve HV-101". */
@@ -1091,6 +1111,10 @@ export function validateIso(doc: IsoDocument): string[] {
         issues.push(
           `${r.spool}: a ${r.nps}″ pipe is ${formatLength(result.cut, doc.units)} after fitting allowances, so the fittings at its ends overlap. Move them apart or lengthen the pipe.`
         )
+      else if (!r.connector && !r.nipple && !r.uncut) {
+        const short = shortPiece(doc, r, result)
+        if (short) issues.push(short)
+      }
       if (boltedDirect(doc, getNode(doc, r.from), r) && Math.abs(result.cut) > 1)
         issues.push(`${r.spool}: the ${itemName(doc, getNode(doc, r.from))} and the ${itemName(doc, getNode(doc, r.to))} are bolted face to face but stand ${formatLength(result.cut, doc.units)} ${result.cut > 0 ? 'apart' : 'into each other'}. Move one onto the other's face.`)
       const nipple = nippleOf(doc, r)
@@ -1641,7 +1665,7 @@ export function parseIsoJson(raw: string): IsoDocument {
       s.sizes.length > 500 ||
       s.fittings.length > 10000 ||
       !nonnegative(s.rootGap) ||
-      (s.socketGap != null && !nonnegative(s.socketGap)) ||
+      [s.socketGap, s.minPipeLength, s.minWeldSpacing].some(v => v != null && !nonnegative(v)) ||
       !positive(s.density) ||
       ![s.pipeCostM, s.pipeLaborHoursM, s.weldHoursPerDiameterInch].every(
         nonnegative

@@ -289,11 +289,13 @@ export function SpecManager({
               ))}
               {(
                 [
-                  ["rootGap", "Butt-weld root gap", "Enter a root gap of zero or more."],
-                  ["socketGap", "Socket-weld gap", "Enter a socket-weld gap of zero or more."],
+                  ["rootGap", "Butt-weld root gap", "Enter a root gap of zero or more.", 0],
+                  ["socketGap", "Socket-weld gap", "Enter a socket-weld gap of zero or more.", 0],
+                  ["minPipeLength", "Shortest pipe piece", "Enter a shortest piece of zero or more.", 50],
+                  ["minWeldSpacing", "Least weld spacing", "Enter a weld spacing of zero or more.", 50],
                 ] as const
-              ).map(([k, label, invalid]) => {
-                const current = spec[k] ?? 0;
+              ).map(([k, label, invalid, fallback]) => {
+                const current = spec[k] ?? fallback;
                 return (
                   <label key={k} className="iso-field">
                     <span>{label}</span>
