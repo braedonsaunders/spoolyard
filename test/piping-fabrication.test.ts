@@ -1,8 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
-import { appendRun, applyComponent, attachComponent, clone, newIso, runResult, validateIso, type IsoDocument, type PipeSpec } from '../src/core/model.ts';
+import { appendRun, applyComponent, attachComponent, clone, getNode, newIso, runResult, validateIso, welds, type IsoDocument, type PipeSpec } from '../src/core/model.ts';
 import { standardRow } from '../src/core/standards.ts';
+import { COMPONENT_TYPES } from '../src/core/components.ts';
+import { placeComponentOnPipe } from '../src/core/component-position.ts';
 
 const dir = new URL('../public/library/specs/', import.meta.url);
 const library = (slug: string) => JSON.parse(readFileSync(new URL(slug + '.json', dir), 'utf8')) as PipeSpec;
@@ -66,6 +68,39 @@ test('a branch outlet measured from the header outside adds the header radius an
   doc.specs[0].fittings.push({ id: 'A:SOL-6x0.75', component: 'SOL', kind: 'olet', nps: 6, smallerNps: 0.75, takeout: 110, socketDepth: 12.7, description: 'SOCKOLET', source: 'test' });
   sol.catalogId = 'A:SOL-6x0.75';
   close(runResult(doc, branch).cut, inch(9) - 110 - 1.6);
+});
+
+test('slip-on flanges take two fillet welds; olets and welded supports take their own welds after the issued numbers', () => {
+  const doc = newIso(); doc.specs = [clone(specA)];
+  const elbow = appendRun(doc, null, [1500, 0, 0], 'A', 3, 'SP', 'L');
+  const end = appendRun(doc, elbow.id, [0, 1000, 0], 'A', 3, 'SP', 'L');
+  applyComponent(doc, getNode(doc, doc.runs[0].from), 'FLG-RFSO', row(doc, 'FLG-RFSO', 3));
+  const before = welds(doc).map(w => w.tag);
+  const olet = attachComponent(doc, doc.runs[1].id, 'olet', 0.5);
+  applyComponent(doc, olet, 'SOL', row(doc, 'SOL', 0.75));
+  appendRun(doc, olet.id, [0, 0, 300], 'A', 0.75, 'SP', 'L', 'SW');
+  const shoe = attachComponent(doc, doc.runs[0].id, 'support', 0.5);
+  applyComponent(doc, shoe, 'SHOE', row(doc, 'SHOE', 3));
+  const hanger = attachComponent(doc, doc.runs[1].id, 'support', 0.2);
+  applyComponent(doc, hanger, 'HANGER', row(doc, 'HANGER', 3));
+  const all = welds(doc);
+  assert.deepEqual(all.map(w => w.type), ['BW', 'BW', 'SW', 'SO', 'SO', 'BR', 'AT']);
+  assert.deepEqual(all.slice(0, 2).map(w => w.tag), before.slice(0, 2));
+  // The bore weld sits at the set-back pipe end, the hub weld at the back of the hub.
+  const [bore, hub] = all.filter(w => w.type === 'SO');
+  close(bore.position[0], row(doc, 'FLG-RFSO', 3).takeout);
+  close(hub.position[0], row(doc, 'FLG-RFSO', 3).lengthThroughHub!);
+  // The branch weld is on the header's outside, under the outlet.
+  const branch = all.find(w => w.type === 'BR')!;
+  assert.equal(branch.nps, 0.75);
+  close(branch.position[2], 88.9 / 2);
+  assert.equal(new Set(all.map(w => w.tag)).size, all.length);
+  // A flanged valve between slip-on mates is four fillet welds.
+  const valve = newIso(); valve.specs = [clone(specA)];
+  valve.specs[0].parameters = { ...valve.specs[0].parameters, 'Default Flange': 'FLG-RFSO' };
+  appendRun(valve, null, [2000, 0, 0], 'A', 3, 'SP', 'L');
+  placeComponentOnPipe(valve, valve.runs[0].id, COMPONENT_TYPES.find(t => t.code === 'GATE-FL')!, 0.5);
+  assert.deepEqual(welds(valve).map(w => w.type), ['SO', 'SO', 'SO', 'SO']);
 });
 
 test('standard sockolets, thredolets and plugs need no typed lengths', () => {

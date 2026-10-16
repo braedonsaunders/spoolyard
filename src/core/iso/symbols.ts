@@ -58,7 +58,8 @@ export function drawPipes(ctx: IsoContext) {
     const node = getNode(ctx.doc, w.nodeId), at = ctx.pos.get(node.id)
     if (!at) continue
     let p: Point
-    if (node.kind === 'weld') p = at
+    // A branch outlet is welded to its header where it stands; a pad or welded support where it sits on the pipe.
+    if (node.kind === 'weld' || w.type === 'BR' || w.type === 'RP' || w.type === 'AT') p = at
     // Fittings welded straight together meet where their takeouts do, along the drawn joint.
     else if (g.run.connector) p = ctx.project(w.position)
     else {

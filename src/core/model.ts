@@ -1,8 +1,8 @@
 import type { GridSettings } from './grid'
 import { COMPONENT_TYPES } from './components'
-import { defaultCode, flangedAllowance, flangedJoints, isFlangePair, nodeItem, pipeEndPrep } from './joints'
+import { defaultCode, flangedAllowance, flangedJoints, isFlangePair, matingFlange, nodeItem, pipeEndPrep } from './joints'
 import { boltSizeText } from './format'
-import { pipeOd } from './standards'
+import { flange, pipeOd } from './standards'
 /** Spoolyard piping semantics (file schema id "bidwright-piping" is kept for compatibility). Coordinates and fabrication lengths are millimetres. */
 export type Vec3 = [number, number, number]
 export type Kind =
@@ -279,6 +279,8 @@ export interface Weld {
   nps: number
   field: boolean
   prep: string
+  /** Butt, socket, slip-on fillet (bore and hub), branch connection, reinforcing pad or support attachment. */
+  type: 'BW' | 'SW' | 'SO' | 'BR' | 'RP' | 'AT'
   position: Vec3
 }
 export interface BomRow {
@@ -898,27 +900,34 @@ export function weldNumber(
   }
   return text
 }
+export const WELD_TYPES: Record<Weld['type'], string> = {
+  BW: 'Butt weld', SW: 'Socket weld', SO: 'Slip-on fillet weld', BR: 'Branch connection weld', RP: 'Reinforcing pad weld', AT: 'Attachment weld'
+}
+/** Supports welded to the pipe; their attachment welds are listed with the spool's welds. */
+export const WELDED_SUPPORTS = /^(SHOE|TRUNION|DUMY-LEG|BASESUPT)$/
 export function welds(doc: IsoDocument): Weld[] {
   let seq = doc.weldStart
-  const out: Weld[] = []
+  const out: Weld[] = [], added: Array<Omit<Weld, 'tag'>> = []
+  const unit = (from: Vec3, to: Vec3) => mul(sub(to, from), 1 / (length(sub(to, from)) || 1))
   for (const r of doc.runs) {
     for (const [index, key] of [r.from, r.to].entries()) {
       const n = getNode(doc, key), prep = pipePrepAt(doc, r, index)
-      if (
-        n.kind === 'end' ||
-        n.kind === 'support' ||
-        n.kind === 'annotation' ||
-        n.kind === 'gasket' ||
-        n.kind === 'bolt' ||
-        prep === 'PLAIN' ||
-        prep === 'FL' ||
-        prep === 'THD'
-      )
-        continue
-      // A zero-length butt joint represented as a WELD node gets one weld, not two.
-      if (n.kind === 'weld' && out.some(w => w.nodeId === n.id)) continue
+      if (['end', 'support', 'annotation', 'gasket', 'bolt'].includes(n.kind) || prep === 'FL' || prep === 'THD') continue
       const t = takeout(doc, n, r.id) ?? 0
       const other = getNode(doc, index === 0 ? r.to : r.from)
+      if (prep === 'PLAIN') {
+        // A slip-on flange is fillet welded at its bore and at the back of its hub.
+        const so = r.connector ? undefined : slipOn(doc, n, r)
+        if (!so) continue
+        const u = unit(n.position, other.position), end = add(n.position, mul(u, t))
+        for (const at of [end, add(end, mul(u, Math.max(0, so.hub - so.setBack)))])
+          added.push({ runId: r.id, nodeId: n.id, nps: r.nps, field: (index === 0 ? r.fromField : r.toField) ?? !!n.field, prep: 'SO', type: 'SO', position: at })
+        continue
+      }
+      // Two socket-weld pipes cannot be welded to each other; the joint needs a coupling.
+      if (n.kind === 'weld' && prep === 'SW') continue
+      // A zero-length butt joint represented as a WELD node gets one weld, not two.
+      if (n.kind === 'weld' && out.some(w => w.nodeId === n.id)) continue
       const vector = sub(other.position, n.position)
       const position =
         n.kind === 'weld'
@@ -951,11 +960,39 @@ export function welds(doc: IsoDocument): Weld[] {
         nps: r.nps,
         field: jointEnds.some(end => end.field) || ((index === 0 ? r.fromField : r.toField) ?? !!n.field),
         prep,
+        type: prep === 'SW' ? 'SW' : 'BW',
         position
       })
     }
   }
+  // Branch connections welded to their header, reinforcing pads and welded supports.
+  for (const n of doc.nodes) {
+    const host = doc.runs.find(r => r.id === n.associatedRunId)
+    if (!host) continue
+    const item = fitting(doc, n), code = n.component ?? item?.component ?? ''
+    if (n.kind === 'olet') {
+      const branch = connected(doc, n.id)[0], pad = code === 'REPAD'
+      const od = getSpec(doc, host.specId).sizes.find(s => s.nps === host.nps)?.od ?? pipeOd(host.nps) ?? 0
+      const far = branch && getNode(doc, branch.from === n.id ? branch.to : branch.from).position
+      added.push({
+        runId: branch?.id ?? host.id, nodeId: n.id, nps: branch?.nps ?? item?.smallerNps ?? item?.nps ?? host.nps, field: !!n.field,
+        prep: pad ? 'RP' : 'BR', type: pad ? 'RP' : 'BR', position: far && !pad ? add(n.position, mul(unit(n.position, far), od / 2)) : n.position
+      })
+    } else if (n.kind === 'support' && WELDED_SUPPORTS.test(code))
+      added.push({ runId: host.id, nodeId: n.id, nps: host.nps, field: !!n.field, prep: 'AT', type: 'AT', position: n.position })
+  }
+  // Welds counted since the numbering was set follow it, so numbers already issued stay put.
+  for (const w of added) out.push({ ...w, tag: `${doc.weldPrefix}${weldNumber(seq++, doc.weldNumbering)}` })
   return out
+}
+/** The slip-on flange a pipe end is set into: a slip-on flange node, or the slip-on mate of a flanged component. */
+function slipOn(doc: IsoDocument, n: PipeNode, run: PipeRun): { setBack: number; hub: number } | undefined {
+  const own = nodeItem(doc, n), code = n.component ?? own?.component ?? ''
+  const port = COMPONENT_TYPES.find(t => t.code === code)?.endPrep === 'FL'
+  const mate = port ? matingFlange(doc, n, run) : n.kind === 'flange' ? { code, item: own } : null
+  if (!mate || !/SO$/.test(mate.code)) return undefined
+  const setBack = mate.item?.takeout ?? 0
+  return { setBack, hub: mate.item?.lengthThroughHub ?? flange(run.nps, mate.item?.rating ?? getSpec(doc, run.specId).rating)?.soLength ?? setBack }
 }
 /** Plain-language name of a node for fabrication checks, e.g. "flanged ball valve HV-101". */
 function itemName(doc: IsoDocument, n: PipeNode): string {
@@ -1742,7 +1779,8 @@ export function weldCsv(doc: IsoDocument): string {
       'NPS',
       'Location',
       'End preparation',
-      'Diameter inches'
+      'Diameter inches',
+      'Type'
     ],
     ...welds(doc).map(w => {
       const r = doc.runs.find(r => r.id === w.runId)!
@@ -1753,7 +1791,8 @@ export function weldCsv(doc: IsoDocument): string {
         w.nps,
         w.field ? 'Field' : 'Shop',
         w.prep,
-        w.nps
+        w.nps,
+        WELD_TYPES[w.type]
       ]
     })
   ])
