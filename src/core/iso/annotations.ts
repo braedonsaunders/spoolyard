@@ -233,8 +233,9 @@ export function drawAnnotations(ctx: IsoContext) {
       const code = nodeCode(ctx.doc, node) ?? ''
       const label = (node.calloutText ?? (/U-?BOLT/.test(code) ? 'U-BOLT' : /HANG|HNGR/.test(code) ? 'HANGER' : /SHOE/.test(code) ? 'SHOE' :
         /GUIDE/.test(code) ? 'GUIDE' : /ANCHOR/.test(code) ? 'ANCHOR' : COMPONENT_TYPE_BY_CODE[code]?.label ?? 'SUPPORT')).toUpperCase()
-      const width = measureText(label, T), { centre } = spot(at, width + 4, T + 4, node.id, [12, 18, 26, 36])
-      text([centre[0] - width / 2, centre[1] + T / 2], label, T, 'TEXT', node.id)
+      const width = measureText(label, T), height = T + (label.split('\n').length - 1) * T * LINE_SPACING
+      const { centre } = spot(at, width + 4, height + 4, node.id, [12, 18, 26, 36])
+      text([centre[0] - width / 2, centre[1] - height / 2 + T], label, T, 'TEXT', node.id)
     } else if (node.calloutText) callout(at, node.calloutText.toUpperCase().split('\n'), node.id)
   }
   function tiePoint(target: Point, node: PipeNode) {

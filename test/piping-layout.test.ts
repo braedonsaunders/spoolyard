@@ -110,3 +110,24 @@ test('not to scale, a narrow drawing draws its level pipe longer to fill the ope
   appendRun(flat, end.id, [3000, 0, 0], 'CS40', 2, 'SP-1', 'L-1');
   assert.equal(draw(flat).fit.stretch ?? 0, 0);
 });
+
+test('no lettering overprints other lettering: two-line support labels, rolling offsets and free notes', async () => {
+  const { attachComponent } = await import('../src/core/model.ts');
+  const { textPoly, overlaps } = await import('../src/core/iso/placement.ts');
+  const doc = newIso();
+  const a = appendRun(doc, null, [2400, 0, 0], 'CS40', 4, 'SP-1', 'L-1');
+  const b = appendRun(doc, a.id, [400, 400, 600], 'CS40', 4, 'SP-1', 'L-1');
+  appendRun(doc, b.id, [1500, 0, 0], 'CS40', 4, 'SP-1', 'L-1');
+  for (const [i, t] of [0.2, 0.3, 0.4].entries()) {
+    const s = attachComponent(doc, doc.runs[0].id, 'support', t);
+    Object.assign(s, { component: 'U-BOLT', calloutText: `U-BOLT\n(PS-${i + 1})*` });
+  }
+  doc.nodes[0].continuation = { text: "CONT'D ON\nDWG# X-1", coordinates: true };
+  const first = draw(doc).positions.get(doc.nodes[0].id)!;
+  doc.sheetNotes = [{ id: 'n1', spool: 'SP-1', text: '* FIELD NOTE BESIDE THE START', at: [first[0] - 40, first[1] - 30] }];
+  const texts = draw(doc).primitives.filter((p): p is Extract<Primitive, { type: 'text' }> => p.type === 'text' && !!p.text.trim());
+  const boxes = texts.map(t => textPoly(t.p, t.text, t.size, t.rotation, t.oblique, t.anchor, -0.25, t.width ?? 1));
+  for (let i = 0; i < texts.length; i++)
+    for (let j = i + 1; j < texts.length; j++)
+      assert.ok(!overlaps(boxes[i], boxes[j]), `${JSON.stringify(texts[i].text)} overprints ${JSON.stringify(texts[j].text)}`);
+});

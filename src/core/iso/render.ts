@@ -117,6 +117,9 @@ export function renderIso(
     doc, spool, view: facing, style, runs, nodes, pos, project, axis, direction, geometry,
     place: new Placement(viewport, exclusions), materials, joints, extent: new Map(), out: []
   }
+  // Free notes stay where the drafter put them, so every label is placed clear of them.
+  for (const note of doc.sheetNotes ?? [])
+    if (note.spool === spool || !spool) ctx.place.add(textPoly(note.at, note.text.toUpperCase(), SIZE.text, 0, 0, 'start', 1), 'text', note.id)
   drawPipes(ctx)
   drawDimensions(ctx)
   drawAnnotations(ctx)

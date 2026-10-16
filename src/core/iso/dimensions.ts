@@ -8,6 +8,8 @@ import { segmentPoly, textPoly, type Poly } from './placement'
 import { add2, dot2, isAxial, lerp2, planeText, scale2, sub2, unit2, unit3, uprightOf } from './plane'
 
 interface Station { model: Vec3; page: Point; node?: string }
+/** Overlap costs for lettering that must not overprint other lettering. */
+const LETTERED = { text: 1000, tag: 1000 }
 interface Leg { runs: PipeRun[]; nodes: string[]; dir3: Vec3; dir: Point }
 
 /** Straight legs of the sheet: in-line pipes joined through valves, flanges, reducers and welds. */
@@ -297,6 +299,7 @@ export function drawDimensions(ctx: IsoContext) {
     }
     const corner = legs[0][1]
     for (const [a, b] of legs) line(a, b, 'DIM', owner)
+    const angleLabels: Array<() => void> = []
     for (const t of triangles) {
       // Hatching fills the acute corner between the pipe and the leg; a square marks the right angle.
       for (let i = 1; i <= 4; i++) {
@@ -312,15 +315,19 @@ export function drawDimensions(ctx: IsoContext) {
       if (sweep < -Math.PI) sweep += 2 * Math.PI
       const r = Math.min(34, Math.hypot(...sub2(t.leg, t.apex)) * 0.45) * (t.plane === 'H' && triangles.length > 1 ? 1.7 : 1)
       poly(Array.from({ length: 9 }, (_, i) => add2(t.apex, [Math.cos(a1 + sweep * i / 8) * r, Math.sin(a1 + sweep * i / 8) * r] as Point)), 'DIM', owner)
-      const mid = a1 + sweep / 2, label = angleText(Math.round(t.angle), t.plane)
-      const labelAt = add2(t.apex, [Math.cos(mid) * (r + 4), Math.sin(mid) * (r + 4)] as Point)
-      const spots: Point[] = [labelAt, add2(labelAt, [measureText(label, SIZE.text) / 2 + 2, 0]), add2(labelAt, [-measureText(label, SIZE.text) / 2 - 2, 0]),
-        add2(labelAt, [0, SIZE.text + 3]), add2(t.apex, [Math.cos(mid) * (r + 16), Math.sin(mid) * (r + 16)] as Point)]
-      const at = spots.reduce((best, q, i) => {
-        const c = ctx.place.cost(textPoly([q[0], q[1] + SIZE.text / 2], label, SIZE.text, 0, 0, 'middle', 1)) + i
-        return c < best.c ? { q, c } : best
-      }, { q: spots[0], c: Infinity }).q
-      emitters(ctx).text([at[0], at[1] + SIZE.text / 2], label, SIZE.text, 'DIM', owner, { anchor: 'middle' })
+      // Angle labels are lettered after the leg values, which have nowhere else to go.
+      angleLabels.push(() => {
+        const mid = a1 + sweep / 2, label = angleText(Math.round(t.angle), t.plane)
+        const labelAt = add2(t.apex, [Math.cos(mid) * (r + 4), Math.sin(mid) * (r + 4)] as Point)
+        // Further out along the bisector when the near spots are lettered already: angle labels never overprint text.
+        const spots: Point[] = [labelAt, add2(labelAt, [measureText(label, SIZE.text) / 2 + 2, 0]), add2(labelAt, [-measureText(label, SIZE.text) / 2 - 2, 0]),
+          add2(labelAt, [0, SIZE.text + 3]), ...[16, 28, 42, 58].map(k => add2(t.apex, [Math.cos(mid) * (r + k), Math.sin(mid) * (r + k)] as Point))]
+        const at = spots.reduce((best, q, i) => {
+          const c = ctx.place.cost(textPoly([q[0], q[1] + SIZE.text / 2], label, SIZE.text, 0, 0, 'middle', 1), undefined, LETTERED) + i
+          return c < best.c ? { q, c } : best
+        }, { q: spots[0], c: Infinity }).q
+        emitters(ctx).text([at[0], at[1] + SIZE.text / 2], label, SIZE.text, 'DIM', owner, { anchor: 'middle' })
+      })
     }
     // The true length is dimensioned along the pipe, on the side away from the construction, unless the chain
     // along the pipe already gives it.
@@ -347,14 +354,18 @@ export function drawDimensions(ctx: IsoContext) {
       const out = dot2(unitAxis(standing), away) >= 0 ? unitAxis(standing) : scale2(unitAxis(standing), -1)
       const t = planeText(dir, out), up = uprightOf(t)
       // Leg text goes outside the triangle when its reading side faces in.
-      const value = draftLength(mm, units, 24), base = lerp2(p, q, 0.5)
-      const spots: Point[] = [add2(base, scale2(up, dot2(up, out) >= 0 ? 2 : -(SIZE.text + 2))), add2(base, scale2(up, dot2(up, out) >= 0 ? -(SIZE.text + 2) : 2))]
+      const value = draftLength(mm, units, 24)
+      // Either side of the leg, then slid along it, so leg values never overprint other lettering.
+      const outward = dot2(up, out) >= 0 ? 1 : -1, beside = (f: number, k: number) => add2(lerp2(p, q, f), scale2(up, outward > 0 ? k : -(SIZE.text + k)))
+      const spots: Point[] = [0.5, 0.32, 0.68, 0.18, 0.82].flatMap(f => [beside(f, 2), add2(lerp2(p, q, f), scale2(up, outward > 0 ? -(SIZE.text + 2) : 2))])
+        .concat([0.5, 0.32, 0.68].flatMap(f => [beside(f, 10), beside(f, 18)]))
       const at = spots.reduce((best, q2, i) => {
-        const c = ctx.place.cost(textPoly(q2, value, SIZE.text, t.rotation, t.oblique, 'middle', 1)) + i * 4
+        const c = ctx.place.cost(textPoly(q2, value, SIZE.text, t.rotation, t.oblique, 'middle', 1), undefined, LETTERED) + i * 4
         return c < best.c ? { q2, c } : best
       }, { q2: spots[0], c: Infinity }).q2
       emitters(ctx).text(at, value, SIZE.text, 'DIM', owner, { rotation: t.rotation, oblique: t.oblique, anchor: 'middle' })
     }
+    for (const label of angleLabels) label()
   }
 }
 /** Coefficients of `v` along `a` and `b`; even shares when they are parallel. */
