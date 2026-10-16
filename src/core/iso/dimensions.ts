@@ -238,15 +238,19 @@ export function drawDimensions(ctx: IsoContext) {
         { rotation: t.rotation, oblique: t.oblique, anchor: 'middle', role: 'cut' })
   }
   /** Rolling or plane offsets: hatched triangle with both leg dimensions and the offset angle. */
+  /** Where the legs along axes `p` then `q` of the model vector `d` meet, splitting the drawn line from `a` to `b`. */
+  function corner2(a: Point, b: Point, d: Vec3, p: number, q: number): Point {
+    const along = (i: number): Point => { const v: Vec3 = [0, 0, 0]; v[i] = d[i]; return ctx.axis(v) }
+    const [k] = split(sub2(b, a), along(p), along(q))
+    return add2(a, scale2(along(p), k))
+  }
   /** Clutter under the plane-offset triangle that would go opposite `ext`. */
   function triangleCost(leg: Leg, points: Station[], ext: Point) {
     const start = points[0], end = points.at(-1)!, d = sub(end.model, start.model)
     const comps = [0, 1, 2].filter(i => Math.abs(d[i]) > 0.5)
     if (comps.length !== 2) return 0
-    const axis = (i: number): Point => { const v: Vec3 = [0, 0, 0]; v[i] = 1; return ctx.axis(v) }
-    const projected = comps.reduce<Point>((sum, i) => add2(sum, scale2(axis(i), d[i])), [0, 0])
-    const k = Math.hypot(...sub2(end.page, start.page)) / (Math.hypot(...projected) || 1), mid = lerp2(start.page, end.page, 0.5)
-    const corners = comps.map(i => add2(start.page, scale2(axis(i), d[i] * k)))
+    const mid = lerp2(start.page, end.page, 0.5)
+    const corners = [comps, [...comps].reverse()].map(([p, q]) => corner2(start.page, end.page, d, p, q))
     const corner = corners.find(c => dot2(sub2(c, mid), ext) <= 0) ?? corners[0]
     return ctx.place.cost([start.page, corner, end.page] as Poly, o => leg.runs.some(r => r.id === o.owner), { pipe: 40, line: 1 })
   }
@@ -256,11 +260,7 @@ export function drawDimensions(ctx: IsoContext) {
     if (total < 1) return
     const owner = leg.runs[0].id
     const comps = [0, 1, 2].filter(i => Math.abs(d[i]) > 0.5)
-    // Page units per millimetre along the axes: the drawn leg over the length of its projected vector.
     const unitAxis = (i: number): Point => { const v: Vec3 = [0, 0, 0]; v[i] = 1; return ctx.axis(v) }
-    const projected = comps.reduce<Point>((sum, i) => add2(sum, scale2(unitAxis(i), d[i])), [0, 0])
-    const pageSpan = Math.hypot(...sub2(end.page, start.page)), k = pageSpan / (Math.hypot(...projected) || total)
-    const step = (from: Point, i: number): Point => add2(from, scale2(unitAxis(i), d[i] * k))
     // A plane offset is one right triangle; a rolling offset is a horizontal triangle (the travel in plan) and a
     // vertical one (the rise), drawn as the reference sheets do.
     const horizontal = comps.filter(i => i !== 2).sort((a, b) => Math.abs(d[b]) - Math.abs(d[a])), rises = comps.includes(2)
@@ -271,7 +271,7 @@ export function drawDimensions(ctx: IsoContext) {
     if (comps.length === 2) {
       // Either leg can come first; the triangle goes on the side clear of the run's chain dimensions, or of other work.
       const [a, b] = comps
-      const build = ([p, q]: number[]) => ({ p, q, corner: step(start.page, p) })
+      const build = ([p, q]: number[]) => ({ p, q, corner: corner2(start.page, end.page, d, p, q) })
       const options = [build([a, b]), build([b, a])]
       const score = (o: { corner: Point }) => chainExt
         ? (dot2(sub2(o.corner, centre0), chainExt) > 0 ? 1000 : 0)
@@ -286,8 +286,10 @@ export function drawDimensions(ctx: IsoContext) {
         plane: comps.includes(2) ? 'V' : 'H'
       })
     } else {
-      const first = horizontal[0]
-      const corner = step(start.page, first), plan = step(corner, horizontal[1])
+      // The drawn pipe splits into its travel in plan, drawn the way the layout draws it, and its rise.
+      const first = horizontal[0], level: Vec3 = [d[0], d[1], 0]
+      const [k] = split(sub2(end.page, start.page), ctx.direction(level), ctx.direction([0, 0, d[2]]))
+      const plan = add2(start.page, scale2(ctx.direction(level), k)), corner = corner2(start.page, plan, level, first, horizontal[1])
       legs.push([start.page, corner, Math.abs(d[first]), horizontal[1]], [corner, plan, Math.abs(d[horizontal[1]]), horizontal[0]], [plan, end.page, Math.abs(d[2]), horizontal[0]])
       triangles.push({ apex: start.page, leg: corner, far: plan, angle: Math.atan2(Math.abs(d[horizontal[1]]), Math.abs(d[horizontal[0]])) * 180 / Math.PI, plane: 'H' })
       line(start.page, plan, 'DIM', owner, 0.4)
@@ -354,4 +356,13 @@ export function drawDimensions(ctx: IsoContext) {
       emitters(ctx).text(at, value, SIZE.text, 'DIM', owner, { rotation: t.rotation, oblique: t.oblique, anchor: 'middle' })
     }
   }
+}
+/** Coefficients of `v` along `a` and `b`; even shares when they are parallel. */
+function split(v: Point, a: Point, b: Point): [number, number] {
+  const det = a[0] * b[1] - a[1] * b[0]
+  if (Math.abs(det) < 1e-9 * (Math.hypot(...a) * Math.hypot(...b) || 1)) {
+    const s = Math.hypot(...v) / (Math.hypot(...add2(a, b)) || 1)
+    return [s, s]
+  }
+  return [(v[0] * b[1] - v[1] * b[0]) / det, (a[0] * v[1] - a[1] * v[0]) / det]
 }

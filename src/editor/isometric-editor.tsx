@@ -604,7 +604,7 @@ export function IsometricEditor({
       const fresh = createDrawing(doc, filter, view);
       d =
         fresh.fit.scale > held.scale
-          ? createDrawing(doc, filter, view, { centre: fresh.fit.centre, scale: held.scale, base: held.base })
+          ? createDrawing(doc, filter, view, { ...held, centre: fresh.fit.centre })
           : fresh;
       if (outside(d)) d = fresh;
     }

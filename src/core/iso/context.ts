@@ -47,6 +47,8 @@ export interface IsoContext {
   project: (p: Vec3) => Point
   /** Page unit vector of a model direction. */
   axis: (v: Vec3) => Point
+  /** Page direction a straight along a model vector is drawn in; not to scale, plan diagonals lean off the vertical. */
+  direction: (v: Vec3) => Point
   geometry: Map<string, RunGeometry>
   place: Placement
   materials: MaterialRow[]
