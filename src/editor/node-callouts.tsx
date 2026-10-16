@@ -137,9 +137,9 @@ export function NodeCallouts({ doc, nodeId, commit }: { doc: IsoDocument; nodeId
               </select>
             </Row>
             <Row label="End point">
-              <select aria-label="Joint measured to" value={supply.measuredTo ?? "mate"} onChange={(e) => set({ measuredTo: e.target.value as "mate" | "flange" })}>
-                <option value="mate">The face it bolts to (gasket allowed for)</option>
+              <select aria-label="Joint measured to" value={supply.measuredTo ?? "flange"} onChange={(e) => set({ measuredTo: e.target.value as "mate" | "flange" })}>
                 <option value="flange">This flange's face</option>
+                <option value="mate">The face it bolts to (gasket allowed for)</option>
               </select>
             </Row>
           </>

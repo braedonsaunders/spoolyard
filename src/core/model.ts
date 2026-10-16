@@ -132,8 +132,8 @@ export interface PipeNode {
    * What a flanged joint at a pipe end (equipment, an existing flange or a break to another drawing) supplies on this
    * drawing: the flange itself (a lap-joint end keeps its stub end), the gasket and the bolting; whether the mate is a
    * flange (studs through both) or a lugged or tapped body such as a lug valve (lug bolts into it); and whether the end
-   * point is the face it bolts to, with the gasket this drawing supplies inside the dimension (the default), or this
-   * flange's own face.
+   * point is this flange's own face (the default) or the face it bolts to, with the gasket this drawing supplies inside
+   * the dimension.
    */
   jointSupply?: { gasket: boolean; bolts: boolean; flange?: boolean; mate?: 'flange' | 'lug'; measuredTo?: 'mate' | 'flange' }
 }
