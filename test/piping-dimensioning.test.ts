@@ -152,6 +152,38 @@ test('an overall runs across tees only between two open ends', () => {
   assert.ok(!dims(elbowed).includes('2000'));
 });
 
+test('an offset construction is drawn smaller rather than leave the drawing area', () => {
+  const d = doc();
+  const a = run(d, null, [1000, 0, 0]);
+  const b = run(d, a.id, [0, 8000, -8000]);
+  run(d, b.id, [1000, 0, 0]);
+  placeComponentOnPipe(d, d.runs[1].id, type('GATE-FL'), 0.5);
+  const drawing = createDrawing(d), [x0, y0, x1, y1] = drawing.area;
+  const lines = drawing.primitives.flatMap(p => p.type === 'line' && ['DIM', 'HATCH'].includes(p.layer) ? [p.a, p.b] : []);
+  assert.ok(lines.length && lines.every(([x, y]) => x >= x0 && x <= x1 && y >= y0 && y <= y1));
+});
+
+test('a rolling offset between parallel runs gives its set and roll as well as its legs and travel', () => {
+  const d = doc();
+  const a = run(d, null, [1500, 0, 0]);
+  const b = run(d, a.id, [500, 300, 400]);
+  run(d, b.id, [1500, 0, 0]);
+  const texts = dims(d);
+  for (const t of ['500', '300', '400', '707', 'SET 500', '53° ROLL']) assert.ok(texts.includes(t), t + ' in ' + texts.join(' '));
+});
+
+test('offset angles are given in whole degrees, but a 22 1/2° offset to the half degree', () => {
+  const angle = (deg: number) => {
+    const d = doc();
+    const a = run(d, null, [1000, 0, 0]);
+    const b = run(d, a.id, [1000, 1000 * Math.tan(deg * Math.PI / 180), 0]);
+    run(d, b.id, [1000, 0, 0]);
+    return dims(d).find(t => /°/.test(t));
+  };
+  assert.equal(angle(22.5), '22.5° H');
+  assert.equal(angle(24.7), '25° H');
+});
+
 test('an approximate location is saved as a yes or no', () => {
   const d = doc();
   run(d, null, [1000, 0, 0]);
