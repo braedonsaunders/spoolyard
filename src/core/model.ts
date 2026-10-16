@@ -3,6 +3,7 @@ import { COMPONENT_TYPES } from './components'
 import { boltedDirect, defaultCode, flangedAllowance, flangedJoints, isFlangePair, matingFlange, nippleEnds, nippleLength, nippleText, nodeItem, pipeEndPrep } from './joints'
 import { boltSizeText } from './format'
 import { flange, pipeOd } from './standards'
+import { routeOrder } from './material-list'
 /** Spoolyard piping semantics (file schema id "bidwright-piping" is kept for compatibility). Coordinates and fabrication lengths are millimetres. */
 export type Vec3 = [number, number, number]
 export type Kind =
@@ -209,6 +210,8 @@ export interface TitleBlock {
   projectNumber: string
   revisions: TitleBlockRevision[]
   logos: Array<{ name: string; dataUrl: string }>
+  /** How the sheet's dates are written, printed in the date labels; YY-MM-DD when unset. */
+  dateFormat?: string
 }
 export interface SheetInfo {
   drawingNumber?: string
@@ -221,6 +224,8 @@ export interface DrawingStyle {
   layout: 'scale' | 'schematic'
   weldNumbers: boolean
   lettering: 'cad' | 'sans'
+  /** Centreline elevation at every change of level, not only where the drafter places one. */
+  elevations?: boolean
 }
 /** Plant east, north and elevation (mm) of the model origin. */
 export interface PlantCoordinates {
@@ -264,6 +269,8 @@ export interface PipeRun {
    * by count rather than cut. Its ends (TBE, POE, PBE…) follow the end preparations.
    */
   nipple?: { length?: number }
+  /** Flow direction along the pipe: forward runs from `from` to `to`. */
+  flow?: 'forward' | 'reverse'
 }
 export interface IsoDocument {
   schema: 'bidwright-piping'
@@ -964,28 +971,52 @@ export function weldNumber(
   }
   return text
 }
-export const WELD_TYPES: Record<Weld['type'], string> = {
-  BW: 'Butt weld', SW: 'Socket weld', SO: 'Slip-on fillet weld', BR: 'Branch connection weld', RP: 'Reinforcing pad weld', AT: 'Attachment weld'
-}
 /** Supports welded to the pipe; their attachment welds are listed with the spool's welds. */
 export const WELDED_SUPPORTS = /^(SHOE|TRUNION|DUMY-LEG|BASESUPT)$/
 export function welds(doc: IsoDocument): Weld[] {
   let seq = doc.weldStart
-  const out: Weld[] = [], added: Array<Omit<Weld, 'tag'>> = []
+  const out: Weld[] = []
   const unit = (from: Vec3, to: Vec3) => mul(sub(to, from), 1 / (length(sub(to, from)) || 1))
-  for (const r of doc.runs) {
-    for (const [index, key] of [r.from, r.to].entries()) {
+  const numbered = (w: Omit<Weld, 'tag'>, tag?: string) => out.push({ ...w, tag: tag ?? `${doc.weldPrefix}${weldNumber(seq++, doc.weldNumbering)}` })
+  // Branch outlets, reinforcing pads and welded supports are welded to the pipe they sit on.
+  const attached = (r: PipeRun, from: Vec3) => doc.nodes
+    .filter(n => n.associatedRunId === r.id && (n.kind === 'olet' || (n.kind === 'support' && WELDED_SUPPORTS.test(n.component ?? fitting(doc, n)?.component ?? ''))))
+    .sort((a, b) => distance(a.position, from) - distance(b.position, from))
+  // Numbered in sequence along each spool, from an open end, in the order a fitter meets them.
+  const met = new Set<string>()
+  let last = ''
+  for (const r of [...new Set(doc.runs.map(r => r.spool))].flatMap(spool => routeOrder(doc, doc.runs.filter(r => r.spool === spool)))) {
+    // A pipe continues the walk from where the last one ended; a new walk starts at an open end.
+    const open = (id: string) => getNode(doc, id).kind !== 'weld' && connected(doc, id).filter(x => x.spool === r.spool).length === 1
+    const reversed = r.to === last || (r.from !== last && (open(r.to) !== open(r.from) ? open(r.to) : met.has(r.to) && !met.has(r.from)))
+    last = reversed ? r.from : r.to
+    met.add(r.from).add(r.to)
+    for (const [step, index] of (reversed ? [1, 0] : [0, 1]).entries()) {
+      // Along the pipe, between its end welds, come the welds of whatever is attached to it.
+      if (step === 1)
+        for (const n of attached(r, getNode(doc, reversed ? r.to : r.from).position)) {
+          if (n.kind === 'support') { numbered({ runId: r.id, nodeId: n.id, nps: r.nps, field: !!n.field, prep: 'AT', type: 'AT', position: n.position }); continue }
+          const item = fitting(doc, n), pad = (n.component ?? item?.component) === 'REPAD', branch = connected(doc, n.id)[0]
+          const od = getSpec(doc, r.specId).sizes.find(s => s.nps === r.nps)?.od ?? pipeOd(r.nps) ?? 0
+          const far = branch && getNode(doc, branch.from === n.id ? branch.to : branch.from).position
+          numbered({
+            runId: branch?.id ?? r.id, nodeId: n.id, nps: branch?.nps ?? item?.smallerNps ?? item?.nps ?? r.nps, field: !!n.field,
+            prep: pad ? 'RP' : 'BR', type: pad ? 'RP' : 'BR', position: far && !pad ? add(n.position, mul(unit(n.position, far), od / 2)) : n.position
+          })
+        }
+      const key = index === 0 ? r.from : r.to
       const n = getNode(doc, key), prep = pipePrepAt(doc, r, index)
       if (['end', 'support', 'annotation', 'gasket', 'bolt'].includes(n.kind) || prep === 'FL' || prep === 'THD') continue
       const t = takeout(doc, n, r.id) ?? 0
       const other = getNode(doc, index === 0 ? r.to : r.from)
+      const field = (index === 0 ? r.fromField : r.toField) ?? !!n.field
       if (prep === 'PLAIN') {
         // A slip-on flange is fillet welded at its bore and at the back of its hub.
         const so = r.connector ? undefined : slipOn(doc, n, r)
         if (!so) continue
         const u = unit(n.position, other.position), end = add(n.position, mul(u, t))
         for (const at of [end, add(end, mul(u, Math.max(0, so.hub - so.setBack)))])
-          added.push({ runId: r.id, nodeId: n.id, nps: r.nps, field: (index === 0 ? r.fromField : r.toField) ?? !!n.field, prep: 'SO', type: 'SO', position: at })
+          numbered({ runId: r.id, nodeId: n.id, nps: r.nps, field, prep: 'SO', type: 'SO', position: at })
         continue
       }
       // Two socket-weld pipes cannot be welded to each other; the joint needs a coupling.
@@ -996,19 +1027,8 @@ export function welds(doc: IsoDocument): Weld[] {
       const position =
         n.kind === 'weld'
           ? n.position
-          : add(
-              n.position,
-              mul(
-                vector,
-                (t + (r.connector || prep !== 'BW' ? 0 : runResult(doc, r).gaps[index] / 2)) /
-                  (length(vector) || 1)
-              )
-            )
-      if (
-        r.connector &&
-        out.some(w => distance(w.position, position) < 0.001 && w.nps === r.nps)
-      )
-        continue
+          : add(n.position, mul(vector, (t + (r.connector || prep !== 'BW' ? 0 : runResult(doc, r).gaps[index] / 2)) / (length(vector) || 1)))
+      if (r.connector && out.some(w => distance(w.position, position) < 0.001 && w.nps === r.nps)) continue
       const jointEnds = n.kind === 'weld' ? connected(doc, n.id).map(edge => ({
         tag: edge.from === n.id ? edge.fromTag : edge.toTag,
         field: edge.from === n.id ? edge.fromField : edge.toField
@@ -1017,36 +1037,9 @@ export function welds(doc: IsoDocument): Weld[] {
         (index === 0 ? r.fromTag : r.toTag) ??
         jointEnds.find(end => end.tag)?.tag ??
         (n.kind === 'weld' ? n.tag : undefined)
-      out.push({
-        tag: tag ?? `${doc.weldPrefix}${weldNumber(seq++, doc.weldNumbering)}`,
-        runId: r.id,
-        nodeId: n.id,
-        nps: r.nps,
-        field: jointEnds.some(end => end.field) || ((index === 0 ? r.fromField : r.toField) ?? !!n.field),
-        prep,
-        type: prep === 'SW' ? 'SW' : 'BW',
-        position
-      })
+      numbered({ runId: r.id, nodeId: n.id, nps: r.nps, field: jointEnds.some(end => end.field) || field, prep, type: prep === 'SW' ? 'SW' : 'BW', position }, tag)
     }
   }
-  // Branch connections welded to their header, reinforcing pads and welded supports.
-  for (const n of doc.nodes) {
-    const host = doc.runs.find(r => r.id === n.associatedRunId)
-    if (!host) continue
-    const item = fitting(doc, n), code = n.component ?? item?.component ?? ''
-    if (n.kind === 'olet') {
-      const branch = connected(doc, n.id)[0], pad = code === 'REPAD'
-      const od = getSpec(doc, host.specId).sizes.find(s => s.nps === host.nps)?.od ?? pipeOd(host.nps) ?? 0
-      const far = branch && getNode(doc, branch.from === n.id ? branch.to : branch.from).position
-      added.push({
-        runId: branch?.id ?? host.id, nodeId: n.id, nps: branch?.nps ?? item?.smallerNps ?? item?.nps ?? host.nps, field: !!n.field,
-        prep: pad ? 'RP' : 'BR', type: pad ? 'RP' : 'BR', position: far && !pad ? add(n.position, mul(unit(n.position, far), od / 2)) : n.position
-      })
-    } else if (n.kind === 'support' && WELDED_SUPPORTS.test(code))
-      added.push({ runId: host.id, nodeId: n.id, nps: host.nps, field: !!n.field, prep: 'AT', type: 'AT', position: n.position })
-  }
-  // Welds counted since the numbering was set follow it, so numbers already issued stay put.
-  for (const w of added) out.push({ ...w, tag: `${doc.weldPrefix}${weldNumber(seq++, doc.weldNumbering)}` })
   return out
 }
 /** The slip-on flange a pipe end is set into: a slip-on flange node, or the slip-on mate of a flanged component. */
@@ -1180,12 +1173,17 @@ export function validateIso(doc: IsoDocument): string[] {
       if (!Number.isFinite(bend) || Math.abs(bend - expected) > 1)
         issues.push(`${at}the ${name} turns ${Number.isFinite(bend) ? round(bend) + '°' : 'an unknown angle'} but is a ${expected}° fitting. Choose a fitting for this angle.`)
     }
-    if (
+    if (component?.angle && degree === 2 && Math.abs(angleBetween(edges[0], edges[1]) - 90) > 1)
+      issues.push(`${at}the ${name} is an angle body. Its pipes must leave it square to each other.`)
+    else if (
+      !component?.angle &&
       ['valve', 'reducer', 'weld', 'flange', 'gasket'].includes(n.kind) &&
       degree === 2 &&
       Math.abs(angleBetween(edges[0], edges[1]) - 180) > 1
     )
       issues.push(`${at}the ${name} sits at a change of direction. In-line components must be on a straight pipe.`)
+    if (/^CHECK/.test(component?.code ?? '') && edges.length && !edges.some(r => r.flow))
+      issues.push(`${at}the ${name} has no flow direction. Set the flow on its pipes so it is drawn and installed the right way round.`)
     if (n.kind === 'tee' && degree === 3 && n.branchEdgeId) {
       const main = edges.filter(r => r.id !== n.branchEdgeId),
         branch = edges.find(r => r.id === n.branchEdgeId)
@@ -1616,6 +1614,7 @@ export function parseIsoJson(raw: string): IsoDocument {
       !['designedBy', 'date', 'checkedBy', 'projectLeader', 'disciplineLeader', 'approvedBy', 'insulationThickness',
         'insulationCladding', 'tracing', 'pipeSpec', 'specRevision', 'designCode', 'product', 'refArea', 'lineNumber',
         'projectNumber'].every(k => isString(t[k as keyof TitleBlock], 200)) ||
+      (t.dateFormat != null && !isString(t.dateFormat, 200)) ||
       !isPlain(t.conditions) ||
       !(['design', 'operating', 'test'] as const).every(k => Array.isArray(t.conditions[k]) && t.conditions[k].length === 2 && strings(t.conditions[k], 2, 40)) ||
       !Array.isArray(t.revisions) || t.revisions.length > 20 ||
@@ -1629,7 +1628,8 @@ export function parseIsoJson(raw: string): IsoDocument {
   if (
     d.style != null &&
     (!isPlain(d.style) || !['scale', 'schematic'].includes(d.style.layout) ||
-      typeof d.style.weldNumbers !== 'boolean' || !['cad', 'sans'].includes(d.style.lettering))
+      typeof d.style.weldNumbers !== 'boolean' || !['cad', 'sans'].includes(d.style.lettering) ||
+      (d.style.elevations != null && typeof d.style.elevations !== 'boolean'))
   )
     throw new Error('Invalid drawing style.')
   if (
@@ -1748,6 +1748,7 @@ export function parseIsoJson(raw: string): IsoDocument {
     if (r.description != null && !isString(r.description, 300)) throw new Error('Invalid pipe description.')
     if (r.nipple != null && (!isPlain(r.nipple) || (r.nipple.length != null && !positive(r.nipple.length))))
       throw new Error('Invalid pipe nipple.')
+    if (r.flow != null && r.flow !== 'forward' && r.flow !== 'reverse') throw new Error('Invalid flow direction.')
     for (const key of ['connector', 'fromField', 'toField', 'uncut'])
       if (
         r[key as keyof PipeRun] != null &&
@@ -1799,116 +1800,6 @@ export function csv(rows: unknown[][]): string {
     )
     .join('\r\n')
 }
-export function bomCsv(
-  doc: IsoDocument,
-  group: 'spool' | 'line' | 'global' = 'spool'
-): string {
-  return csv([
-    [
-      'Item',
-      'Description',
-      'Spec',
-      'NPS',
-      'Quantity',
-      'Unit',
-      doc.units === 'imperial' ? 'Weight lb' : 'Weight kg',
-      doc.units === 'imperial' ? 'Surface ft2' : 'Surface m2',
-      'Cost',
-      'Labor hours',
-      'Heat',
-      'Spool',
-      'Line'
-    ],
-    ...bom(doc, group).map(r => {
-      const shown = displayBom(r, doc.units)
-      return [
-      r.item,
-      r.description,
-      r.spec,
-      r.nps,
-      Number.isFinite(shown.quantity) ? round(shown.quantity, 3) : 'MISSING',
-      shown.unit,
-      shown.weight == null ? 'MISSING' : round(shown.weight),
-      shown.area == null ? 'MISSING' : round(shown.area, 3),
-      round(r.cost),
-      round(r.hours),
-      r.heat,
-      r.spool,
-      r.line
-    ]})
-  ])
-}
-export function cutCsv(doc: IsoDocument): string {
-  const length = (mm: number) =>
-    doc.units === 'mm' ? round(mm) : formatLength(mm, doc.units)
-  const suffix = doc.units === 'mm' ? ' mm' : ''
-  return csv([
-    [
-      'Pipe',
-      'Spool',
-      'Line',
-      'NPS',
-      'Spec',
-      'Overall' + suffix,
-      'Start takeout' + suffix,
-      'End takeout' + suffix,
-      'Start gap' + suffix,
-      'End gap' + suffix,
-      'Cut' + suffix,
-      'Heat',
-      'Start preparation',
-      'End preparation'
-    ],
-    // Nipples are bought to length, not cut.
-    ...doc.runs
-      .filter(r => !r.connector && !r.nipple)
-      .map(r => {
-        const c = runResult(doc, r)
-        return [
-          r.id,
-          r.spool,
-          r.line,
-          r.nps,
-          r.specId,
-          length(c.overall),
-          ...c.takeouts.map(v => Number.isFinite(v) ? doc.units === 'mm' ? round(v) : formatAllowance(v, doc.units) : 'MISSING'),
-          ...c.gaps.map(v => doc.units === 'mm' ? round(v) : formatAllowance(v, doc.units)),
-          Number.isFinite(c.cut) && c.cut > 0 ? length(c.cut) : 'MISSING',
-          r.heat,
-          prepAt(r, 0),
-          prepAt(r, 1)
-        ]
-      })
-  ])
-}
-export function weldCsv(doc: IsoDocument): string {
-  return csv([
-    [
-      'Weld',
-      'Spool',
-      'Line',
-      'NPS',
-      'Location',
-      'End preparation',
-      'Diameter inches',
-      'Type'
-    ],
-    ...welds(doc).map(w => {
-      const r = doc.runs.find(r => r.id === w.runId)!
-      return [
-        w.tag,
-        r.spool,
-        r.line,
-        w.nps,
-        w.field ? 'Field' : 'Shop',
-        w.prep,
-        w.nps,
-        WELD_TYPES[w.type]
-      ]
-    })
-  ])
-}
-
 /** Remove an inline component without losing either outer connection's fabrication data. */
 export function removeComponent(doc: IsoDocument, nodeId: string): void {
   const node = getNode(doc, nodeId), edges = connected(doc, nodeId);

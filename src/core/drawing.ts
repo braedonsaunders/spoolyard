@@ -80,6 +80,10 @@ export interface SheetFit {
   scale: number
   /** Not to scale: sheet units per unit of compressed pipe length, chosen to fill the sheet. */
   base?: number
+  /** Not to scale: lengthening of pipe drawn across the page, so a narrow drawing fills the open area. */
+  stretch?: number
+  /** Not to scale: drawn-length factors of straight legs that would otherwise cross. */
+  legs?: Record<string, number>
 }
 /**
  * The issued isometric sheet (or, with `model`, the true-scale model-space view): production frame, laid-out pipe,

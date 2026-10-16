@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
-import { appendRun, applyComponent, attachComponent, bom, clone, cutCsv, getNode, insertComponent, newIso, parseIsoJson, runResult, validateIso, welds, type IsoDocument, type PipeSpec } from '../src/core/model.ts';
+import { appendRun, applyComponent, attachComponent, bom, clone, getNode, insertComponent, newIso, parseIsoJson, runResult, validateIso, welds, type IsoDocument, type PipeSpec } from '../src/core/model.ts';
 import { nodeItem } from '../src/core/joints.ts';
+import { cutSchedule } from '../src/core/schedules.ts';
 import { sheetMaterials } from '../src/core/material-list.ts';
 import { standardRow } from '../src/core/standards.ts';
 import { COMPONENT_TYPES } from '../src/core/components.ts';
@@ -92,12 +93,11 @@ test('a branch outlet measured from the header outside adds the header radius an
   close(runResult(doc, branch).cut, inch(9) - 110 - 1.6);
 });
 
-test('slip-on flanges take two fillet welds; olets and welded supports take their own welds after the issued numbers', () => {
+test('slip-on flanges take two fillet welds; olets and welded supports take their own welds', () => {
   const doc = newIso(); doc.specs = [clone(specA)];
   const elbow = appendRun(doc, null, [1500, 0, 0], 'A', 3, 'SP', 'L');
   const end = appendRun(doc, elbow.id, [0, 1000, 0], 'A', 3, 'SP', 'L');
   applyComponent(doc, getNode(doc, doc.runs[0].from), 'FLG-RFSO', row(doc, 'FLG-RFSO', 3));
-  const before = welds(doc).map(w => w.tag);
   const olet = attachComponent(doc, doc.runs[1].id, 'olet', 0.5);
   applyComponent(doc, olet, 'SOL', row(doc, 'SOL', 0.75));
   appendRun(doc, olet.id, [0, 0, 300], 'A', 0.75, 'SP', 'L', 'SW');
@@ -106,8 +106,8 @@ test('slip-on flanges take two fillet welds; olets and welded supports take thei
   const hanger = attachComponent(doc, doc.runs[1].id, 'support', 0.2);
   applyComponent(doc, hanger, 'HANGER', row(doc, 'HANGER', 3));
   const all = welds(doc);
-  assert.deepEqual(all.map(w => w.type), ['BW', 'BW', 'SW', 'SO', 'SO', 'BR', 'AT']);
-  assert.deepEqual(all.slice(0, 2).map(w => w.tag), before.slice(0, 2));
+  // Numbered as a fitter meets them along the spool: attachments between the welds at the ends of their pipe.
+  assert.deepEqual(all.map(w => w.type).sort(), ['AT', 'BR', 'BW', 'BW', 'SO', 'SO', 'SW']);
   // The bore weld sits at the set-back pipe end, the hub weld at the back of the hub.
   const [bore, hub] = all.filter(w => w.type === 'SO');
   close(bore.position[0], row(doc, 'FLG-RFSO', 3).takeout);
@@ -214,7 +214,7 @@ test('a nipple is a pipe of catalogued length with finished ends, listed by coun
   assert.deepEqual([listed.qtyText, listed.nd, listed.description], ['1', '3/4"', 'NIPPLE, 3/4" X 3" LG, XS, A106 GR. B, TBE']);
   assert.ok(!rows.some(r => r.category === 'pipe' && r.memberIds.includes(nipple.id)));
   assert.ok(bom(doc).some(r => r.unit === 'ea' && r.description === listed.description));
-  assert.ok(!cutCsv(doc).includes(nipple.id));
+  assert.ok(!cutSchedule(doc).some(r => r.run.id === nipple.id));
   // A nipple that no longer fits between its fittings is reported.
   valve.position = [valve.position[0], valve.position[1], valve.position[2] + 20];
   assert.match(validateIso(doc).join(), /nipple is 76\.2 mm long, but its fittings leave 96\.2 mm/);
@@ -235,6 +235,7 @@ test('a check valve bolted to a gate valve is one joint: one gasket, one bolt se
   const doc = newIso(); doc.specs = [clone(specA)];
   appendRun(doc, null, [2000, 0, 0], 'A', 6, 'SP', 'L');
   const type = (code: string) => COMPONENT_TYPES.find(t => t.code === code)!;
+  doc.runs[0].flow = 'forward';
   const check = placeComponentOnPipe(doc, doc.runs[0].id, type('CHECK-FL'), 0.3, row(doc, 'CHECK-FL', 6));
   const next = doc.runs.find(r => r.from === check.id)!;
   // Dropped onto the check valve's face, the gate valve bolts to it.

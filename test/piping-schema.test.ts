@@ -13,7 +13,7 @@ test('production sheet fields round trip through the file format', () => {
   const d = sheet();
   d.titleBlock = { ...titleBlockOf(d), referenceDrawings: ['P-001 Rev.E'], date: '26-03-09', conditions: { design: ['150', '200'], operating: ['', ''], test: ['225', ''] },
     revisions: [{ rev: 'A', date: '26-03-09', description: 'ISSUED FOR CONSTRUCTION', designedBy: 'A.K.', checkedBy: 'B.L.', disciplineLead: 'C.N.', projectLeader: 'C.N.', approvedBy: 'D.P.' }],
-    logos: [{ name: 'logo.png', dataUrl: 'data:image/png;base64,iVBORw0KGgo=' }] };
+    logos: [{ name: 'logo.png', dataUrl: 'data:image/png;base64,iVBORw0KGgo=' }], dateFormat: 'YY/MM/DD' };
   d.sheets = { S1: { drawingNumber: 'ISO-201-1' } };
   d.style = { layout: 'schematic', weldNumbers: false, lettering: 'cad' };
   d.coordinates = { origin: [16900, -40000, 30700] };

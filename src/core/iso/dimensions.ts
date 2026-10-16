@@ -8,6 +8,8 @@ import { segmentPoly, textPoly, type Poly } from './placement'
 import { add2, dot2, isAxial, lerp2, planeText, scale2, sub2, unit2, unit3, uprightOf } from './plane'
 
 interface Station { model: Vec3; page: Point; node?: string }
+/** Overlap costs for lettering that must not overprint other lettering. */
+const LETTERED = { text: 1000, tag: 1000 }
 interface Leg { runs: PipeRun[]; nodes: string[]; dir3: Vec3; dir: Point }
 
 /** Straight legs of the sheet: in-line pipes joined through valves, flanges, reducers and welds. */
@@ -238,15 +240,19 @@ export function drawDimensions(ctx: IsoContext) {
         { rotation: t.rotation, oblique: t.oblique, anchor: 'middle', role: 'cut' })
   }
   /** Rolling or plane offsets: hatched triangle with both leg dimensions and the offset angle. */
+  /** Where the legs along axes `p` then `q` of the model vector `d` meet, splitting the drawn line from `a` to `b`. */
+  function corner2(a: Point, b: Point, d: Vec3, p: number, q: number): Point {
+    const along = (i: number): Point => { const v: Vec3 = [0, 0, 0]; v[i] = d[i]; return ctx.axis(v) }
+    const [k] = split(sub2(b, a), along(p), along(q))
+    return add2(a, scale2(along(p), k))
+  }
   /** Clutter under the plane-offset triangle that would go opposite `ext`. */
   function triangleCost(leg: Leg, points: Station[], ext: Point) {
     const start = points[0], end = points.at(-1)!, d = sub(end.model, start.model)
     const comps = [0, 1, 2].filter(i => Math.abs(d[i]) > 0.5)
     if (comps.length !== 2) return 0
-    const axis = (i: number): Point => { const v: Vec3 = [0, 0, 0]; v[i] = 1; return ctx.axis(v) }
-    const projected = comps.reduce<Point>((sum, i) => add2(sum, scale2(axis(i), d[i])), [0, 0])
-    const k = Math.hypot(...sub2(end.page, start.page)) / (Math.hypot(...projected) || 1), mid = lerp2(start.page, end.page, 0.5)
-    const corners = comps.map(i => add2(start.page, scale2(axis(i), d[i] * k)))
+    const mid = lerp2(start.page, end.page, 0.5)
+    const corners = [comps, [...comps].reverse()].map(([p, q]) => corner2(start.page, end.page, d, p, q))
     const corner = corners.find(c => dot2(sub2(c, mid), ext) <= 0) ?? corners[0]
     return ctx.place.cost([start.page, corner, end.page] as Poly, o => leg.runs.some(r => r.id === o.owner), { pipe: 40, line: 1 })
   }
@@ -256,11 +262,7 @@ export function drawDimensions(ctx: IsoContext) {
     if (total < 1) return
     const owner = leg.runs[0].id
     const comps = [0, 1, 2].filter(i => Math.abs(d[i]) > 0.5)
-    // Page units per millimetre along the axes: the drawn leg over the length of its projected vector.
     const unitAxis = (i: number): Point => { const v: Vec3 = [0, 0, 0]; v[i] = 1; return ctx.axis(v) }
-    const projected = comps.reduce<Point>((sum, i) => add2(sum, scale2(unitAxis(i), d[i])), [0, 0])
-    const pageSpan = Math.hypot(...sub2(end.page, start.page)), k = pageSpan / (Math.hypot(...projected) || total)
-    const step = (from: Point, i: number): Point => add2(from, scale2(unitAxis(i), d[i] * k))
     // A plane offset is one right triangle; a rolling offset is a horizontal triangle (the travel in plan) and a
     // vertical one (the rise), drawn as the reference sheets do.
     const horizontal = comps.filter(i => i !== 2).sort((a, b) => Math.abs(d[b]) - Math.abs(d[a])), rises = comps.includes(2)
@@ -271,7 +273,7 @@ export function drawDimensions(ctx: IsoContext) {
     if (comps.length === 2) {
       // Either leg can come first; the triangle goes on the side clear of the run's chain dimensions, or of other work.
       const [a, b] = comps
-      const build = ([p, q]: number[]) => ({ p, q, corner: step(start.page, p) })
+      const build = ([p, q]: number[]) => ({ p, q, corner: corner2(start.page, end.page, d, p, q) })
       const options = [build([a, b]), build([b, a])]
       const score = (o: { corner: Point }) => chainExt
         ? (dot2(sub2(o.corner, centre0), chainExt) > 0 ? 1000 : 0)
@@ -286,8 +288,10 @@ export function drawDimensions(ctx: IsoContext) {
         plane: comps.includes(2) ? 'V' : 'H'
       })
     } else {
-      const first = horizontal[0]
-      const corner = step(start.page, first), plan = step(corner, horizontal[1])
+      // The drawn pipe splits into its travel in plan, drawn the way the layout draws it, and its rise.
+      const first = horizontal[0], level: Vec3 = [d[0], d[1], 0]
+      const [k] = split(sub2(end.page, start.page), ctx.direction(level), ctx.direction([0, 0, d[2]]))
+      const plan = add2(start.page, scale2(ctx.direction(level), k)), corner = corner2(start.page, plan, level, first, horizontal[1])
       legs.push([start.page, corner, Math.abs(d[first]), horizontal[1]], [corner, plan, Math.abs(d[horizontal[1]]), horizontal[0]], [plan, end.page, Math.abs(d[2]), horizontal[0]])
       triangles.push({ apex: start.page, leg: corner, far: plan, angle: Math.atan2(Math.abs(d[horizontal[1]]), Math.abs(d[horizontal[0]])) * 180 / Math.PI, plane: 'H' })
       line(start.page, plan, 'DIM', owner, 0.4)
@@ -295,6 +299,7 @@ export function drawDimensions(ctx: IsoContext) {
     }
     const corner = legs[0][1]
     for (const [a, b] of legs) line(a, b, 'DIM', owner)
+    const angleLabels: Array<() => void> = []
     for (const t of triangles) {
       // Hatching fills the acute corner between the pipe and the leg; a square marks the right angle.
       for (let i = 1; i <= 4; i++) {
@@ -310,15 +315,19 @@ export function drawDimensions(ctx: IsoContext) {
       if (sweep < -Math.PI) sweep += 2 * Math.PI
       const r = Math.min(34, Math.hypot(...sub2(t.leg, t.apex)) * 0.45) * (t.plane === 'H' && triangles.length > 1 ? 1.7 : 1)
       poly(Array.from({ length: 9 }, (_, i) => add2(t.apex, [Math.cos(a1 + sweep * i / 8) * r, Math.sin(a1 + sweep * i / 8) * r] as Point)), 'DIM', owner)
-      const mid = a1 + sweep / 2, label = angleText(Math.round(t.angle), t.plane)
-      const labelAt = add2(t.apex, [Math.cos(mid) * (r + 4), Math.sin(mid) * (r + 4)] as Point)
-      const spots: Point[] = [labelAt, add2(labelAt, [measureText(label, SIZE.text) / 2 + 2, 0]), add2(labelAt, [-measureText(label, SIZE.text) / 2 - 2, 0]),
-        add2(labelAt, [0, SIZE.text + 3]), add2(t.apex, [Math.cos(mid) * (r + 16), Math.sin(mid) * (r + 16)] as Point)]
-      const at = spots.reduce((best, q, i) => {
-        const c = ctx.place.cost(textPoly([q[0], q[1] + SIZE.text / 2], label, SIZE.text, 0, 0, 'middle', 1)) + i
-        return c < best.c ? { q, c } : best
-      }, { q: spots[0], c: Infinity }).q
-      emitters(ctx).text([at[0], at[1] + SIZE.text / 2], label, SIZE.text, 'DIM', owner, { anchor: 'middle' })
+      // Angle labels are lettered after the leg values, which have nowhere else to go.
+      angleLabels.push(() => {
+        const mid = a1 + sweep / 2, label = angleText(Math.round(t.angle), t.plane)
+        const labelAt = add2(t.apex, [Math.cos(mid) * (r + 4), Math.sin(mid) * (r + 4)] as Point)
+        // Further out along the bisector when the near spots are lettered already: angle labels never overprint text.
+        const spots: Point[] = [labelAt, add2(labelAt, [measureText(label, SIZE.text) / 2 + 2, 0]), add2(labelAt, [-measureText(label, SIZE.text) / 2 - 2, 0]),
+          add2(labelAt, [0, SIZE.text + 3]), ...[16, 28, 42, 58].map(k => add2(t.apex, [Math.cos(mid) * (r + k), Math.sin(mid) * (r + k)] as Point))]
+        const at = spots.reduce((best, q, i) => {
+          const c = ctx.place.cost(textPoly([q[0], q[1] + SIZE.text / 2], label, SIZE.text, 0, 0, 'middle', 1), undefined, LETTERED) + i
+          return c < best.c ? { q, c } : best
+        }, { q: spots[0], c: Infinity }).q
+        emitters(ctx).text([at[0], at[1] + SIZE.text / 2], label, SIZE.text, 'DIM', owner, { anchor: 'middle' })
+      })
     }
     // The true length is dimensioned along the pipe, on the side away from the construction, unless the chain
     // along the pipe already gives it.
@@ -345,13 +354,26 @@ export function drawDimensions(ctx: IsoContext) {
       const out = dot2(unitAxis(standing), away) >= 0 ? unitAxis(standing) : scale2(unitAxis(standing), -1)
       const t = planeText(dir, out), up = uprightOf(t)
       // Leg text goes outside the triangle when its reading side faces in.
-      const value = draftLength(mm, units, 24), base = lerp2(p, q, 0.5)
-      const spots: Point[] = [add2(base, scale2(up, dot2(up, out) >= 0 ? 2 : -(SIZE.text + 2))), add2(base, scale2(up, dot2(up, out) >= 0 ? -(SIZE.text + 2) : 2))]
+      const value = draftLength(mm, units, 24)
+      // Either side of the leg, then slid along it, so leg values never overprint other lettering.
+      const outward = dot2(up, out) >= 0 ? 1 : -1, beside = (f: number, k: number) => add2(lerp2(p, q, f), scale2(up, outward > 0 ? k : -(SIZE.text + k)))
+      const spots: Point[] = [0.5, 0.32, 0.68, 0.18, 0.82].flatMap(f => [beside(f, 2), add2(lerp2(p, q, f), scale2(up, outward > 0 ? -(SIZE.text + 2) : 2))])
+        .concat([0.5, 0.32, 0.68].flatMap(f => [beside(f, 10), beside(f, 18)]))
       const at = spots.reduce((best, q2, i) => {
-        const c = ctx.place.cost(textPoly(q2, value, SIZE.text, t.rotation, t.oblique, 'middle', 1)) + i * 4
+        const c = ctx.place.cost(textPoly(q2, value, SIZE.text, t.rotation, t.oblique, 'middle', 1), undefined, LETTERED) + i * 4
         return c < best.c ? { q2, c } : best
       }, { q2: spots[0], c: Infinity }).q2
       emitters(ctx).text(at, value, SIZE.text, 'DIM', owner, { rotation: t.rotation, oblique: t.oblique, anchor: 'middle' })
     }
+    for (const label of angleLabels) label()
   }
+}
+/** Coefficients of `v` along `a` and `b`; even shares when they are parallel. */
+function split(v: Point, a: Point, b: Point): [number, number] {
+  const det = a[0] * b[1] - a[1] * b[0]
+  if (Math.abs(det) < 1e-9 * (Math.hypot(...a) * Math.hypot(...b) || 1)) {
+    const s = Math.hypot(...v) / (Math.hypot(...add2(a, b)) || 1)
+    return [s, s]
+  }
+  return [(v[0] * b[1] - v[1] * b[0]) / det, (a[0] * v[1] - a[1] * v[0]) / det]
 }

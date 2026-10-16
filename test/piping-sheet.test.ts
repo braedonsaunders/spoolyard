@@ -102,14 +102,47 @@ test('viewport and exclusions stay inside the border and clear of the title bloc
   assert.equal(frame(document(), rows(7), 'front').primitives.filter(p => p.layer === 'TEXT').length, 0, 'no north symbol on an elevation');
 });
 
+test('a set of spools numbers its sheets and names each spool; a not-to-scale sheet says so', () => {
+  const d = document();
+  const end = d.nodes.find(n => d.runs[0].to === n.id)!;
+  appendRun(d, end.id, [0, 1000, 0], 'CS40', 2, 'S2', '');
+  d.style = { layout: 'schematic', weldNumbers: false, lettering: 'cad' };
+  const second = texts(drawSheet({ doc: d, spool: 'S2', width: sheetWidth(d), height: 850, rows: rows(3) }).primitives, 'TITLE');
+  for (const s of ['SPOOL S2', 'SHEET 2 OF 2', 'SCALE: NTS']) assert.ok(second.some(t => t.text === s), s);
+  for (let i = 0; i < second.length; i++)
+    for (let j = i + 1; j < second.length; j++) assert.ok(!overlap(box(second[i]), box(second[j])), `${second[i].text} clear of ${second[j].text}`);
+  const single = texts(frame({ ...document(), style: { layout: 'scale', weldNumbers: false, lettering: 'cad' } }).primitives, 'TITLE').map(t => t.text);
+  assert.ok(!single.some(t => /^SPOOL |^SHEET |NTS/.test(t)), 'a single to-scale sheet keeps the issued title block');
+});
+
+test('the north arrow points along plant north as the view draws it, and turns with the model', async () => {
+  const { viewProject } = await import('../src/core/iso/layout.ts');
+  for (const [north, view] of [[0, 'iso'], [90, 'iso'], [45, 'iso'], [30, 'plan']] as const) {
+    const d = { ...document(), north };
+    const f = frame(d, rows(7), view);
+    const symbol = f.primitives.filter(p => p.layer === 'TEXT');
+    const arrow = symbol.find((p): p is Extract<Primitive, { type: 'polyline' }> => p.type === 'polyline' && !!p.fill && p.points.length === 3)!;
+    const ellipse = symbol.find((p): p is Extract<Primitive, { type: 'polyline' }> => p.type === 'polyline' && !p.fill)!;
+    const xs = ellipse.points.map(q => q[0]), ys = ellipse.points.map(q => q[1]);
+    const centre = [(Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2];
+    const tip = arrow.points[0], v = viewProject([0, 1, 0], view, north);
+    const along = Math.atan2(tip[1] - centre[1], tip[0] - centre[0]) - Math.atan2(v[1], v[0]);
+    assert.ok(Math.abs(Math.atan2(Math.sin(along), Math.cos(along))) < 0.05, `${view} ${north}°: the arrow points north`);
+    for (const p of symbol) assert.ok(inside(box(p), f.exclusions[0], 0.01), `${view} ${north}°: the symbol stays in its box`);
+  }
+});
+
 test('BOM rows grow with wrapped descriptions and centre ID, QTY and ND', () => {
   const long = 'GASKET, SPIRAL WOUND, 304 SS WINDING, GRAPHITE FILLER, CS OUTER RING, 304 SS INNER RING, ASME B16.20, 150 LB, 1/8" THK';
   const f = frame(document(), [row(1), row(2, long), row(3, 'BOLT SET, STUD BOLT, A193 B7 WITH 2 A194 2H NUTS', '5/8"X3 1/4"', '8')]);
-  const ys = [...new Set(f.primitives.filter(p => p.layer === 'BOM' && p.type === 'line' && p.a[1] === p.b[1]).map(p => (p as { a: [number, number] }).a[1]))].sort((a, b) => a - b);
-  const heights = ys.slice(1).map((y, i) => (y - ys[i]) / ky);
+  const rowHeights = (p: Primitive[]) => {
+    const ys = [...new Set(p.filter(q => q.layer === 'BOM' && q.type === 'line' && q.a[1] === q.b[1]).map(q => (q as { a: [number, number] }).a[1]))].sort((a, b) => a - b);
+    return ys.slice(1).map((y, i) => (y - ys[i]) / ky);
+  };
+  const heights = rowHeights(f.primitives);
   assert.equal(Math.round(heights[0]), 34, 'title row');
   assert.equal(Math.round(heights[1]), 34, 'header row');
-  assert.equal(Math.round(heights[2]), 34, 'single-line row');
+  assert.equal(Math.round(heights[2]), 56, 'a single-line row is as tall as a two-line one');
   assert.ok(heights[3] > 76, 'three-line description row');
   assert.ok(heights[4] >= 56, 'two-line ND row');
   const desc = texts(f.primitives, 'BOM').filter(t => t.anchor !== 'middle');
@@ -117,6 +150,10 @@ test('BOM rows grow with wrapped descriptions and centre ID, QTY and ND', () => 
   assert.ok(desc.length >= 5 && desc.every(t => t.p[0] + measureText(t.text, t.size) < right), 'descriptions stay in their column');
   assert.deepEqual(texts(f.primitives, 'BOM').filter(t => t.text === '5/8"X3' || t.text === '1/4"').map(t => t.anchor), ['middle', 'middle']);
   assert.ok(texts(f.primitives, 'BOM').every(t => t.text === t.text.toUpperCase()));
+  // A list that would need a second block at that height keeps its single-line rows one line tall instead.
+  const short = frame(document(), Array.from({ length: 24 }, (_, i) => row(i + 1)));
+  assert.equal(texts(short.primitives, 'BOM').filter(t => t.text === 'BILL OF MATERIALS').length, 1);
+  assert.deepEqual([...new Set(rowHeights(short.primitives).map(Math.round))], [34]);
 });
 
 test('a long BOM continues in another block instead of clipping', () => {
@@ -167,9 +204,13 @@ test('title block prints the document, sheet and latest revision values', () => 
     'PIPE SPEC:', 'CS150', 'SPEC REV:', 'DESIGN CODE:', 'ASME B31.3', 'REF. AREA', 'PRODUCT:', 'W', 'LINE No.', 'L-200', 'DRAWING No.',
     'ISO-77-1', 'PROJ. No.', 'PRJ-100', 'REV.', 'ISSUED FOR CONSTRUCTION', 'ISSUED FOR REVIEW', 'DESIGNED', 'YY-MM-DD'].forEach(has);
   const latest = t.find(x => x.text === 'ISSUED FOR CONSTRUCTION')!, older = t.find(x => x.text === 'ISSUED FOR REVIEW')!;
-  assert.ok(latest.p[1] > older.p[1], 'newest revision on the bottom row');
+  assert.ok(latest.p[1] < older.p[1], 'newest revision above the older one');
+  const only = texts(frame({ ...d, titleBlock: { ...d.titleBlock!, revisions: d.titleBlock!.revisions.slice(0, 1) } }).primitives, 'TITLE');
+  assert.equal(only.find(x => x.text === 'ISSUED FOR REVIEW')!.p[1], older.p[1], 'a single revision sits just above the headings');
   const rev = t.filter(x => x.text === 'B');
   assert.ok(rev.some(x => x.size > 10), 'large revision letter');
+  const slashed = texts(frame({ ...d, titleBlock: { ...d.titleBlock!, dateFormat: 'yy/mm/dd' } }).primitives, 'TITLE').map(x => x.text);
+  assert.ok(slashed.includes('DATE (YY/MM/DD)') && slashed.includes('YY/MM/DD') && !slashed.some(x => x.includes('YY-MM-DD')), 'date labels follow the date format');
   const metric = texts(frame({ ...d, units: 'mm' }).primitives, 'TITLE').map(x => x.text);
   assert.ok(metric.includes('PRESS(kPa)') && metric.includes('TEMP(°C)') && !metric.includes('PRESS(PSIG)'));
   for (const x of t) {
