@@ -299,6 +299,13 @@ export function routeError(doc: IsoDocument, nodeId: string, delta: Vec3): strin
   return undefined;
 }
 
+/** A model direction in plant words: "east", "north-west", "south and down". */
+export function directionName([x, y, z]: Vec3): string {
+  const tiny = 1e-6 * Math.hypot(x, y, z);
+  const plan = [y > tiny ? 'north' : y < -tiny ? 'south' : '', x > tiny ? 'east' : x < -tiny ? 'west' : ''].filter(Boolean).join('-');
+  const rise = z > tiny ? 'up' : z < -tiny ? 'down' : '';
+  return [plan, rise].filter(Boolean).join(' and ') || 'nowhere';
+}
 /** Whether the flow along a pipe arrives at this end of it. */
 const flowsInto = (run: PipeRun, nodeId: string) => (run.flow === 'forward') === (run.to === nodeId);
 /**

@@ -156,6 +156,14 @@ test('flow is set along a line through elbows and in-line fittings, up to a bran
   parseIsoJson(JSON.stringify(doc));
 });
 
+test('flow choices name the plant direction a pipe runs', async () => {
+  const { directionName } = await import('../src/core/component-position.ts');
+  assert.equal(directionName([1000, 0, 0]), 'east');
+  assert.equal(directionName([-500, 500, 0]), 'north-west');
+  assert.equal(directionName([0, -300, -300]), 'south and down');
+  assert.equal(directionName([0, 0, 10]), 'up');
+});
+
 test('flow direction and an eccentric flat side are validated when a drawing is read', () => {
   const doc = straight(4), node = placeComponentOnPipe(doc, doc.runs[0].id, type('E-RED'), 0.5, row(`${spec.id}/E-RED-4x3`));
   node.flat = 'top';

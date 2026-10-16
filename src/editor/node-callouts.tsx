@@ -5,6 +5,8 @@ import { connected, formatAllowance, getNode, getSpec, type IsoDocument, type Pi
 
 const TEMPLATES = ["CONT'D ON\nDWG# ", "CONT'D FROM\nDWG# ", "CONNECT TO ", "CLOSED"];
 const OPERATORS = ["OPERATOR UP", "OPERATOR DOWN", "OPERATOR NORTH", "OPERATOR SOUTH", "OPERATOR EAST", "OPERATOR WEST"];
+/** Eccentric reducers and swages, whose flat side is set as fabricated. */
+export const ECCENTRIC = /^E-(RED|SWAGE|SWG)$/;
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -100,6 +102,19 @@ export function NodeCallouts({ doc, nodeId, commit }: { doc: IsoDocument; nodeId
             </select>
           </Row>
           <Text label="Valve tag" value={node.tag} placeholder="e.g. HV-101" onCommit={(tag) => edit((n) => { n.tag = tag.trim() || undefined; })} />
+        </>
+      )}
+      {ECCENTRIC.test(code) && (
+        <>
+          <Row label="Flat side">
+            <select aria-label="Eccentric flat side" value={node.flat ?? ""}
+              onChange={(e) => edit((n) => { if (e.target.value) n.flat = e.target.value as "top" | "bottom"; else delete n.flat; })}>
+              <option value="">Not stated</option>
+              <option value="top">Flat on top (FOT)</option>
+              <option value="bottom">Flat on bottom (FOB)</option>
+            </select>
+          </Row>
+          <p className="iso-help">Flat on top keeps vapour out of a pump suction; flat on bottom lets a line drain.</p>
         </>
       )}
       {node.kind === "support" && (

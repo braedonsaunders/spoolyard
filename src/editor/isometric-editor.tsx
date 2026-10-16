@@ -37,7 +37,7 @@ import {
 } from "lucide-react";
 import { cn } from "./cn";
 import { SheetLayer } from "./sheet-layer";
-import { NodeCallouts } from "./node-callouts";
+import { ECCENTRIC, NodeCallouts } from "./node-callouts";
 import { SheetSettings } from "./sheet-settings";
 import {
   appendRun,
@@ -75,6 +75,7 @@ import {
   type CatalogItem,
   type Kind,
   type PipeNode,
+  type PipeRun,
   type EndPrep,
   type Vec3,
 } from "../core/model";
@@ -97,6 +98,7 @@ import {
   componentFaces,
   componentTrack,
   continueFlow,
+  directionName,
   endCapable,
   legPoint,
   moveComponentAlongPipe,
@@ -703,6 +705,7 @@ export function IsometricEditor({
   const selectedRun = doc.runs.find((r) => r.id === selection),
     selectedNode = doc.nodes.find((n) => n.id === selection);
   const selectedTrack = selectedNode ? componentTrack(doc, selectedNode.id) : null;
+  const selectedFaces = useMemo(() => (selectedTrack && selectedNode ? componentFaces(doc, selectedNode.id) : null), [doc, selectedNode, selectedTrack]);
   const pendingCuts = cuts.filter(c => !Number.isFinite(c.cut) || c.cut <= 0);
   const missingTakeoutNodes = doc.nodes.filter(node => cuts.some(c =>
     (c.run.from === node.id || c.run.to === node.id) && takeout(doc, node, c.run.id) == null));
@@ -940,6 +943,23 @@ export function IsometricEditor({
     });
     return hit && hit.end == null ? hit : null;
   };
+  /** A branch from a point on a pipe, at the pipe's size; its tee goes in once the branch is routed. */
+  const startBranch = ({ runId, fraction: at }: { runId: string; fraction: number }) => {
+    const run = doc.runs.find((r) => r.id === runId)!;
+    const a = getNode(doc, run.from).position, b = getNode(doc, run.to).position;
+    setPending({ position: a.map((v, i) => v + (b[i] - v) * at) as Vec3, runId, fraction: at });
+    setStart("");
+    setSelection("");
+    setSpool(run.spool);
+    setLine(run.line);
+    setSpec(run.specId);
+    setNps(run.nps);
+    setRoutingPrep(prepAt(run, 0));
+    setError("");
+    setArmed(null);
+    setTool("pipe");
+    setView("iso");
+  };
   // Clicks place at whole millimetres or sixteenths along the straight, as previewed.
   const snapHit = (hit: PipeHit): PipeHit => (hit.end == null ? { ...hit, ...snapAlongLeg(doc, hit.runId, hit.fraction) } : hit);
   /**
@@ -959,17 +979,7 @@ export function IsometricEditor({
       }
       const hit = branchTarget(event);
       if (hit) {
-        const at = snapAlongLeg(doc, hit.runId, hit.fraction), run = doc.runs.find((r) => r.id === at.runId)!;
-        const a = getNode(doc, run.from).position, b = getNode(doc, run.to).position;
-        setPending({ position: a.map((v, i) => v + (b[i] - v) * at.fraction) as Vec3, runId: at.runId, fraction: at.fraction });
-        setStart("");
-        setSelection("");
-        setSpool(run.spool);
-        setLine(run.line);
-        setSpec(run.specId);
-        setNps(run.nps);
-        setRoutingPrep(prepAt(run, 0));
-        setError("");
+        startBranch(snapAlongLeg(doc, hit.runId, hit.fraction));
         return;
       }
       const [x0, y0, x1, y1] = drawing.area;
@@ -1585,7 +1595,8 @@ export function IsometricEditor({
                             const dx = b[0] - a[0], dy = b[1] - a[1];
                             const t = ((origin[0] + p[0] - state.point[0] - a[0]) * dx + (origin[1] + p[1] - state.point[1] - a[1]) * dy) / (dx * dx + dy * dy || 1);
                             const margin = 0.0001 * track.length;
-                            const distance = Math.max(Math.max(track.min, Math.min(sa, sb)) + margin, Math.min(Math.min(track.max, Math.max(sa, sb)) - margin, sa + (sb - sa) * t));
+                            const step = placementStep(doc.units), along = Math.round((sa + (sb - sa) * t) / step) * step;
+                            const distance = Math.max(Math.max(track.min, Math.min(sa, sb)) + margin, Math.min(Math.min(track.max, Math.max(sa, sb)) - margin, along));
                             state.destination = track.from.map((v, i) => v + u[i] * distance) as Vec3;
                           } else state.destination = pickGridPoint(
                               drawing,
@@ -1979,6 +1990,25 @@ export function IsometricEditor({
                           ))}
                         </select>
                       </Field>
+                      {!selectedRun.connector && (() => {
+                        const along = sub(getNode(doc, selectedRun.to).position, getNode(doc, selectedRun.from).position);
+                        return (
+                          <>
+                            <Field label="Flow">
+                              <select
+                                aria-label="Flow direction"
+                                value={selectedRun.flow ?? ""}
+                                onChange={(e) => commit((d) => setLineFlow(d, selection, (e.target.value || undefined) as PipeRun["flow"]))}
+                              >
+                                <option value="">Not set</option>
+                                <option value="forward">Flows {directionName(along)}</option>
+                                <option value="reverse">Flows {directionName(along.map((v) => -v) as Vec3)}</option>
+                              </select>
+                            </Field>
+                            <p className="iso-help">Set along the line, through its fittings, up to its branches and open ends.</p>
+                          </>
+                        );
+                      })()}
                       <div className="iso-property-summary">
                         <span>
                           Overall
@@ -2115,21 +2145,13 @@ export function IsometricEditor({
                       <div className="iso-inspector-section">
                         <strong>On this pipe</strong>
                         <p className="iso-help">
-                          Choose a component in Insert to place it here. Elbows are added when the run changes
-                          direction. Tees are added with Branch.
+                          Choose a component in Insert to place it here, tees and olets included. Elbows are added
+                          when the run changes direction. With the Pipe tool, click a pipe to branch from it.
                         </p>
-                        {!selectedRun.connector && <button className="iso-primary" onClick={() => commit(d => {
-                          const leg = pipeLeg(d, selection), target = leg && legPoint(d, selection, leg.length * fraction / 100);
-                          const junction = insertComponent(d, target?.runId ?? selection, 'tee', target?.fraction ?? 0.5);
-                          setStart(junction.id);
-                          setSelection(junction.id);
-                          setSpool(selectedRun.spool);
-                          setLine(selectedRun.line);
-                          setSpec(selectedRun.specId);
-                          setNps(selectedRun.nps);
-                          setTool('pipe');
-                          setView('iso');
-                        })}>Branch from this pipe</button>}
+                        {!selectedRun.connector && <button className="iso-primary" onClick={() => {
+                          const leg = pipeLeg(doc, selection), target = leg && legPoint(doc, selection, leg.length * fraction / 100);
+                          startBranch(target ?? { runId: selection, fraction: 0.5 });
+                        }}>Branch from this pipe</button>}
                       </div>
                     </>
                   )}
@@ -2137,10 +2159,16 @@ export function IsometricEditor({
                     <>
                       {selectedTrack && <div className="iso-inspector-section">
                         <strong>Position along pipe</strong>
-                        <LengthInput label="Distance from start" aria="Component distance from start"
-                          mm={round(selectedTrack.distance, 3)} units={doc.units} onError={setError}
-                          onCommit={value => value != null && commit(d => moveComponentAlongPipe(d, selection, value))} />
-                        <Field label="Position (%)">
+                        {/* The distance is given to what the sheet dimensions: flanged faces and reducer ends, else the centre. */}
+                        <LengthInput label={selectedFaces ? "Near face from start of straight" : "Centre from start of straight"}
+                          aria="Component distance from start"
+                          mm={round(selectedFaces ? selectedFaces[0] : selectedTrack.distance, 3)} units={doc.units} onError={setError}
+                          onCommit={value => value != null && commit(d => moveComponentAlongPipe(d, selection, value + (selectedFaces ? selectedTrack.distance - selectedFaces[0] : 0)))} />
+                        {selectedFaces && <p className="iso-help">
+                          The sheet dimensions this {selectedNode.kind === "reducer" ? "reducer to its ends" : "component to its mating flange faces, across the gaskets"}:
+                          {" "}{formatLength(selectedFaces[1] - selectedFaces[0], doc.units)} face to face, centre {formatLength(selectedTrack.distance, doc.units)} from the start.
+                        </p>}
+                        <Field label="Centre position (%)">
                           <input aria-label="Component position percent" type="number" min="0.01" max="99.99" step="any"
                             key={selection + '-' + selectedTrack.distance}
                             defaultValue={round(selectedTrack.distance / selectedTrack.length * 100)}
@@ -2173,12 +2201,17 @@ export function IsometricEditor({
                                 t = COMPONENT_TYPES.find((x) => x.code === e.target.value);
                               if (!t) return;
                               const edge = d.runs.find(r => r.id === selectedHeader?.id);
+                              // A reducer or tee keeps its sizes when its type changes, concentric to eccentric say.
+                              const smaller = n.kind === "reducer" ? Math.min(...connected(d, n.id).map((r) => r.nps))
+                                : n.kind === "tee" ? d.runs.find((r) => r.id === n.branchEdgeId)?.nps : undefined;
                               const row = edge
                                 ? getSpec(d, edge.specId).fittings.find(
-                                    (f) => rowComponent(f)?.code === t.code && f.nps === edge.nps,
+                                    (f) => rowComponent(f)?.code === t.code && f.nps === edge.nps &&
+                                      (smaller == null || (f.smallerNps ?? f.nps) === smaller),
                                   )
                                 : undefined;
                               applyComponent(d, n, t.code, row);
+                              if (!ECCENTRIC.test(t.code)) delete n.flat;
                             })
                           }
                         >
@@ -2205,6 +2238,7 @@ export function IsometricEditor({
                               const row = d.specs.flatMap(s => s.fittings).find(f => f.id === e.target.value);
                               if (row?.component) applyComponent(d, node, row.component, row);
                               else node.catalogId = e.target.value || undefined;
+                              if (!ECCENTRIC.test(node.component ?? "")) delete node.flat;
                             })
                           }
                         >
@@ -2322,15 +2356,20 @@ export function IsometricEditor({
                           }
                         />
                       </Field>
-                      <button
+                      {/* Only a connection with a free end can be routed from; an in-line valve has none. */}
+                      {canRouteFrom(doc, selectedNode.id) && <button
                         className="iso-primary"
                         onClick={() => {
                           selectConnection(selection);
+                          setPending(null);
                           setTool("pipe");
+                          setView("iso");
                         }}
                       >
-                        Continue / branch here
-                      </button>
+                        {selectedNode.kind === "olet" || (selectedNode.kind === "tee" && selectedEdges.length === 2)
+                          ? "Route the branch from here"
+                          : selectedEdges.length > 1 ? "Branch here" : "Continue from here"}
+                      </button>}
                     </>
                   )}
                   <details className="iso-offset">
