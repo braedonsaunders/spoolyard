@@ -78,6 +78,8 @@ export interface PipeSpec {
   sizes: PipeSize[]
   fittings: CatalogItem[]
   rootGap: number
+  /** Gap (mm) the pipe is withdrawn from the socket bottom before socket welding (ASME B31.3 Fig. 328.5.2C); 0 if unset. */
+  socketGap?: number
   density: number
   pipeCostM: number
   weldHoursPerDiameterInch: number
@@ -348,6 +350,7 @@ export function defaultSpec(): PipeSpec {
     schedule: '40',
     rating: 'Project specified',
     rootGap: 3,
+    socketGap: 1.6,
     density: 7850,
     pipeCostM: 0,
     pipeLaborHoursM: 0,
@@ -573,16 +576,13 @@ export function runResult(doc: IsoDocument, run: PipeRun): RunResult {
     takeout(doc, a, run.id) ?? NaN,
     takeout(doc, b, run.id) ?? NaN
   ]
-  const gaps: [number, number] = [a, b].map((n, i) =>
-    !run.connector && pipePrepAt(doc, run, i) === 'BW' &&
-    n.kind !== 'end' &&
-    n.kind !== 'support' &&
-    n.kind !== 'annotation' &&
-    n.kind !== 'gasket' &&
-    n.kind !== 'bolt'
-      ? (run.rootGap ?? spec.rootGap) / (n.kind === 'weld' ? 2 : 1)
-      : 0
-  ) as [number, number]
+  const gaps = [a, b].map((n, i) => {
+    if (run.connector || ['end', 'support', 'annotation', 'gasket', 'bolt'].includes(n.kind)) return 0
+    const prep = pipePrepAt(doc, run, i)
+    // A pipe-to-pipe butt weld splits its root gap; a socket stops the pipe short of its bottom.
+    if (prep === 'BW') return (run.rootGap ?? spec.rootGap) / (n.kind === 'weld' ? 2 : 1)
+    return prep === 'SW' && n.kind !== 'weld' ? spec.socketGap ?? 0 : 0
+  }) as [number, number]
   const cut = overall - ts[0] - ts[1] - gaps[0] - gaps[1]
   return {
     run,
@@ -910,7 +910,7 @@ export function welds(doc: IsoDocument): Weld[] {
               n.position,
               mul(
                 vector,
-                (t + (r.connector ? 0 : runResult(doc, r).gaps[index] / 2)) /
+                (t + (r.connector || prep !== 'BW' ? 0 : runResult(doc, r).gaps[index] / 2)) /
                   (length(vector) || 1)
               )
             )
@@ -1506,6 +1506,7 @@ export function parseIsoJson(raw: string): IsoDocument {
       s.sizes.length > 500 ||
       s.fittings.length > 10000 ||
       !nonnegative(s.rootGap) ||
+      (s.socketGap != null && !nonnegative(s.socketGap)) ||
       !positive(s.density) ||
       ![s.pipeCostM, s.pipeLaborHoursM, s.weldHoursPerDiameterInch].every(
         nonnegative

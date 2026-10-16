@@ -44,7 +44,7 @@ test('unknown catalogue dimensions explain pending BOM cuts and resolve with a m
   assert.match(text, /CUT TO \(PENDING\)/); assert.doesNotMatch(text, /MISSING/);
   node.takeout = 60;
   // The entered face distance plus a gasket and weld-neck flange on each side.
-  assert.ok(Math.abs(bom(doc).find(r => r.unit === 'm')!.qty - (10 - 2 * (60 + 3.17 + 63.5) / 1000)) < 1e-9);
+  assert.ok(Math.abs(bom(doc).find(r => r.unit === 'm')!.qty - (10 - 2 * (60 + 3.17 + 63.5 + 1.6) / 1000)) < 1e-9);
   assert.ok(doc.runs.every(r => Number.isFinite(runResult(doc, r).cut)));
   assert.ok(!validateIso(doc).some(s => /takeouts/.test(s)));
   assert.ok(!createDrawing(doc).primitives.some(p => p.type === 'text' && /PENDING|TBD/.test(p.text)));

@@ -28,6 +28,7 @@ const blankSpec = (doc: IsoDocument): PipeSpec => ({
   revision: "0",
   parameters: {},
   rootGap: 3,
+  socketGap: 1.6,
   density: 7850,
   pipeCostM: 0,
   pipeLaborHoursM: 0,
@@ -286,39 +287,49 @@ export function SpecManager({
                   />
                 </label>
               ))}
-              <label className="iso-field">
-                <span>Butt-weld root gap</span>
-                <input
-                  aria-label="Butt-weld root gap"
-                  title={'Feet and inches or millimetres, for example 1/8", 3 mm.'}
-                  key={spec.id + ":" + spec.rootGap + ":" + doc.units}
-                  defaultValue={lengthInputValue(spec.rootGap, doc.units)}
-                  onBlur={(e) => {
-                    const raw = e.target.value.trim();
-                    if (!raw) {
-                      e.target.value = lengthInputValue(spec.rootGap, doc.units);
-                      return;
-                    }
-                    try {
-                      const value = parseLength(raw, doc.units);
-                      if (!(value >= 0)) throw new Error("Enter a root gap of zero or more.");
-                      if (Math.abs(value - spec.rootGap) > 0.001)
-                        edit((s) => {
-                          s.rootGap = value;
-                        });
-                    } catch (err) {
-                      e.target.value = lengthInputValue(spec.rootGap, doc.units);
-                      const error = err instanceof Error ? err : new Error(String(err));
-                      edit(() => {
-                        throw error;
-                      });
-                    }
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") e.currentTarget.blur();
-                  }}
-                />
-              </label>
+              {(
+                [
+                  ["rootGap", "Butt-weld root gap", "Enter a root gap of zero or more."],
+                  ["socketGap", "Socket-weld gap", "Enter a socket-weld gap of zero or more."],
+                ] as const
+              ).map(([k, label, invalid]) => {
+                const current = spec[k] ?? 0;
+                return (
+                  <label key={k} className="iso-field">
+                    <span>{label}</span>
+                    <input
+                      aria-label={label}
+                      title={'Feet and inches or millimetres, for example 1/16", 1.6 mm.'}
+                      key={spec.id + ":" + current + ":" + doc.units}
+                      defaultValue={lengthInputValue(current, doc.units)}
+                      onBlur={(e) => {
+                        const raw = e.target.value.trim();
+                        if (!raw) {
+                          e.target.value = lengthInputValue(current, doc.units);
+                          return;
+                        }
+                        try {
+                          const value = parseLength(raw, doc.units);
+                          if (!(value >= 0)) throw new Error(invalid);
+                          if (Math.abs(value - current) > 0.001)
+                            edit((s) => {
+                              s[k] = value;
+                            });
+                        } catch (err) {
+                          e.target.value = lengthInputValue(current, doc.units);
+                          const error = err instanceof Error ? err : new Error(String(err));
+                          edit(() => {
+                            throw error;
+                          });
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") e.currentTarget.blur();
+                      }}
+                    />
+                  </label>
+                );
+              })}
               {(
                 [
                   ["density", "Density (kg/m³)"],

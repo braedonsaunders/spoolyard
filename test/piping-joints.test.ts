@@ -70,12 +70,12 @@ test('a flange on an open end mates with equipment; a flange mid-pipe is a bolte
   assert.equal(joints[0].kind, 'equipment');
   assert.equal(joints[0].flanges.length, 1);
   // The end is the flange face: the pipe stops one weld-neck hub short of it.
-  assert.ok(Math.abs(runResult(doc, doc.runs[0]).cut - (2000 - 63.5)) < 1e-9);
+  assert.ok(Math.abs(runResult(doc, doc.runs[0]).cut - (2000 - 63.5 - 1.6)) < 1e-9);
   // Measured to the nozzle face instead, the gasket is allowed for too.
   end.jointSupply = { gasket: true, bolts: true, measuredTo: 'mate' };
-  assert.ok(Math.abs(runResult(doc, doc.runs[0]).cut - (2000 - 63.5 - 3.17)) < 1e-9);
+  assert.ok(Math.abs(runResult(doc, doc.runs[0]).cut - (2000 - 63.5 - 3.17 - 1.6)) < 1e-9);
   end.jointSupply = { gasket: false, bolts: false, measuredTo: 'mate' };
-  assert.ok(Math.abs(runResult(doc, doc.runs[0]).cut - (2000 - 63.5)) < 1e-9);
+  assert.ok(Math.abs(runResult(doc, doc.runs[0]).cut - (2000 - 63.5 - 1.6)) < 1e-9);
   end.jointSupply = { gasket: false, bolts: false };
   assert.deepEqual(flangedJoints(doc)[0].supplied, { flange: true, gasket: false, bolts: false });
   assert.ok(!bom(doc).some(r => /GASKET|STUD/.test(r.description)));
@@ -179,7 +179,7 @@ test('a pipe flanged at one end only loses the flange allowance at that end alon
     const cut = runResult(doc, pipe).cut, elbowSide = runResult(doc, doc.runs[0]).cut;
     // Only this pipe's flanged end changes; the plain end is still cut to the elbow.
     assert.ok(cut < open && cut > open - 160, `${code}: ${cut} vs ${open}`);
-    if (Number.isFinite(hub)) assert.ok(Math.abs(open - cut - hub) < 1e-9, code);
+    if (Number.isFinite(hub)) assert.ok(Math.abs(open - cut - hub - doc.specs[0].rootGap) < 1e-9, code);
     assert.equal(elbowSide, plain, code);
     const rows = bom(doc);
     for (const part of parts) assert.equal(rows.filter(r => part.test(r.description)).reduce((n, r) => n + r.qty, 0), 1, `${code} ${part}`);

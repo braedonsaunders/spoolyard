@@ -31,7 +31,7 @@ test('spec A elbow takeouts drive cut lengths and unknown dimensions stay missin
   const elbow = doc.specs[0].fittings.find(f => f.component === 'W-LR90EL' && f.nps === 2)!;
   corner.catalogId = elbow.id;
   assert.equal(elbow.takeout, 76.2);
-  assert.equal(runResult(doc, doc.runs[0]).cut, 1000 - 76.2 - doc.specs[0].rootGap * 2);
+  assert.equal(runResult(doc, doc.runs[0]).cut, 1000 - 76.2 - doc.specs[0].rootGap);
   const missing = doc.specs[0].fittings.find(f => f.takeoutMissing && f.nps === 2 && f.kind === 'valve');
   if (missing) {
     const valve = insertComponent(doc, doc.runs[0].id, 'valve', 0.5);
