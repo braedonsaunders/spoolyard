@@ -123,6 +123,8 @@ test('the editor layer draws every primitive with its owner, length handle and s
 
 test('DXF writes polylines, fills, styled text, lineweights and image frames', () => {
   const doc = documentWithLogo();
+  // A metric tabloid sheet at 1:1 in millimetres, y up from its lower-left corner.
+  const k = 279.4 / 850, X = (x: number) => String(Number((x * k).toFixed(6))), Y = (y: number) => X(850 - y);
   for (const lettering of ['cad', 'sans'] as const) {
     const dxf = isometricDxf(doc, drawing(lettering));
     const { all, entities: list } = entities(dxf);
@@ -143,15 +145,15 @@ test('DXF writes polylines, fills, styled text, lineweights and image frames', (
     assert.deepEqual(polylines.map(e => [value(e, 8), value(e, 90), value(e, 70)]), [
       ['BW-ISO-SYMBOL', '3', '0'], ['BW-ISO-TAG', '4', '1'], ['BW-ISO-LEADER', '4', '1'], ['BW-ISO-TITLE', '4', '1'],
     ]);
-    assert.deepEqual(values(polylines[0], 20), ['-50', '-70', '-50']);
+    assert.deepEqual(values(polylines[0], 20), [Y(50), Y(70), Y(50)]);
     const [polygonFill, dot] = of('HATCH');
     assert.equal(value(polygonFill, 2), 'SOLID');
     assert.equal(value(polygonFill, 70), '1');
     assert.equal(value(polygonFill, 92), '3');
     assert.equal(value(polygonFill, 93), '4');
     assert.equal(value(dot, 72), '2');
-    assert.equal(value(dot, 40), '2.5');
-    assert.equal(value(of('CIRCLE')[0], 40), '2.5');
+    assert.equal(value(dot, 40), X(2.5));
+    assert.equal(value(of('CIRCLE')[0], 40), X(2.5));
     const texts = of('TEXT');
     const byValue = (v: string) => texts.find(e => value(e, 1) === v)!;
     for (const t of texts) {
@@ -161,20 +163,44 @@ test('DXF writes polylines, fills, styled text, lineweights and image frames', (
       assert.equal(t.at(-1)![0], 73);
     }
     const dimension = byValue(`2'-6 1/2"`);
-    assert.deepEqual([value(dimension, 10), value(dimension, 20), value(dimension, 40), value(dimension, 72)], ['20', '-120', '10', undefined]);
+    assert.deepEqual([value(dimension, 10), value(dimension, 20), value(dimension, 40), value(dimension, 72)], [X(20), Y(120), X(10), undefined]);
     assert.equal(value(dimension, 370), '35');
     const iso = byValue('45%%d H');
-    assert.deepEqual([value(iso, 50), value(iso, 51), value(iso, 72), value(iso, 11), value(iso, 21)], ['30', '30', '1', '200', '-120']);
+    assert.deepEqual([value(iso, 50), value(iso, 51), value(iso, 72), value(iso, 11), value(iso, 21)], ['30', '30', '1', X(200), Y(120)]);
     const end = byValue('BILL OF MATERIALS');
-    assert.deepEqual([value(end, 50), value(end, 51), value(end, 72), value(end, 11)], ['330', '-30', '2', '300']);
+    assert.deepEqual([value(end, 50), value(end, 51), value(end, 72), value(end, 11)], ['330', '-30', '2', X(300)]);
     const width = measureText('BILL OF MATERIALS', 9, lettering === 'cad' ? 1 : 1.25);
-    assert.ok(Math.abs(Number(value(end, 10)) - (300 - width * Math.cos(Math.PI / 6))) < 1e-9);
+    assert.ok(Math.abs(Number(value(end, 10)) - (300 - width * Math.cos(Math.PI / 6)) * k) < 1e-5);
     // Lines of a callout stack like the stroke lettering; the centreline symbol and inch mark survive SHX fonts.
     const stacked = ["CONT'D ON", 'DWG# ISO-2', `\\U+2104 EL +1'-4"`].map(byValue);
-    assert.deepEqual(stacked.map(e => Number(value(e, 20))), [0, 1, 2].map(row => -(200 + row * LINE_SPACING * 7)));
+    stacked.forEach((e, row) => assert.ok(Math.abs(Number(value(e, 20)) - (850 - 200 - row * LINE_SPACING * 7) * k) < 1e-5));
     const name = byValue('FAB SHOP');
-    assert.deepEqual([value(name, 8), value(name, 72), value(name, 11)], ['BW-ISO-TITLE', '1', '460']);
+    assert.deepEqual([value(name, 8), value(name, 72), value(name, 11)], ['BW-ISO-TITLE', '1', X(460)]);
   }
+});
+
+test('DXF sheets are drawn at full paper size in the drawing units', () => {
+  const header = (dxf: string, name: string) => {
+    const lines = dxf.split('\n'), i = lines.indexOf(name);
+    return lines.slice(i + 1, i + 7).filter((_, j) => j % 2).map(Number);
+  };
+  const doc = documentWithLogo();
+  const metric = isometricDxf(doc);
+  assert.deepEqual(header(metric, '$INSUNITS').slice(0, 1), [4]);
+  assert.deepEqual(header(metric, '$MEASUREMENT').slice(0, 1), [1]);
+  // 17 x 11 in tabloid: 1314 x 850 sheet units are 431.9 x 279.4 mm.
+  const [w, h] = header(metric, '$LIMMAX');
+  assert.ok(Math.abs(w - 431.8) < 0.2 && h === 279.4);
+  doc.units = 'imperial';
+  const imperial = isometricDxf(doc);
+  assert.deepEqual(header(imperial, '$INSUNITS').slice(0, 1), [1]);
+  const [wi, hi] = header(imperial, '$LIMMAX');
+  assert.ok(Math.abs(wi - 17) < 0.01 && hi === 11);
+  // Lettering keeps its printed height, about 2 mm (0.09 in) for most text.
+  const { entities: list } = entities(imperial);
+  const heights = list.filter(e => e[0][1] === 'TEXT').map(e => Number(value(e, 40)));
+  assert.ok(heights.length && heights.every(v => v > 0.04 && v < 0.3), String(heights));
+  assert.ok(list.filter(e => e[0][1] === 'LINE').every(e => [10, 11].every(c => Number(value(e, c)) >= 0 && Number(value(e, c)) <= 17)));
 });
 
 test('PDF draws every primitive kind for both letterings and embeds images once', async () => {
