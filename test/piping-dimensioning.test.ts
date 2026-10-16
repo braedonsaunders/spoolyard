@@ -113,6 +113,22 @@ test('a capped vent off an olet takes no dimensions; a screwed leg that turns do
   assert.ok(['100', '200', '400', '600'].every(t => dims(turned).includes(t)), dims(turned).join(' '));
 });
 
+test("a screwed branch is measured from the pipe's centreline, and a tee's capped branch is not dimensioned", () => {
+  const d = doc();
+  run(d, null, [1000, 0, 0]);
+  const olet = attachComponent(d, d.runs[0].id, 'olet', 0.4);
+  // A nipple screwed into the olet, standing off the pipe, and an elbow beyond it.
+  const nipple = attachComponent(d, d.runs[0].id, 'valve', 0.4);
+  Object.assign(nipple, { component: 'NIPPLE', position: [400, 0, 60] });
+  run(d, run(d, nipple.id, [0, 0, 40], true).id, [200, 0, 0], true);
+  assert.ok(olet && dims(d).includes('100') && !dims(d).includes('40'), dims(d).join(' '));
+  const capped = doc();
+  const tee = run(capped, null, [1000, 0, 0]);
+  run(capped, tee.id, [1000, 0, 0]);
+  run(capped, run(capped, tee.id, [0, 0, 80], true).id, [0, 0, 60], true).kind = 'cap';
+  assert.ok(!dims(capped).some(t => ['80', '140'].includes(t)), dims(capped).join(' '));
+});
+
 test("a tee's own short skewed branch is dimensioned by its length alone", () => {
   const d = doc();
   const tee = run(d, null, [1000, 0, 0]);

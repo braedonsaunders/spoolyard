@@ -45,14 +45,25 @@ export function sheetLegs(ctx: IsoContext): Leg[] {
 const workPoint = (node: PipeNode) => /^(elbow|tee)/.test(node.kind)
 
 /**
- * A screwed vent or drain stub: one straight run of parts joined without pipe off a branch connection on the pipe,
- * closed at its far end by a cap or an instrument. Its parts give its length. Returns the node it stands on.
+ * A screwed vent or drain stub: one straight run of parts joined without pipe off a branch, capped (an olet's stub may
+ * also end at an instrument). Its parts give its length. Returns the node it stands on.
  */
 function closedStub(ctx: IsoContext, leg: Leg): PipeNode | undefined {
   if (!leg.runs.every(r => r.connector)) return undefined
   const [a, b] = [leg.nodes[0], leg.nodes.at(-1)!].map(id => getNode(ctx.doc, id))
-  const [on, far] = a.associatedRunId ? [a, b] : b.associatedRunId ? [b, a] : []
-  return on && far && (far.kind === 'cap' || (far.kind === 'end' && !far.continuation)) ? on : undefined
+  const branch = (n: PipeNode) => !!n.associatedRunId || n.kind === 'tee'
+  const [on, far] = branch(a) ? [a, b] : branch(b) ? [b, a] : []
+  return on && far && (far.kind === 'cap' || (!!on.associatedRunId && far.kind === 'end' && !far.continuation)) ? on : undefined
+}
+
+/** The olet a part attached off the pipe's centreline stands on (a nipple screwed into it). */
+function oletUnder(ctx: IsoContext, node: PipeNode): PipeNode | undefined {
+  const host = node.kind !== 'olet' && ctx.doc.runs.find(r => r.id === node.associatedRunId)
+  if (!host) return undefined
+  const dir = unit3(sub(getNode(ctx.doc, host.to).position, getNode(ctx.doc, host.from).position))
+  const along = (p: Vec3) => p[0] * dir[0] + p[1] * dir[1] + p[2] * dir[2]
+  return ctx.nodes.find(o => o.kind === 'olet' && o.associatedRunId === host.id && Math.abs(along(o.position) - along(node.position)) < 1 &&
+    distance(o.position, node.position) > 1)
 }
 
 /** Olets carrying a capped vent or drain stub: they are located on the pipe rather than cut into its chain. */
@@ -87,9 +98,12 @@ function stations(ctx: IsoContext, leg: Leg, vents: Set<string>): Station[] {
   const at = (model: Vec3, page: Point, node?: string, end = false) => out.push({ model, page, node, along: along(model), end })
   leg.nodes.forEach((id, i) => {
     const node = getNode(ctx.doc, id), page = ctx.pos.get(id)!
-    const end = i === 0 || i === leg.nodes.length - 1
+    let end = i === 0 || i === leg.nodes.length - 1
     if (!end && node.kind === 'gasket') return
     const code = nodeCode(ctx.doc, node) ?? ''
+    // A branch standing on a part screwed into an olet is measured from the pipe's centreline, at the olet.
+    const olet = end ? oletUnder(ctx, node) : undefined, base = olet && ctx.pos.get(olet.id)
+    if (olet && base) { at(olet.position, base, olet.id, true); end = false }
     // Nipples, couplings, unions and regulators only join the pieces either side: the dimensions run through them.
     if (!end && /NIPPLE|UNION|CPLG|REGUL/.test(code)) return
     const joints = ctx.joints.filter(j => j.nodeId === id && j.kind === 'component-port' && own.has(j.runIds[0]))
@@ -227,7 +241,8 @@ export function drawDimensions(ctx: IsoContext) {
     // When tees cut the chain into single pieces, the overall runs the whole leg: always along an offset (its true
     // length), else only between two open ends and unless the leg is a fitting's own make-up.
     const open = [points[0], points.at(-1)!].every(p => !p.node || !workPoint(node(p.node)))
-    if (!overall.length && segments.length > 1 && (skewed || open && leg.runs.some(r => !r.connector))) overall = [across(segments)]
+    const makeUp = leg.runs.length < 3 && leg.runs.every(r => r.connector)
+    if (!overall.length && segments.length > 1 && (skewed || open && !makeUp)) overall = [across(segments)]
     if (overall.length) tiers.push(overall)
     // Extension lines run along an isometric axis across the leg: vertical for horizontal legs, horizontal for risers.
     // A level leg drawn upright on the page takes a level axis.
