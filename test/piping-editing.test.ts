@@ -131,7 +131,7 @@ test('positions report the faces the sheet dimensions, or the centre', () => {
   assert.deepEqual(componentFaces(doc, reducer.id)!.map(v => Math.round(v * 100) / 100), [1000 - 50.8, 1000 + 50.8]);
 });
 
-test('flow is set along a line through elbows and in-line fittings, up to a branch', () => {
+test('flow is set along a line through elbows, in-line fittings and the run of a tee, not into its branch', () => {
   const doc = straight(4, 2000), [first] = doc.runs;
   // The second pipe is drawn back toward the elbow, against the first.
   const far = { id: 'far', kind: 'end' as const, position: [2000, 2000, 0] as [number, number, number] };
@@ -141,13 +141,18 @@ test('flow is set along a line through elbows and in-line fittings, up to a bran
   const tee = placeComponentOnPipe(doc, first.id, type('W-TEE'), 0.5);
   appendRun(doc, tee.id, [0, -1000, 0], spec.id, 4, 'SP-001', 'L-10');
   const [upstream, downstream] = [doc.runs.find(r => r.to === tee.id)!, doc.runs.find(r => r.from === tee.id)!];
+  const branch = doc.runs.at(-1)!;
   setLineFlow(doc, downstream.id, 'forward');
   assert.equal(downstream.flow, 'forward');
   assert.equal(second.flow, 'reverse', 'drawn against the flow');
-  assert.equal(upstream.flow, undefined, 'stops at the tee');
+  assert.equal(upstream.flow, 'forward', 'on through the run of the tee');
+  assert.equal(branch.flow, undefined, 'the branch is a line of its own');
+  setLineFlow(doc, branch.id, 'forward');
+  assert.equal(upstream.flow, 'forward');
   setLineFlow(doc, second.id, undefined);
   assert.equal(downstream.flow, undefined);
-  assert.equal(second.flow, undefined);
+  assert.equal(upstream.flow, undefined);
+  assert.equal(branch.flow, 'forward');
   // A pipe routed on from the end of a line carries its flow.
   setLineFlow(doc, second.id, 'reverse');
   appendRun(doc, far.id, [0, 0, 500], spec.id, 4, 'SP-001', 'L-10');

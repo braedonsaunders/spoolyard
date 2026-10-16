@@ -309,8 +309,8 @@ export function directionName([x, y, z]: Vec3): string {
 /** Whether the flow along a pipe arrives at this end of it. */
 const flowsInto = (run: PipeRun, nodeId: string) => (run.flow === 'forward') === (run.to === nodeId);
 /**
- * Set the flow along a line: this pipe and the pipes it runs on into through joints, elbows and in-line components,
- * up to a branch or open end. Clearing it clears the same pipes.
+ * Set the flow along a line: this pipe and the pipes it runs on into through joints, elbows, in-line components and
+ * the run of a tee, up to an open end. A tee's branch is a line of its own. Clearing it clears the same pipes.
  */
 export function setLineFlow(doc: IsoDocument, runId: string, flow: PipeRun['flow']): void {
   const run = doc.runs.find(r => r.id === runId);
@@ -320,8 +320,10 @@ export function setLineFlow(doc: IsoDocument, runId: string, flow: PipeRun['flow
   const seen = new Set([run.id]);
   for (const end of [run.from, run.to]) {
     for (let at = end, previous = run; ;) {
-      const edges = connected(doc, at), next = edges.find(r => r.id !== previous.id);
-      if (getNode(doc, at).kind === 'end' || edges.length !== 2 || !next || seen.has(next.id) || next.connector) break;
+      const node = getNode(doc, at), edges = connected(doc, at);
+      const through = node.kind === 'tee' && edges.length === 3 && node.branchEdgeId && node.branchEdgeId !== previous.id;
+      const next = edges.length === 2 || through ? edges.find(r => r.id !== previous.id && r.id !== node.branchEdgeId) : undefined;
+      if (node.kind === 'end' || !next || seen.has(next.id) || next.connector) break;
       seen.add(next.id);
       // Flow arriving through the previous pipe leaves through the next one, and the other way about.
       set(next, flow && ((next.from === at) === flowsInto(previous, at) ? 'forward' : 'reverse'));

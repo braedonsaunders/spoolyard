@@ -379,10 +379,17 @@ export function IsometricEditor({
   const latest = useRef(doc);
   latest.current = doc;
   const activeSpec = doc.specs.find(s => s.id === spec) ?? doc.specs[0];
+  // Routing from a connection keeps its end preparation (an olet's socket, say) rather than the size's default.
+  const connectionPrep = useRef<{ prep: EndPrep; spec: string; nps: number } | null>(null);
+  const routeWith = (prep: EndPrep, specId: string, size: number) => {
+    connectionPrep.current = { prep, spec: specId, nps: size };
+    setRoutingPrep(prep);
+  };
   useEffect(() => {
     if (activeSpec.id !== spec) setSpec(activeSpec.id);
     if (!activeSpec.sizes.some(size => size.nps === nps)) setNps(defaultNps(activeSpec));
-    setRoutingPrep(defaultEndPrep(activeSpec, nps));
+    const kept = connectionPrep.current;
+    setRoutingPrep(kept && kept.spec === spec && kept.nps === nps ? kept.prep : defaultEndPrep(activeSpec, nps));
   }, [spec, activeSpec.id, nps, ready]);
   const persistence = usePipingSave(doc, ready, onSave, isNew);
   const save = () => {
@@ -665,8 +672,21 @@ export function IsometricEditor({
   }, [doc, filter, surface, view, holding]);
   const sheetPrimitives = drawing.primitives;
   const sheetStyle = styleOf(doc), notToScale = surface === "paper" && sheetStyle.layout === "schematic";
+  // A pending start is not in the drawing: off its pipes a not-to-scale sheet is drawn at one scale, so the route from
+  // it is measured at that scale from where the start is drawn, not from whichever connection is nearest.
+  const routeDrawing = useMemo((): Drawing => {
+    if (!pending) return drawing;
+    const far: Vec3 = [1e9, 1e9, 1e9], base = drawing.project(far), origin = drawing.project(pending.position);
+    return {
+      ...drawing,
+      project: (p: Vec3): Point => {
+        const q = drawing.project([0, 1, 2].map((i) => far[i] + p[i] - pending.position[i]) as Vec3);
+        return [origin[0] + q[0] - base[0], origin[1] + q[1] - base[1]];
+      },
+    };
+  }, [drawing, pending]);
   const pick = (p: Point) =>
-    routing && grid.ortho !== false ? pickOrthoPoint(drawing, p, anchor, grid) : pickGridPoint(drawing, p, anchor, grid);
+    routing && grid.ortho !== false ? pickOrthoPoint(routeDrawing, p, anchor, grid) : pickGridPoint(routeDrawing, p, anchor, grid);
   const viewportWidth = surface === "grid" ? 850 * stageSize.width / stageSize.height : W;
   const viewportX = W / 2 - viewportWidth / 2 / zoom + pan[0];
   const viewportY = 425 - 425 / zoom + pan[1];
@@ -722,21 +742,27 @@ export function IsometricEditor({
       setLine(run.line);
       setSpec(run.specId);
       setNps(run.nps);
-      setRoutingPrep(prepAt(run, run.from === key ? 0 : 1));
+      routeWith(prepAt(run, run.from === key ? 0 : 1), run.specId, run.nps);
     } else if (host && node?.kind === "olet") {
       // An olet's branch is routed at the olet's size, with its socket, thread or butt weld.
-      const type = COMPONENT_TYPES.find((t) => t.code === node.component);
+      const size = fitting(d, node)?.nps ?? nodeItem(d, node)?.nps ?? host.nps;
       setSpool(host.spool);
       setLine(host.line);
       setSpec(host.specId);
-      setNps(fitting(d, node)?.nps ?? nodeItem(d, node)?.nps ?? host.nps);
-      if (type?.endPrep && type.endPrep !== "PLAIN") setRoutingPrep(type.endPrep);
+      setNps(size);
+      routeWith(branchPrep(node.component, prepAt(host, 0)), host.specId, size);
     }
   };
-  /** Start the branch of a tee or olet just placed: the Pipe tool routes from it at the branch size. */
+  const branchPrep = (code: string | undefined, header: EndPrep): EndPrep => {
+    const prep = COMPONENT_TYPES.find((t) => t.code === code)?.endPrep;
+    return prep && prep !== "PLAIN" && prep !== "FL" ? prep : header;
+  };
+  /** Start the branch of a tee or olet just placed: the Pipe tool routes from it at the branch size and its end. */
   const routeBranch = (d: IsoDocument, nodeId: string, nps: number) => {
     selectConnection(nodeId, d);
+    const node = getNode(d, nodeId), host = connected(d, nodeId)[0] ?? d.runs.find((r) => r.id === node.associatedRunId)!;
     setNps(nps);
+    routeWith(branchPrep(node.component, prepAt(host, host.from === nodeId ? 0 : 1)), host.specId, nps);
     setTool("pipe");
     setView("iso");
   };
@@ -914,6 +940,14 @@ export function IsometricEditor({
         const run = doc.runs.find(r => r.id === hit.runId)!, endNode = hit.end == null ? undefined : getNode(doc, hit.end === 0 ? run.from : run.to);
         const onEnd = endNode && endCapable(armed.type) && endNode.kind === "end" && connected(doc, endNode.id).length === 1;
         const at = onEnd ? { runId: hit.runId, fraction: hit.end! } : snapAlongLeg(doc, hit.runId, hit.fraction);
+        const choices = sized(armed.type) ? sizeChoices(getSpec(doc, run.specId), armed.type, run.nps) : [];
+        if (choices.length && !choices.some((c) => c.row.id === armed.row?.id)) {
+          // The size was chosen for another pipe: offer this pipe's sizes and ask again.
+          setSelection(run.id);
+          setArmed({ type: armed.type, row: choices[0].row });
+          setError(`The size shown was for a ${inches(paletteNps)} pipe. Choose the size for this ${inches(run.nps)} pipe, then click it again.`);
+          return;
+        }
         insertFitting(at.runId, armed.type, armed.row, at.fraction);
       }
       else setError("No pipe at that point. Click a straight pipe or its dimension label to place " + armed.type.label + ".");
@@ -954,7 +988,7 @@ export function IsometricEditor({
     setLine(run.line);
     setSpec(run.specId);
     setNps(run.nps);
-    setRoutingPrep(prepAt(run, 0));
+    routeWith(prepAt(run, 0), run.specId, run.nps);
     setError("");
     setArmed(null);
     setTool("pipe");
@@ -964,7 +998,7 @@ export function IsometricEditor({
   const snapHit = (hit: PipeHit): PipeHit => (hit.end == null ? { ...hit, ...snapAlongLeg(doc, hit.runId, hit.fraction) } : hit);
   /**
    * A Pipe-tool click: a connection with a free end starts a run from it; a pipe starts a branch from that point; open
-   * sheet starts a new run or, with a run in progress, routes the pipe there. Anything else asks instead of drawing.
+   * sheet starts a new run or, with a run in progress, routes the pipe there. A fitting with no free end, or the title block, asks instead.
    */
   const routeClick = (event: PointerEvent, node?: string | null) => {
     try {
@@ -985,10 +1019,6 @@ export function IsometricEditor({
       const [x0, y0, x1, y1] = drawing.area;
       if (surface === "paper" && !(p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1)) {
         setError("Click inside the drawing area to route a pipe, or on a pipe to branch from it.");
-        return;
-      }
-      if (!(event.target as Element).closest("[data-isometric-grid]") && (event.target as Element).closest("[data-owner]")) {
-        setError("That is a label or symbol. Click on a pipe to branch from it, or on open sheet to route.");
         return;
       }
       const destination = pick(p);
@@ -1730,8 +1760,8 @@ export function IsometricEditor({
                   )}
                   {cursor && nodeDrag.current && (
                     <circle
-                      cx={drawing.project(cursor)[0]}
-                      cy={drawing.project(cursor)[1]}
+                      cx={routeDrawing.project(cursor)[0]}
+                      cy={routeDrawing.project(cursor)[1]}
                       r={8}
                       className="iso-anchor"
                       opacity=".6"
@@ -1742,22 +1772,22 @@ export function IsometricEditor({
                     <g pointerEvents="none">
                       {routing && (
                         <line
-                          x1={drawing.project(anchor)[0]}
-                          y1={drawing.project(anchor)[1]}
-                          x2={drawing.project(cursor)[0]}
-                          y2={drawing.project(cursor)[1]}
+                          x1={routeDrawing.project(anchor)[0]}
+                          y1={routeDrawing.project(anchor)[1]}
+                          x2={routeDrawing.project(cursor)[0]}
+                          y2={routeDrawing.project(cursor)[1]}
                           className="iso-route-preview"
                         />
                       )}
                       <circle
-                        cx={drawing.project(cursor)[0]}
-                        cy={drawing.project(cursor)[1]}
+                        cx={routeDrawing.project(cursor)[0]}
+                        cy={routeDrawing.project(cursor)[1]}
                         r={4}
                         className="iso-anchor"
                       />
                       <text
-                        x={drawing.project(cursor)[0] + 12}
-                        y={drawing.project(cursor)[1] - 12}
+                        x={routeDrawing.project(cursor)[0] + 12}
+                        y={routeDrawing.project(cursor)[1] - 12}
                         className="iso-route-label"
                       >
                         {routing ? formatLength(Math.hypot(...sub(cursor, anchor)), doc.units) : "Start " + spool}
@@ -2005,7 +2035,7 @@ export function IsometricEditor({
                                 <option value="reverse">Flows {directionName(along.map((v) => -v) as Vec3)}</option>
                               </select>
                             </Field>
-                            <p className="iso-help">Set along the line, through its fittings, up to its branches and open ends.</p>
+                            <p className="iso-help">Set along the line through its fittings and the runs of its tees; each branch is set on its own.</p>
                           </>
                         );
                       })()}
