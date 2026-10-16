@@ -23,6 +23,10 @@ export interface ComponentType {
   kind: Kind | 'pipe' | 'annotation'
   endPrep?: ComponentEndPrep
   reducing?: boolean
+  /** An angle body: its two ports are square to each other, so it sits at a turn. The outlet is its branch. */
+  angle?: boolean
+  /** Drawn and bolted up on the drawing, but the item itself is supplied by others and not listed. */
+  byOthers?: boolean
   ports: number
   description: string
 }
@@ -982,6 +986,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
   },
   {
     code: 'ANGL-FL',
+    angle: true,
     label: 'Angle valve, flanged',
     category: 'valves',
     kind: 'valve',
@@ -991,6 +996,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
   },
   {
     code: 'ANGL-SW',
+    angle: true,
     label: 'Angle valve, socket-weld',
     category: 'valves',
     kind: 'valve',
@@ -1000,6 +1006,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
   },
   {
     code: 'ANGL-SC',
+    angle: true,
     label: 'Angle valve, threaded',
     category: 'valves',
     kind: 'valve',
@@ -1132,6 +1139,91 @@ export const COMPONENT_TYPES: ComponentType[] = [
     endPrep: 'THD',
     ports: 2,
     description: 'Thermal relief valve.'
+  },
+  {
+    code: 'PSV-SC',
+    label: 'Relief valve (PSV), angle body, threaded',
+    category: 'valves',
+    kind: 'valve',
+    endPrep: 'THD',
+    reducing: true,
+    angle: true,
+    ports: 2,
+    description: 'Spring-loaded pressure safety valve, inlet × outlet at 90°; centre to inlet, centre to outlet (its branch).'
+  },
+  {
+    code: 'PSV-FL',
+    label: 'Relief valve (PSV), angle body, flanged',
+    category: 'valves',
+    kind: 'valve',
+    endPrep: 'FL',
+    reducing: true,
+    angle: true,
+    ports: 2,
+    description: 'Flanged pressure safety valve, inlet × outlet at 90°; centre to inlet face, centre to outlet face (its branch).'
+  },
+  {
+    code: 'HOSE-FL',
+    label: 'Hose, flanged ends',
+    category: 'specialty',
+    kind: 'valve',
+    endPrep: 'FL',
+    ports: 2,
+    description: 'Flexible hose of fixed length between flanged ends; takeout = half its length.'
+  },
+  {
+    code: 'HOSE-SC',
+    label: 'Hose, threaded ends',
+    category: 'specialty',
+    kind: 'valve',
+    endPrep: 'THD',
+    ports: 2,
+    description: 'Flexible hose of fixed length with threaded ends; takeout = half its length.'
+  },
+  {
+    code: 'PULS-DAMP',
+    label: 'Pulsation dampener',
+    category: 'specialty',
+    kind: 'valve',
+    endPrep: 'FL',
+    ports: 1,
+    description: 'One-port flanged vessel on a pump line; the node is its inlet flange face.'
+  },
+  {
+    code: 'REGULATOR-SC',
+    label: 'Air regulator, threaded',
+    category: 'specialty',
+    kind: 'valve',
+    endPrep: 'THD',
+    ports: 2,
+    description: 'In-line air or gas pressure regulator; takeout = half its length between the pipe ends.'
+  },
+  {
+    code: 'CAMLOCK-ADPT',
+    label: 'Camlock adaptor',
+    category: 'specialty',
+    kind: 'valve',
+    endPrep: 'THD',
+    ports: 2,
+    description: 'Cam-and-groove hose adaptor, threaded to the pipe; its groove end is the open end.'
+  },
+  {
+    code: 'CAMLOCK-CAP',
+    label: 'Camlock cap',
+    category: 'caps-plugs',
+    kind: 'cap',
+    endPrep: 'THD',
+    ports: 1,
+    description: 'Cam-and-groove dust cap closing a camlock adaptor.'
+  },
+  {
+    code: 'CHICAGO-ADPT',
+    label: 'Chicago adapter',
+    category: 'specialty',
+    kind: 'valve',
+    endPrep: 'THD',
+    ports: 2,
+    description: 'Universal (Chicago) air-hose coupling, threaded to the pipe; its lug end is the open end.'
   },
   {
     code: 'RF-SBLND',
@@ -1283,6 +1375,24 @@ export const COMPONENT_TYPES: ComponentType[] = [
     description: 'ASME B16.36 threaded RTJ orifice flange set.'
   },
   {
+    code: 'FLOWMETER-FL',
+    label: 'In-line flowmeter, flanged',
+    category: 'instruments',
+    kind: 'valve',
+    endPrep: 'FL',
+    byOthers: true,
+    ports: 2,
+    description: 'Flanged in-line flow instrument supplied by others; this drawing supplies its joints. Its tag is drawn in a bubble.'
+  },
+  {
+    code: 'ISA-BUBBLE',
+    label: 'Instrument bubble',
+    category: 'instruments',
+    kind: 'annotation',
+    ports: 0,
+    description: 'ISA instrument circle lettered with its tag (PI, FT-101), joined to the pipe.'
+  },
+  {
     code: 'ORIFICE1',
     label: 'Orifice taps, parallel',
     category: 'instruments',
@@ -1377,6 +1487,38 @@ export const COMPONENT_TYPES: ComponentType[] = [
     kind: 'annotation',
     ports: 0,
     description: 'Pipe end or continuation break.',
+  },
+  {
+    code: 'WALL-PEN',
+    label: 'Wall penetration',
+    category: 'annotation',
+    kind: 'annotation',
+    ports: 0,
+    description: 'Wall line and sleeve cloud where the pipe passes through a wall.'
+  },
+  {
+    code: 'INS-LIMIT',
+    label: 'Insulation limit',
+    category: 'annotation',
+    kind: 'annotation',
+    ports: 0,
+    description: 'Where insulation stops: INSUL. toward the start of the pipe, NONE toward its end.'
+  },
+  {
+    code: 'NOZZLE',
+    label: 'Equipment nozzle',
+    category: 'annotation',
+    kind: 'annotation',
+    ports: 0,
+    description: 'Equipment flange and nozzle neck at the pipe end, lettered with the nozzle over the boxed equipment tag.'
+  },
+  {
+    code: 'EQUIP',
+    label: 'Equipment outline',
+    category: 'annotation',
+    kind: 'annotation',
+    ports: 0,
+    description: 'Equipment flange, nozzle neck and outline at the pipe end, lettered with the equipment tag.'
   },
   {
     code: 'GRND-SYM',
