@@ -179,13 +179,14 @@ function locations(ctx: IsoContext, leg: Leg, points: Station[], vents: Set<stri
   const fitting = (p: Station) => !!p.node && workPoint(getNode(ctx.doc, p.node))
   const located = items.filter(({ node }) => node.kind === 'support' ? node.dimensioned !== false : node.kind === 'annotation' && !!node.dimensioned)
   const chain = located.filter(i => !i.node.approximate).map(i => i.station)
+  const hostEnds = (s: Station) => {
+    const run = ctx.doc.runs.find(r => r.id === getNode(ctx.doc, s.node!).associatedRunId)
+    return run ? [run.from, run.to] : []
+  }
+  const onPiece = (p: Station, s: Station) => !!p.node && hostEnds(s).includes(p.node)
   if (chain.length) {
     // The chain starts from a fitting at an end of the first or last support's own pipe piece, else from the leg's end
     // there, else from the nearest fitting across joints, whichever lies nearer its support.
-    const hostEnds = (s: Station) => {
-      const run = ctx.doc.runs.find(r => r.id === getNode(ctx.doc, s.node!).associatedRunId)
-      return run ? [run.from, run.to] : []
-    }
     const first = chain[0], last = chain.at(-1)!
     const before = points.filter(p => p.along < first.along - 0.5).reverse(), after = points.filter(p => p.along > last.along + 0.5)
     const choose = (ok: (p: Station, s: Station) => boolean) => {
@@ -193,12 +194,14 @@ function locations(ctx: IsoContext, leg: Leg, points: Station[], vents: Set<stri
       if (b && (!a || first.along - b.along <= a.along - last.along)) return { anchor: b, order: chain }
       return a ? { anchor: a, order: [...chain].reverse() } : undefined
     }
-    const onPiece = (p: Station, s: Station) => !!p.node && hostEnds(s).includes(p.node)
     const start = choose((p, s) => fitting(p) && onPiece(p, s)) ?? choose((p, s) => !!p.end && onPiece(p, s)) ?? choose(fitting) ?? choose(() => true)
     if (start) start.order.reduce((from, s) => { span(from, s); return s }, start.anchor)
   }
-  const fittings = points.filter(fitting)
-  for (const { station } of located.filter(i => i.node.approximate)) span(nearest(station, fittings.length ? fittings : points), station, true)
+  // An approximate location is given from a fitting at an end of its pipe piece, else the nearest fitting or station.
+  for (const { station } of located.filter(i => i.node.approximate)) {
+    const pool = [points.filter(p => fitting(p) && onPiece(p, station)), points.filter(fitting), points].find(p => p.length)!
+    span(nearest(station, pool), station, true)
+  }
   for (const { node, station } of items) if (vents.has(node.id)) span(nearest(station, points), station)
   return out
 }

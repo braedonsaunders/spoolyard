@@ -94,6 +94,14 @@ test('an approximate location is dimensioned from the nearest fitting and marked
   const wall = attachComponent(d, d.runs[1].id, 'annotation', 0.3);
   Object.assign(wall, { calloutText: 'WALL', dimensioned: true, approximate: true });
   assert.ok(dims(d).includes('900(±)'));
+  // From the fitting on its own pipe piece, not a nearer one across a flanged joint.
+  const broken = doc();
+  const first = run(broken, null, [0, 1000, 0]);
+  const pair = run(broken, first.id, [300, 0, 0]);
+  run(broken, run(broken, pair.id, [3000, 0, 0]).id, [0, -1000, 0]);
+  applyComponent(broken, pair, 'FLG-RFWN', row(broken, 'FLG-RFWN'));
+  Object.assign(attachComponent(broken, broken.runs[2].id, 'annotation', 1000 / 3000), { dimensioned: true, approximate: true });
+  assert.ok(dims(broken).includes('2000(±)'), dims(broken).join(' '));
 });
 
 test('a capped vent off an olet takes no dimensions; a screwed leg that turns does', () => {
