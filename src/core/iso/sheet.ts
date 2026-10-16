@@ -43,8 +43,9 @@ const REVISION_HEADER: Array<[string, number]> = [
   ['DISCIPLINE\nLEAD', 8], ['PROJECT\nLEADER', 9], ['APPROVED\nBY', 8]
 ]
 
-// Bill of materials: column widths and lettering. A row is 34 dots for one line plus 22 per further line; lines that
-// rise above the cap line (quotes, slashes) add 3, like the reference's at-least line spacing. Cells centre their ink.
+// Bill of materials: column widths and lettering. A row is 34 dots for one line plus 22 per further line, and at least
+// two lines tall when the list fits; lines that rise above the cap line (quotes, slashes) add 3, like the reference's
+// at-least line spacing. Cells centre their ink.
 const BOM_COLUMNS = [90, 135, 90, 493.5]
 const BOM_CAP = 13, BOM_ROW = 34, BOM_PITCH = 22, BOM_RAISE = 3, BOM_INSET = 6
 
@@ -191,7 +192,7 @@ export function drawSheet(input: {
   const notesBox: SheetRect = [NOTE_HEADER_X, notesTop, RIGHT, TB]
 
   // Bill of materials: blocks from the top-right corner leftwards; the rows that do not fit continue in the next block.
-  const layoutBom = (f: number, compact = false): BomBlock[] | null => {
+  const layoutBom = (f: number, compact = false, tall = false): BomBlock[] | null => {
     const blockWidth = BOM_COLUMNS.reduce((a, b) => a + b, 0) * f
     // A long list narrows the QTY and ND columns to their contents, as drafted, so descriptions wrap less.
     const fitted = (values: string[], header: string, least: number, most: number) =>
@@ -236,7 +237,7 @@ export function drawSheet(input: {
           cell(String(row.id), widths[0] - 6 * f), cell(up(row.qtyText), widths[1] - 6 * f),
           cell(up(row.nd), widths[2] - 6 * f), cell(up(row.description), widths[3] - (BOM_INSET + 2) * f)
         ]
-        const h = Math.max(...cells.map(c => c.height))
+        const h = Math.max(tall ? (BOM_ROW + BOM_PITCH) * f : 0, ...cells.map(c => c.height))
         if (y + h > bottom) break
         block.rows.push({ row, cells, height: h })
         y += h
@@ -248,7 +249,9 @@ export function drawSheet(input: {
     }
     return blocks
   }
-  let bom: BomBlock[] | null = layoutBom(1)
+  // Issued tables draw single-line rows as tall as two-line ones; a list that then needs a second block keeps them short.
+  const tall = layoutBom(1, false, true)
+  let bom: BomBlock[] | null = tall?.length === 1 ? tall : layoutBom(1)
   if (bom && bom.length > 1) {
     // Before splitting the table, narrow QTY and ND and, if that is nearly enough, letter the table a little smaller.
     for (const f of [1, 0.97, 0.94, 0.91]) {

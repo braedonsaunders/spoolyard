@@ -105,11 +105,14 @@ test('viewport and exclusions stay inside the border and clear of the title bloc
 test('BOM rows grow with wrapped descriptions and centre ID, QTY and ND', () => {
   const long = 'GASKET, SPIRAL WOUND, 304 SS WINDING, GRAPHITE FILLER, CS OUTER RING, 304 SS INNER RING, ASME B16.20, 150 LB, 1/8" THK';
   const f = frame(document(), [row(1), row(2, long), row(3, 'BOLT SET, STUD BOLT, A193 B7 WITH 2 A194 2H NUTS', '5/8"X3 1/4"', '8')]);
-  const ys = [...new Set(f.primitives.filter(p => p.layer === 'BOM' && p.type === 'line' && p.a[1] === p.b[1]).map(p => (p as { a: [number, number] }).a[1]))].sort((a, b) => a - b);
-  const heights = ys.slice(1).map((y, i) => (y - ys[i]) / ky);
+  const rowHeights = (p: Primitive[]) => {
+    const ys = [...new Set(p.filter(q => q.layer === 'BOM' && q.type === 'line' && q.a[1] === q.b[1]).map(q => (q as { a: [number, number] }).a[1]))].sort((a, b) => a - b);
+    return ys.slice(1).map((y, i) => (y - ys[i]) / ky);
+  };
+  const heights = rowHeights(f.primitives);
   assert.equal(Math.round(heights[0]), 34, 'title row');
   assert.equal(Math.round(heights[1]), 34, 'header row');
-  assert.equal(Math.round(heights[2]), 34, 'single-line row');
+  assert.equal(Math.round(heights[2]), 56, 'a single-line row is as tall as a two-line one');
   assert.ok(heights[3] > 76, 'three-line description row');
   assert.ok(heights[4] >= 56, 'two-line ND row');
   const desc = texts(f.primitives, 'BOM').filter(t => t.anchor !== 'middle');
@@ -117,6 +120,10 @@ test('BOM rows grow with wrapped descriptions and centre ID, QTY and ND', () => 
   assert.ok(desc.length >= 5 && desc.every(t => t.p[0] + measureText(t.text, t.size) < right), 'descriptions stay in their column');
   assert.deepEqual(texts(f.primitives, 'BOM').filter(t => t.text === '5/8"X3' || t.text === '1/4"').map(t => t.anchor), ['middle', 'middle']);
   assert.ok(texts(f.primitives, 'BOM').every(t => t.text === t.text.toUpperCase()));
+  // A list that would need a second block at that height keeps its single-line rows one line tall instead.
+  const short = frame(document(), Array.from({ length: 24 }, (_, i) => row(i + 1)));
+  assert.equal(texts(short.primitives, 'BOM').filter(t => t.text === 'BILL OF MATERIALS').length, 1);
+  assert.deepEqual([...new Set(rowHeights(short.primitives).map(Math.round))], [34]);
 });
 
 test('a long BOM continues in another block instead of clipping', () => {
