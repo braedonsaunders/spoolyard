@@ -163,7 +163,7 @@ test('no lettering overprints other lettering: two-line support labels, rolling 
   appendRun(doc, b.id, [1500, 0, 0], 'CS40', 4, 'SP-1', 'L-1');
   for (const [i, t] of [0.2, 0.3, 0.4].entries()) {
     const s = attachComponent(doc, doc.runs[0].id, 'support', t);
-    Object.assign(s, { component: 'U-BOLT', calloutText: `U-BOLT\n(PS-${i + 1})*` });
+    Object.assign(s, { component: 'U-BOLT', calloutText: `U-BOLT\nSUP-${i + 1}` });
   }
   doc.nodes[0].continuation = { text: "CONT'D ON\nDWG# X-1", coordinates: true };
   const first = draw(doc).positions.get(doc.nodes[0].id)!;
