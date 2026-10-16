@@ -186,6 +186,21 @@ test('weld numbers sit in balloons on leaders to their welds', () => {
   assert.ok(p.filter(q => q.type === 'line' && q.layer === 'LEADER').length >= 2);
 });
 
+test('flanged joints carry the gasket hache mark, and the next spool is drawn thin beyond a shared point', () => {
+  const doc = sheet(), { mid, end } = straight(doc);
+  applyComponent(doc, mid, 'FLG-RFWN');
+  const hache = owned(draw(doc), mid.id).filter(q => q.type === 'line' && q.weight === 0.5);
+  assert.equal(hache.length, 3);
+  // The line runs on into spool S2 through a gate valve; S1 draws it thin, untagged, with no break.
+  const valve = appendRun(doc, end.id, [inch(24), 0, 0], 'CS40', 2, 'S2', 'L1');
+  appendRun(doc, valve.id, [inch(24), 0, 0], 'CS40', 2, 'S2', 'L1');
+  applyComponent(doc, end, 'FLG-RFWN'); end.continuation = { text: "CONT'D ON\nDWG# X-2" };
+  applyComponent(doc, valve, 'GATE-FL');
+  const p = draw(doc), ghost = owned(p, valve.id);
+  assert.ok(ghost.length > 0 && ghost.every(q => q.type !== 'text' && (q.type === 'line' || q.type === 'polyline' || q.type === 'circle') && (q.weight ?? 1) <= 0.6));
+  assert.equal(owned(p, end.id).some(q => q.type === 'polyline' && q.points.length === 13), false, 'no S-break where the next spool is drawn');
+});
+
 test('centreline elevations at every change of level are a style option, off by default', () => {
   const doc = sheet();
   const elbow = appendRun(doc, null, [inch(30), 0, 0], 'CS40', 2, 'S1', 'L1');

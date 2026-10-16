@@ -186,7 +186,11 @@ export function drawPipes(ctx: IsoContext) {
       .sort((a, b) => a.cost - b.cost)[0]
     arrowhead(best.p, flowDirection(g)!, g.run.id)
   }
+  // Where the line runs on into another spool of this drawing, that spool's next components are drawn beyond the
+  // shared point in place of the continuation break.
+  const shared = new Set(ctx.nodes.filter(n => ctx.pos.has(n.id) && connected(ctx.doc, n.id).some(r => !ctx.runs.includes(r))).map(n => n.id))
   for (const node of ctx.nodes) drawSymbol(ctx, node)
+  for (const id of shared) ghosts(getNode(ctx.doc, id))
 
   function weld(p: Point, field: boolean, owner: string) {
     if (!field) { circle(p, SIZE.weld, 'WELD', owner, true); return }
@@ -236,7 +240,7 @@ export function drawPipes(ctx: IsoContext) {
       case 'end': {
         const fitted = equipment.get(node.id)
         if (fitted) equipmentAt(fitted, at, scale2(along, -1), across, 0)
-        else if (node.continuation && !/OPEN END|CLOSED/i.test(node.continuation.text)) continuation(at, scale2(along, -1), across, owner, 0)
+        else if (node.continuation && !shared.has(node.id) && !/OPEN END|CLOSED/i.test(node.continuation.text)) continuation(at, scale2(along, -1), across, owner, 0)
         return
       }
       case 'valve': return valve(node, code, at, along, across, edges)
@@ -248,13 +252,14 @@ export function drawPipes(ctx: IsoContext) {
           return
         }
         const pipes = edges.filter(r => !r.connector)
-        if (pipes.length === 2) flangePair(at, along, across, owner, [-1, 1])
+        if (pipes.length === 2) { flangePair(at, along, across, owner, [-1, 1]); hache(f, 0, owner) }
         else {
           flangePair(at, along, across, owner, [1], 0)
           // The flange it bolts to, and the pipe beyond on the next drawing, are drawn thin; equipment is drawn as such.
           const fitted = equipment.get(node.id), out = scale2(along, -1)
+          if (fitted || node.continuation || shared.has(node.id)) hache(f, -0.6, owner)
           if (fitted) equipmentAt(fitted, at, out, across, 1.2)
-          else if (node.continuation) {
+          else if (node.continuation && !shared.has(node.id)) {
             const fo = frame(at, out, across), F = SIZE.flange, t = SIZE.flangeThickness
             poly([fo(1.2, -F), fo(1.2 + t, -F), fo(1.2 + t, F), fo(1.2, F)], 'SYMBOL', owner, { closed: true, weight: 0.6 })
             if (!/OPEN END|CLOSED/i.test(node.continuation.text)) continuation(at, out, across, owner, 1.2 + t)
@@ -378,7 +383,44 @@ export function drawPipes(ctx: IsoContext) {
   /** A flanged body's own flanges, a gap off each end. */
   function flanges(f: (x: number, y: number) => Point, h: number, owner: string) {
     const F = SIZE.flange, t = SIZE.flangeThickness, g = h + SIZE.valveGap
-    for (const s of [-1, 1]) poly([f(s * g, -F), f(s * (g + t), -F), f(s * (g + t), F), f(s * g, F)], 'SYMBOL', owner, { closed: true })
+    for (const s of [-1, 1]) {
+      poly([f(s * g, -F), f(s * (g + t), -F), f(s * (g + t), F), f(s * g, F)], 'SYMBOL', owner, { closed: true })
+      hache(f, s * (g + t + 0.8), owner)
+    }
+  }
+  /** The gasket's hache mark: a broken line across the joint at the gasket, beside the flange faces. */
+  function hache(f: (x: number, y: number) => Point, x: number, owner: string) {
+    const F = SIZE.flange * 1.15
+    for (const [a, b] of [[-F, -F * 0.55], [-F * 0.25, F * 0.25], [F * 0.55, F]]) line(f(x, a), f(x, b), 'SYMBOL', owner, 0.5, false)
+  }
+  /** Up to three components of the next spool beyond a shared point, thin, with dashed pipe and no tags. */
+  function ghosts(start: PipeNode) {
+    const placed: string[] = [], walked: PipeRun[] = []
+    const queue: Array<[PipeNode, PipeRun]> = connected(ctx.doc, start.id).filter(r => !ctx.runs.includes(r)).map(r => [start, r])
+    let count = 0
+    while (queue.length && count < 3) {
+      const [from, run] = queue.shift()!, far = getNode(ctx.doc, run.from === from.id ? run.to : run.from)
+      if (ctx.pos.has(far.id) && !placed.includes(far.id)) continue
+      const d = far.position.map((v, i) => v - from.position[i]) as Vec3, l = Math.hypot(...d) || 1, page = unit2(ctx.axis(d))
+      if (len2(page) < 0.5) continue
+      ctx.pos.set(far.id, add2(ctx.pos.get(from.id)!, scale2(page, run.connector ? 26 : 44)))
+      placed.push(far.id); walked.push(run)
+      const a = ctx.pos.get(run.from)!, b = ctx.pos.get(run.to)!, ab = sub2(b, a)
+      ctx.geometry.set(run.id, { run, a, b, dir: unit2(ab), length: len2(ab), dir3: d.map(v => v / l * (run.from === from.id ? 1 : -1)) as Vec3 })
+      // Flanges come with their joint; they do not count as the next components.
+      if (!['end', 'weld', 'flange', 'gasket', 'bolt'].includes(far.kind)) count++
+      for (const next of connected(ctx.doc, far.id)) if (next !== run && !ctx.runs.includes(next) && !walked.includes(next)) queue.push([far, next])
+    }
+    for (const id of placed) ctx.extent.set(id, symbolExtent(ctx, getNode(ctx.doc, id)))
+    const mark = ctx.out.length
+    for (const run of walked) {
+      const g = ctx.geometry.get(run.id)!, ea = ctx.extent.get(run.from) ?? 0, eb = ctx.extent.get(run.to) ?? 0
+      for (let x = ea; x < g.length - eb; x += 6) line(add2(g.a, scale2(g.dir, x)), add2(g.a, scale2(g.dir, Math.min(x + 3.5, g.length - eb))), 'SYMBOL', start.id, 0.6, false)
+    }
+    for (const id of placed) { const n = getNode(ctx.doc, id); if (n.kind !== 'end') drawSymbol(ctx, n) }
+    for (const p of ctx.out.slice(mark)) if (p.type === 'line' || p.type === 'polyline' || p.type === 'circle') p.weight = Math.min(p.weight ?? 0.6, 0.6)
+    for (const id of placed) { ctx.pos.delete(id); ctx.extent.delete(id) }
+    for (const run of walked) ctx.geometry.delete(run.id)
   }
   /** A hose: corrugated between flanged ends, or a single wavy line between screwed ends. */
   function hose(node: PipeNode, code: string, at: Point, along: Point, across: Point) {
