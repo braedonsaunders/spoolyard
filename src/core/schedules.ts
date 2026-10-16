@@ -139,7 +139,7 @@ export function cutSchedule(doc: IsoDocument): CutRow[] {
       return {
         spool, drawing: sheetTitle(doc, spool), item: row.id, piece: i + 1, pieces: runs.length, run,
         overall: v.overall - a - b, takeouts: [v.takeouts[0] - a, v.takeouts[1] - b], gaps: v.gaps, cut: v.cut,
-        ends: [pipeEnd(doc, run, 0), pipeEnd(doc, run, 1)], uncut: !/ - CUT TO /.test(row.description)
+        ends: [pipeEnd(doc, run, 0), pipeEnd(doc, run, 1)], uncut: !/ - CUT TO /.test(row.calculated?.description ?? row.description)
       }
     })
   }))
