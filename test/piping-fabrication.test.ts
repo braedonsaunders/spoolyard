@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
-import { appendRun, applyComponent, attachComponent, bom, clone, getNode, newIso, runResult, validateIso, welds, type IsoDocument, type PipeSpec } from '../src/core/model.ts';
+import { appendRun, applyComponent, attachComponent, bom, clone, getNode, newIso, parseIsoJson, runResult, validateIso, welds, type IsoDocument, type PipeSpec } from '../src/core/model.ts';
+import { sheetMaterials } from '../src/core/material-list.ts';
 import { standardRow } from '../src/core/standards.ts';
 import { COMPONENT_TYPES } from '../src/core/components.ts';
 import { placeComponentOnPipe } from '../src/core/component-position.ts';
@@ -123,6 +124,26 @@ test('socket-weld and threaded pipe drawn straight on is joined by a coupling, n
   const weld = appendRun(bw, null, [300, 0, 0], 'A', 4, 'SP', 'L');
   appendRun(bw, weld.id, [300, 0, 0], 'A', 4, 'SP', 'L');
   assert.equal(weld.kind, 'weld');
+});
+
+test('an eccentric reducer carries its flat side into the BOM, and a missing or impossible flat side is reported', () => {
+  const doc = newIso(); doc.specs = [clone(specA)];
+  appendRun(doc, null, [1000, 0, 0], 'A', 4, 'SP', 'L');
+  const reducer = placeComponentOnPipe(doc, doc.runs[0].id, COMPONENT_TYPES.find(t => t.code === 'E-RED')!, 0.5, row(doc, 'E-RED', 4));
+  assert.match(validateIso(doc).join(), /has no flat side/);
+  reducer.flatSide = 'top';
+  assert.deepEqual(validateIso(doc), []);
+  assert.match(sheetMaterials(doc, 'SP').find(r => r.category === 'reducer')!.description, /, FOT$/);
+  reducer.flatSide = 'bottom';
+  assert.match(bom(doc).find(r => /ECC/.test(r.description))!.description, /, FOB$/);
+  reducer.flatSide = 'east';
+  assert.match(validateIso(doc).join(), /cannot have its flat on the east/);
+  reducer.flatSide = 'north';
+  assert.deepEqual(validateIso(doc), []);
+  assert.match(sheetMaterials(doc, 'SP').find(r => r.category === 'reducer')!.description, /, FLAT NORTH$/);
+  applyComponent(doc, reducer, 'C-RED', row(doc, 'C-RED', 4));
+  assert.match(validateIso(doc).join(), /only an eccentric reducer has one/);
+  assert.throws(() => parseIsoJson(JSON.stringify({ ...doc, nodes: doc.nodes.map(n => n.id === reducer.id ? { ...n, flatSide: 'up' } : n) })), /callout/);
 });
 
 test('a slip-on flange sets the pipe back a wall and 1/16" from its face', () => {

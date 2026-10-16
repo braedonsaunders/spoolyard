@@ -143,7 +143,16 @@ export interface PipeNode {
    * the dimension.
    */
   jointSupply?: { gasket: boolean; bolts: boolean; flange?: boolean; mate?: 'flange' | 'lug'; measuredTo?: 'mate' | 'flange' }
+  /** The side an eccentric reducer's flat faces: top (FOT) or bottom (FOB) on a level line, a compass side on a riser. */
+  flatSide?: FlatSide
 }
+export type FlatSide = 'top' | 'bottom' | 'north' | 'south' | 'east' | 'west'
+const FLAT_DIRECTION: Record<FlatSide, Vec3> = { top: [0, 0, 1], bottom: [0, 0, -1], north: [0, 1, 0], south: [0, -1, 0], east: [1, 0, 0], west: [-1, 0, 0] }
+/** Eccentric reducers and swages have a flat side. */
+export const isEccentric = (code?: string) => !!code && /^E-(RED|SWAGE|SWG)$/.test(code)
+/** Bill-of-materials suffix for an eccentric reducer's flat side: FOT, FOB or FLAT NORTH. */
+export const flatSideText = (n: PipeNode) =>
+  !n.flatSide ? '' : n.flatSide === 'top' ? 'FOT' : n.flatSide === 'bottom' ? 'FOB' : `FLAT ${n.flatSide.toUpperCase()}`
 export interface PortFlange {
   /** Mating flange component code, or 'NONE' when the mate is not supplied. */
   component?: string
@@ -1125,6 +1134,14 @@ export function validateIso(doc: IsoDocument): string[] {
       connected(doc, n.id)[0].nps === connected(doc, n.id)[1].nps
     )
       issues.push(`${at}the ${name} joins two pipes of the same size. Change one pipe size or remove the reducer.`)
+    const eccentric = isEccentric(component?.code)
+    if (n.flatSide && !eccentric) issues.push(`${at}the ${name} is given a flat side, but only an eccentric reducer has one. Clear it.`)
+    else if (eccentric && degree === 2) {
+      const axis = sub(getNode(doc, edges[0].from === n.id ? edges[0].to : edges[0].from).position, n.position), l = length(axis) || 1
+      if (!n.flatSide) issues.push(`${at}the ${name} has no flat side. Choose flat on top (FOT) or flat on bottom (FOB), or on a riser the side the flat faces.`)
+      else if (Math.abs(axis.reduce((s, v, i) => s + v * FLAT_DIRECTION[n.flatSide!][i], 0)) / l > 0.1)
+        issues.push(`${at}the ${name} cannot have its flat on the ${n.flatSide}: that is along the pipe. Choose a side across the pipe.`)
+    }
   }
   for (const joint of flangedJoints(doc))
     if (joint.boltsUnknown)
@@ -1218,7 +1235,7 @@ export function bom(
       area = n.areaM2 ?? f?.areaM2
     addRow(
       {
-        description: n.description ?? f?.description ?? COMPONENT_TYPES.find(t => t.code === code)?.label ?? n.kind,
+        description: [n.description ?? f?.description ?? COMPONENT_TYPES.find(t => t.code === code)?.label ?? n.kind, flatSideText(n)].filter(Boolean).join(', '),
         spec: s.id,
         nps: f?.nps ?? Math.max(...edges.map(r => r.nps), edge.nps),
         qty,
@@ -1495,6 +1512,7 @@ export function parseIsoJson(raw: string): IsoDocument {
         (n.tiePoint.label != null && !isString(n.tiePoint.label, 120)))) ||
       (n.operator != null && !isString(n.operator, 120)) ||
       (n.calloutText != null && !isString(n.calloutText, 300)) ||
+      (n.flatSide != null && !Object.keys(FLAT_DIRECTION).includes(n.flatSide)) ||
       (n.jointSupply != null && (!isPlain(n.jointSupply) ||
         typeof n.jointSupply.gasket !== 'boolean' || typeof n.jointSupply.bolts !== 'boolean' ||
         (n.jointSupply.flange != null && typeof n.jointSupply.flange !== 'boolean') ||
