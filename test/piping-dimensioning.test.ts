@@ -290,3 +290,18 @@ test('drafted face dimensions follow model edits and preserve fabrication geomet
   assert.deepEqual(d.sheets!['SP-1'].dimensions, []);
   assert.doesNotThrow(() => parseIsoJson(JSON.stringify(d)));
 });
+
+test('drafted end-flange faces resolve either stored coordinate convention', () => {
+  const d = doc(), end = run(d, null, [1000, 0, 0]);
+  applyComponent(d, end, 'FLG-RFWN', row(d, 'FLG-RFWN'));
+  d.sheets = { 'SP-1': { dimensions: [{ from: { nodeId: d.runs[0].from },
+    to: { nodeId: end.id, runId: d.runs[0].id, face: 'body' }, axis: [0,0,1], offset: 45 }] } };
+  assert.deepEqual(dims(d), ['1000']);
+  d.sheets['SP-1'].dimensions![0].to.face = 'mate';
+  assert.deepEqual(dims(d), ['1003']);
+  end.jointSupply = { measuredTo: 'mate', gasket: true, bolts: true };
+  assert.deepEqual(dims(d), ['1000']);
+  d.sheets['SP-1'].dimensions![0].to.face = 'body';
+  assert.deepEqual(dims(d), ['997']);
+  assert.deepEqual(end.position, [1000,0,0]);
+});

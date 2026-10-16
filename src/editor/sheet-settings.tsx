@@ -680,7 +680,11 @@ export function SheetSettings({
                 })}
                 {own.dimensions && <button onClick={() => edit(d => {
                   const run = d.runs.find(r => r.spool === s);
-                  if (run) d.sheets![s].dimensions!.push({ from: { nodeId: run.from }, to: { nodeId: run.to }, axis: [0,0,1], offset: 43.5 });
+                  if (run) {
+                    const from = d.nodes.find(n => n.id === run.from)!.position, to = d.nodes.find(n => n.id === run.to)!.position;
+                    const vertical = Math.abs(to[2] - from[2]) > Math.hypot(to[0] - from[0], to[1] - from[1]);
+                    d.sheets![s].dimensions!.push({ from: { nodeId: run.from }, to: { nodeId: run.to }, axis: vertical ? [1,0,0] : [0,0,1], offset: 43.5 });
+                  }
                 })}>Add dimension</button>}
               </details>
             </div>

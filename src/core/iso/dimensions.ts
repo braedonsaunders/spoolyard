@@ -1,7 +1,7 @@
 import type { Point } from '../drawing'
 import { draftLength, angleText } from '../format'
 import { connected, distance, getNode, length, runResult, sub, takeout, type DimensionAnchor, type PipeNode, type PipeRun, type Vec3 } from '../model'
-import { nodeCode } from '../joints'
+import { continuationPoint, nodeCode } from '../joints'
 import { SIZE, emitters, type IsoContext } from './context'
 import { measureText } from '../stroke-font'
 import { segmentPoly, textPoly, type Poly } from './placement'
@@ -265,6 +265,12 @@ export function drawDimensions(ctx: IsoContext) {
       const run = ctx.runs.find(r => r.id === a.runId), g = run && ctx.geometry.get(run.id)
       if (!run || !g) return
       const far = getNode(ctx.doc, run.from === n.id ? run.to : run.from), out = unit3(sub(far.position, n.position))
+      if (n.kind === 'flange' && connected(ctx.doc, n.id).length === 1) {
+        const model = continuationPoint(ctx.doc, { ...n, continuation: { text: '', coordinateFace: a.face === 'mate' ? 'mate' : 'flange' } })
+        const dir = run.from === n.id ? g.dir : scale2(g.dir, -1), delta = sub(model, n.position)
+        const shift = delta.reduce((s, v, i) => s + v * out[i], 0)
+        return { model, page: add2(page, scale2(dir, Math.sign(shift) * Math.min(SIZE.flangeThickness, Math.abs(shift)))), along: 0, node: n.id }
+      }
       const joint = ctx.joints.find(j => j.nodeId === n.id && j.kind === 'component-port' && j.runIds.includes(run.id))
       const body = joint?.position ?? n.position.map((v, i) => v + out[i] * (n.kind === 'flange' || n.kind === 'end' ? 0 : takeout(ctx.doc, n, run.id) ?? 0)) as Vec3
       const gap = a.face === 'mate' ? joint?.gasket?.thickness ?? 0 : 0
