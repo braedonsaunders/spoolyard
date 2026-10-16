@@ -196,10 +196,15 @@ export function drawAnnotations(ctx: IsoContext) {
     return add2(at, scale2(out, Math.max(0, (ctx.extent.get(joint.nodeId) ?? 0) - SIZE.flangeThickness / 2)))
   }
   // Nominal size labels: the first pipe of each size, again where the size changes along a straight, and on every
-  // branch, off a tee or an olet.
+  // branch of another size than its header, off a reducing tee or an olet. A screwed vent or drain made only of its
+  // fittings is sized by its olet.
   const sized = new Set<string>()
   for (const leg of sheetLegs(ctx)) {
-    const branchAt = (id: string, run: PipeRun) => { const n = getNode(ctx.doc, id); return n.kind === 'olet' || n.kind === 'tee' && n.branchEdgeId === run.id }
+    const branchAt = (id: string, run: PipeRun) => {
+      const n = getNode(ctx.doc, id)
+      return n.kind === 'olet' || n.kind === 'tee' && n.branchEdgeId === run.id && connected(ctx.doc, id).some(r => r.id !== run.id && r.nps !== run.nps)
+    }
+    if ([leg.nodes[0], leg.nodes.at(-1)!].some(id => getNode(ctx.doc, id).kind === 'olet') && leg.runs.every(r => r.connector)) continue
     const branch = branchAt(leg.nodes[0], leg.runs[0]) || branchAt(leg.nodes.at(-1)!, leg.runs.at(-1)!)
     leg.runs.forEach((run, i) => {
       const changed = i > 0 && run.nps !== leg.runs[i - 1].nps
@@ -209,6 +214,8 @@ export function drawAnnotations(ctx: IsoContext) {
       sized.add(key)
       // Labelled on the first pipe of the stretch at this size, past any fittings welded together.
       const stretch = leg.runs.slice(i).filter((_, k, all) => all.slice(0, k + 1).every(x => x.nps === run.nps))
+      // A size change with no pipe beyond it, a bushing into an end, is sized by its reducer alone.
+      if (changed && stretch.every(r => r.connector)) return
       const g = ctx.geometry.get((stretch.find(r => !r.connector) ?? run).id)!
       callout(lerp2(g.a, g.b, 0.25), [`${sizeText(run.nps)} NS`], g.run.id, { head: false })
     })
