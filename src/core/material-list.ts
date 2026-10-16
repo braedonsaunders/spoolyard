@@ -7,11 +7,12 @@ export type MaterialCategory =
   | 'pipe' | 'cap' | 'nipple' | 'bend' | 'elbow90' | 'elbow45' | 'stub' | 'reducer' | 'tee' | 'olet' | 'regulator'
   | 'reducing-coupling' | 'union' | 'flange' | 'bolt' | 'gasket' | 'valve' | 'other'
 /**
- * Issued order: pipe; fittings by type (caps; nipples and full couplings; bends; elbows; stub ends; reducers; tees and
- * laterals; olets; regulators; reducing couplings; unions); flanges, bolting, gaskets, valves; specialty items last.
+ * Issued order (AutoCAD Plant 3D groups): pipe; fittings by type (caps; nipples and full couplings; bends; elbows; stub
+ * ends; reducers; tees and laterals; regulators; reducing couplings; unions); olets; flanges, bolting, gaskets, valves;
+ * specialty items last.
  */
-const ORDER: MaterialCategory[] = ['pipe', 'cap', 'nipple', 'bend', 'elbow90', 'elbow45', 'stub', 'reducer', 'tee', 'olet', 'regulator',
-  'reducing-coupling', 'union', 'flange', 'bolt', 'gasket', 'valve', 'other']
+const ORDER: MaterialCategory[] = ['pipe', 'cap', 'nipple', 'bend', 'elbow90', 'elbow45', 'stub', 'reducer', 'tee', 'regulator',
+  'reducing-coupling', 'union', 'olet', 'flange', 'bolt', 'gasket', 'valve', 'other']
 /** 90° and 45° elbows share a place in the list and follow the order they appear along the line. */
 const rank = (c: MaterialCategory) => c === 'elbow45' ? ORDER.indexOf('elbow90') : ORDER.indexOf(c)
 const FLANGE_ORDER = [/SO$/, /WN$/, /LJ$/, /SW$/, /SC$/, /BL$/]

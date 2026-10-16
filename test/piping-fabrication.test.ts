@@ -146,6 +146,18 @@ test('an eccentric reducer carries its flat side into the BOM, and a missing or 
   assert.throws(() => parseIsoJson(JSON.stringify({ ...doc, nodes: doc.nodes.map(n => n.id === reducer.id ? { ...n, flatSide: 'up' } : n) })), /callout/);
 });
 
+test('olets list as their own group after every fitting, before the flanges', () => {
+  const doc = newIso(); doc.specs = [clone(specA)];
+  appendRun(doc, null, [2000, 0, 0], 'A', 2, 'SP', 'L');
+  placeComponentOnPipe(doc, doc.runs[0].id, COMPONENT_TYPES.find(t => t.code === 'FLG-RFWN')!, 0);
+  const tol = attachComponent(doc, doc.runs[0].id, 'olet', 0.5);
+  applyComponent(doc, tol, 'TOL', row(doc, 'TOL', 0.75));
+  appendRun(doc, tol.id, [0, 0, 300], 'A', 0.75, 'SP', 'L', 'THD');
+  placeComponentOnPipe(doc, doc.runs[1].id, COMPONENT_TYPES.find(t => t.code === 'UNION-SC')!, 0.5, row(doc, 'UNION-SC', 0.75));
+  const order = sheetMaterials(doc, 'SP').map(r => r.category).filter(c => c !== 'pipe');
+  assert.deepEqual(order.slice(0, 3), ['union', 'olet', 'flange']);
+});
+
 test('a slip-on flange sets the pipe back a wall and 1/16" from its face', () => {
   assert.equal(standardRow('FLG-RFSO', 2, '150#', undefined, 'STD')!.takeout, 3.91 + 1.59);
   assert.equal(standardRow('FLG-RFSO', 2, '150#', undefined, '10S')!.takeout, 2.77 + 1.59);
