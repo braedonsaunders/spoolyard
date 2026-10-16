@@ -39,6 +39,8 @@ export function readIsometric(content: string): IsoDocument {
 /** AutoCAD's standard lineweights, in 1/100 mm. */
 const LINEWEIGHTS = [0, 5, 9, 13, 15, 18, 20, 25, 30, 35, 40, 50, 53, 60, 70, 80, 90, 100, 106, 120, 140, 158, 200, 211];
 const PAPER_HEIGHT_MM = { letter: 215.9, tabloid: 279.4, a3: 297, a4: 210 } as const;
+/** DXF $INSUNITS codes. */
+const INSUNITS = { imperial: 1, mm: 4 } as const;
 /** Drafting symbols as TEXT control codes, and the typographic marks the SHX fonts lack as the stroke lettering draws them. */
 const DXF_CHARS: Record<string, string> = {
   "°": "%%d", "±": "%%p", "⌀": "%%c", "′": "'", "’": "'", "‘": "'", "″": '"', "“": '"', "”": '"', "–": "-", "—": "-",
@@ -53,7 +55,11 @@ const dxfText = (s: string) =>
     })
     .join("");
 
-/** Editable AutoCAD R2000 primitives of the sheet (or `drawing`) plus the same semantic XRECORD as legacy CAD. */
+/**
+ * Editable AutoCAD R2000 primitives of the sheet (or `drawing`) plus the same semantic XRECORD as legacy CAD. The sheet
+ * is drawn at 1:1 on its paper, in inches for imperial drawings and millimetres for metric ones, with its lower-left
+ * corner at the origin, so it plots and references at full size. Dimensions are lines and text, as drawn.
+ */
 export function isometricDxf(doc: IsoDocument, drawing: Drawing = createDrawing(doc)): string {
   const out: string[] = [],
     put = (...pairs: Array<string | number>) => {
@@ -61,6 +67,13 @@ export function isometricDxf(doc: IsoDocument, drawing: Drawing = createDrawing(
     };
   let handle = 0x100;
   const next = () => (handle++).toString(16).toUpperCase();
+  // Sheet units to paper units, and the sheet's y-down points to the drawing's y-up plane.
+  const paperMm = PAPER_HEIGHT_MM[doc.paper ?? "tabloid"], k = paperMm / (doc.units === "imperial" ? 25.4 : 1) / drawing.height,
+    paper = (v: number) => Number((v * k).toFixed(6)),
+    X = (x: number) => paper(x),
+    Y = (y: number) => paper(drawing.height - y),
+    width = paper(drawing.width),
+    height = paper(drawing.height);
   put(
     0,
     "SECTION",
@@ -73,7 +86,39 @@ export function isometricDxf(doc: IsoDocument, drawing: Drawing = createDrawing(
     9,
     "$INSUNITS",
     70,
-    4,
+    INSUNITS[doc.units],
+    9,
+    "$MEASUREMENT",
+    70,
+    doc.units === "imperial" ? 0 : 1,
+    9,
+    "$LIMMIN",
+    10,
+    0,
+    20,
+    0,
+    9,
+    "$LIMMAX",
+    10,
+    width,
+    20,
+    height,
+    9,
+    "$EXTMIN",
+    10,
+    0,
+    20,
+    0,
+    30,
+    0,
+    9,
+    "$EXTMAX",
+    10,
+    width,
+    20,
+    height,
+    30,
+    0,
     9,
     "$LWDISPLAY",
     290,
@@ -88,7 +133,7 @@ export function isometricDxf(doc: IsoDocument, drawing: Drawing = createDrawing(
   const cad = drawing.lettering === "cad",
     layers = [...new Set([...drawing.primitives.map((p) => p.layer), ...(drawing.primitives.some((p) => p.type === "image") ? ["TITLE"] : [])])];
   // Sheet units to the nearest standard lineweight on the printed paper.
-  const mm = PAPER_HEIGHT_MM[doc.paper ?? "tabloid"] / drawing.height,
+  const mm = paperMm / drawing.height,
     lineweight = (w: number) =>
       LINEWEIGHTS.reduce((best, v) => (Math.abs(v - w * mm * 100) < Math.abs(best - w * mm * 100) ? v : best));
   put(0, "SECTION", 2, "TABLES", 0, "TABLE", 2, "LAYER", 5, next(), 100, "AcDbSymbolTable", 70, layers.length);
@@ -113,20 +158,20 @@ export function isometricDxf(doc: IsoDocument, drawing: Drawing = createDrawing(
     );
   put(0, "ENDTAB", 0, "TABLE", 2, "STYLE", 5, next(), 100, "AcDbSymbolTable", 70, 2);
   // ROMANS at width factor 0.8 is the single-stroke lettering every other output draws.
-  for (const [name, font, width] of [["STANDARD", "txt", 1], ["ROMANS", "romans.shx", ROMANS_WIDTH_FACTOR]] as const)
-    put(0, "STYLE", 5, next(), 100, "AcDbSymbolTableRecord", 100, "AcDbTextStyleTableRecord", 2, name, 70, 0, 40, 0, 41, width, 50, 0, 71, 0, 42, 2.5, 3, font, 4, "");
+  for (const [name, font, factor] of [["STANDARD", "txt", 1], ["ROMANS", "romans.shx", ROMANS_WIDTH_FACTOR]] as const)
+    put(0, "STYLE", 5, next(), 100, "AcDbSymbolTableRecord", 100, "AcDbTextStyleTableRecord", 2, name, 70, 0, 40, 0, 41, factor, 50, 0, 71, 0, 42, 2.5, 3, font, 4, "");
   put(0, "ENDTAB", 0, "ENDSEC", 0, "SECTION", 2, "ENTITIES");
   const entity = (type: string, layer: string, weight?: number) =>
     put(0, type, 5, next(), 100, "AcDbEntity", 8, "BW-ISO-" + layer, ...(weight == null ? [] : [370, lineweight(weight)]));
   const polyline = (points: Point[], closed: boolean, layer: string, weight: number) => {
     entity("LWPOLYLINE", layer, weight);
     put(100, "AcDbPolyline", 90, points.length, 70, closed ? 1 : 0);
-    for (const q of points) put(10, q[0], 20, -q[1]);
+    for (const q of points) put(10, X(q[0]), 20, Y(q[1]));
   };
   const hatch = (layer: string, boundary: Array<string | number>, seed: Point) => {
     entity("HATCH", layer);
     put(100, "AcDbHatch", 10, 0, 20, 0, 30, 0, 210, 0, 220, 0, 230, 1, 2, "SOLID", 70, 1, 71, 0, 91, 1, ...boundary);
-    put(97, 0, 75, 0, 76, 1, 98, 1, 10, seed[0], 20, -seed[1]);
+    put(97, 0, 75, 0, 76, 1, 98, 1, 10, X(seed[0]), 20, Y(seed[1]));
   };
   /** One TEXT per line, stacked and slanted like the stroke lettering; middle/end text keeps its anchor as the alignment point. */
   const text = (at: Point, value: string, size: number, layer: string, rotation = 0, oblique = 0, anchor = "start", factor = 1) => {
@@ -143,31 +188,31 @@ export function isometricDxf(doc: IsoDocument, drawing: Drawing = createDrawing(
         width = measureText(line, size, (cad ? 1 : 1 / ROMANS_WIDTH_FACTOR) * factor) * shift,
         start: Point = [base[0] - width * cos, base[1] + width * sin];
       entity("TEXT", layer, Math.max(0.35, size * 0.1));
-      put(100, "AcDbText", 10, start[0], 20, -start[1], 30, 0, 40, size, 1, content);
+      put(100, "AcDbText", 10, X(start[0]), 20, Y(start[1]), 30, 0, 40, paper(size), 1, content);
       if (rotation) put(50, ((rotation % 360) + 360) % 360);
       if (cad || factor !== 1) put(41, (cad ? ROMANS_WIDTH_FACTOR : 1) * factor);
       if (oblique) put(51, Math.max(-85, Math.min(85, oblique)));
       put(7, cad ? "ROMANS" : "STANDARD");
-      if (shift) put(72, shift === 1 ? 2 : 1, 11, base[0], 21, -base[1], 31, 0);
+      if (shift) put(72, shift === 1 ? 2 : 1, 11, X(base[0]), 21, Y(base[1]), 31, 0);
       put(100, "AcDbText", 73, 0);
     });
   };
   for (const p of drawing.primitives) {
     if (p.type === "line") {
       entity("LINE", p.layer, weightOf(p));
-      put(100, "AcDbLine", 10, p.a[0], 20, -p.a[1], 30, 0, 11, p.b[0], 21, -p.b[1], 31, 0);
+      put(100, "AcDbLine", 10, X(p.a[0]), 20, Y(p.a[1]), 30, 0, 11, X(p.b[0]), 21, Y(p.b[1]), 31, 0);
     } else if (p.type === "polyline") {
       if (p.points.length < 2) continue;
       polyline(p.points, !!(p.closed || p.fill), p.layer, weightOf(p));
       if (p.fill && p.points.length > 2)
-        hatch(p.layer, [92, 3, 72, 0, 73, 1, 93, p.points.length, ...p.points.flatMap((q) => [10, q[0], 20, -q[1]])], [
+        hatch(p.layer, [92, 3, 72, 0, 73, 1, 93, p.points.length, ...p.points.flatMap((q) => [10, X(q[0]), 20, Y(q[1])])], [
           p.points.reduce((s, q) => s + q[0], 0) / p.points.length,
           p.points.reduce((s, q) => s + q[1], 0) / p.points.length,
         ]);
     } else if (p.type === "circle") {
       entity("CIRCLE", p.layer, weightOf(p));
-      put(100, "AcDbCircle", 10, p.p[0], 20, -p.p[1], 30, 0, 40, p.r);
-      if (p.fill) hatch(p.layer, [92, 1, 93, 1, 72, 2, 10, p.p[0], 20, -p.p[1], 40, p.r, 50, 0, 51, 360, 73, 1], p.p);
+      put(100, "AcDbCircle", 10, X(p.p[0]), 20, Y(p.p[1]), 30, 0, 40, paper(p.r));
+      if (p.fill) hatch(p.layer, [92, 1, 93, 1, 72, 2, 10, X(p.p[0]), 20, Y(p.p[1]), 40, paper(p.r), 50, 0, 51, 360, 73, 1], p.p);
     } else if (p.type === "text") text(p.p, p.text, p.size, p.layer, p.rotation, p.oblique, p.anchor, p.width ?? 1);
     else {
       // DXF R2000 cannot embed a raster, so a logo is its frame and name for the drafter to re-attach.

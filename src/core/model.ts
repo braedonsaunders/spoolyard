@@ -2,6 +2,7 @@ import type { GridSettings } from './grid'
 import { COMPONENT_TYPES } from './components'
 import { defaultCode, flangedAllowance, flangedJoints, isFlangePair, nodeItem, pipeEndPrep } from './joints'
 import { boltSizeText } from './format'
+import { routeOrder } from './material-list'
 /** Spoolyard piping semantics (file schema id "bidwright-piping" is kept for compatibility). Coordinates and fabrication lengths are millimetres. */
 export type Vec3 = [number, number, number]
 export type Kind =
@@ -177,6 +178,8 @@ export interface TitleBlock {
   projectNumber: string
   revisions: TitleBlockRevision[]
   logos: Array<{ name: string; dataUrl: string }>
+  /** How the sheet's dates are written, printed in the date labels; YY-MM-DD when unset. */
+  dateFormat?: string
 }
 export interface SheetInfo {
   drawingNumber?: string
@@ -189,6 +192,8 @@ export interface DrawingStyle {
   layout: 'scale' | 'schematic'
   weldNumbers: boolean
   lettering: 'cad' | 'sans'
+  /** Centreline elevation at every change of level, not only where the drafter places one. */
+  elevations?: boolean
 }
 /** Plant east, north and elevation (mm) of the model origin. */
 export interface PlantCoordinates {
@@ -888,8 +893,17 @@ export function weldNumber(
 export function welds(doc: IsoDocument): Weld[] {
   let seq = doc.weldStart
   const out: Weld[] = []
-  for (const r of doc.runs) {
-    for (const [index, key] of [r.from, r.to].entries()) {
+  // Numbered in sequence along each spool, from an open end, in the order a fitter meets them.
+  const met = new Set<string>()
+  let last = ''
+  for (const r of [...new Set(doc.runs.map(r => r.spool))].flatMap(spool => routeOrder(doc, doc.runs.filter(r => r.spool === spool)))) {
+    // A pipe continues the walk from where the last one ended; a new walk starts at an open end.
+    const open = (id: string) => getNode(doc, id).kind !== 'weld' && connected(doc, id).filter(x => x.spool === r.spool).length === 1
+    const reversed = r.to === last || (r.from !== last && (open(r.to) !== open(r.from) ? open(r.to) : met.has(r.to) && !met.has(r.from)))
+    last = reversed ? r.from : r.to
+    met.add(r.from).add(r.to)
+    for (const index of reversed ? [1, 0] : [0, 1]) {
+      const key = index === 0 ? r.from : r.to
       const n = getNode(doc, key), prep = pipePrepAt(doc, r, index)
       if (
         n.kind === 'end' ||
@@ -1037,12 +1051,17 @@ export function validateIso(doc: IsoDocument): string[] {
       if (!Number.isFinite(bend) || Math.abs(bend - expected) > 1)
         issues.push(`${at}the ${name} turns ${Number.isFinite(bend) ? round(bend) + '°' : 'an unknown angle'} but is a ${expected}° fitting. Choose a fitting for this angle.`)
     }
-    if (
+    if (component?.angle && degree === 2 && Math.abs(angleBetween(edges[0], edges[1]) - 90) > 1)
+      issues.push(`${at}the ${name} is an angle body. Its pipes must leave it square to each other.`)
+    else if (
+      !component?.angle &&
       ['valve', 'reducer', 'weld', 'flange', 'gasket'].includes(n.kind) &&
       degree === 2 &&
       Math.abs(angleBetween(edges[0], edges[1]) - 180) > 1
     )
       issues.push(`${at}the ${name} sits at a change of direction. In-line components must be on a straight pipe.`)
+    if (/^CHECK/.test(component?.code ?? '') && edges.length && !edges.some(r => r.flow))
+      issues.push(`${at}the ${name} has no flow direction. Set the flow on its pipes so it is drawn and installed the right way round.`)
     if (n.kind === 'tee' && degree === 3 && n.branchEdgeId) {
       const main = edges.filter(r => r.id !== n.branchEdgeId),
         branch = edges.find(r => r.id === n.branchEdgeId)
@@ -1462,6 +1481,7 @@ export function parseIsoJson(raw: string): IsoDocument {
       !['designedBy', 'date', 'checkedBy', 'projectLeader', 'disciplineLeader', 'approvedBy', 'insulationThickness',
         'insulationCladding', 'tracing', 'pipeSpec', 'specRevision', 'designCode', 'product', 'refArea', 'lineNumber',
         'projectNumber'].every(k => isString(t[k as keyof TitleBlock], 200)) ||
+      (t.dateFormat != null && !isString(t.dateFormat, 200)) ||
       !isPlain(t.conditions) ||
       !(['design', 'operating', 'test'] as const).every(k => Array.isArray(t.conditions[k]) && t.conditions[k].length === 2 && strings(t.conditions[k], 2, 40)) ||
       !Array.isArray(t.revisions) || t.revisions.length > 20 ||
@@ -1475,7 +1495,8 @@ export function parseIsoJson(raw: string): IsoDocument {
   if (
     d.style != null &&
     (!isPlain(d.style) || !['scale', 'schematic'].includes(d.style.layout) ||
-      typeof d.style.weldNumbers !== 'boolean' || !['cad', 'sans'].includes(d.style.lettering))
+      typeof d.style.weldNumbers !== 'boolean' || !['cad', 'sans'].includes(d.style.lettering) ||
+      (d.style.elevations != null && typeof d.style.elevations !== 'boolean'))
   )
     throw new Error('Invalid drawing style.')
   if (
@@ -1638,113 +1659,6 @@ export function csv(rows: unknown[][]): string {
     )
     .join('\r\n')
 }
-export function bomCsv(
-  doc: IsoDocument,
-  group: 'spool' | 'line' | 'global' = 'spool'
-): string {
-  return csv([
-    [
-      'Item',
-      'Description',
-      'Spec',
-      'NPS',
-      'Quantity',
-      'Unit',
-      doc.units === 'imperial' ? 'Weight lb' : 'Weight kg',
-      doc.units === 'imperial' ? 'Surface ft2' : 'Surface m2',
-      'Cost',
-      'Labor hours',
-      'Heat',
-      'Spool',
-      'Line'
-    ],
-    ...bom(doc, group).map(r => {
-      const shown = displayBom(r, doc.units)
-      return [
-      r.item,
-      r.description,
-      r.spec,
-      r.nps,
-      Number.isFinite(shown.quantity) ? round(shown.quantity, 3) : 'MISSING',
-      shown.unit,
-      shown.weight == null ? 'MISSING' : round(shown.weight),
-      shown.area == null ? 'MISSING' : round(shown.area, 3),
-      round(r.cost),
-      round(r.hours),
-      r.heat,
-      r.spool,
-      r.line
-    ]})
-  ])
-}
-export function cutCsv(doc: IsoDocument): string {
-  const length = (mm: number) =>
-    doc.units === 'mm' ? round(mm) : formatLength(mm, doc.units)
-  const suffix = doc.units === 'mm' ? ' mm' : ''
-  return csv([
-    [
-      'Pipe',
-      'Spool',
-      'Line',
-      'NPS',
-      'Spec',
-      'Overall' + suffix,
-      'Start takeout' + suffix,
-      'End takeout' + suffix,
-      'Start gap' + suffix,
-      'End gap' + suffix,
-      'Cut' + suffix,
-      'Heat',
-      'Start preparation',
-      'End preparation'
-    ],
-    ...doc.runs
-      .filter(r => !r.connector)
-      .map(r => {
-        const c = runResult(doc, r)
-        return [
-          r.id,
-          r.spool,
-          r.line,
-          r.nps,
-          r.specId,
-          length(c.overall),
-          ...c.takeouts.map(v => Number.isFinite(v) ? doc.units === 'mm' ? round(v) : formatAllowance(v, doc.units) : 'MISSING'),
-          ...c.gaps.map(v => doc.units === 'mm' ? round(v) : formatAllowance(v, doc.units)),
-          Number.isFinite(c.cut) && c.cut > 0 ? length(c.cut) : 'MISSING',
-          r.heat,
-          prepAt(r, 0),
-          prepAt(r, 1)
-        ]
-      })
-  ])
-}
-export function weldCsv(doc: IsoDocument): string {
-  return csv([
-    [
-      'Weld',
-      'Spool',
-      'Line',
-      'NPS',
-      'Location',
-      'End preparation',
-      'Diameter inches'
-    ],
-    ...welds(doc).map(w => {
-      const r = doc.runs.find(r => r.id === w.runId)!
-      return [
-        w.tag,
-        r.spool,
-        r.line,
-        w.nps,
-        w.field ? 'Field' : 'Shop',
-        w.prep,
-        w.nps
-      ]
-    })
-  ])
-}
-
 /** Remove an inline component without losing either outer connection's fabrication data. */
 export function removeComponent(doc: IsoDocument, nodeId: string): void {
   const node = getNode(doc, nodeId), edges = connected(doc, nodeId);

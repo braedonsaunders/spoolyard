@@ -1,6 +1,7 @@
 import type { Point, Primitive } from '../drawing'
-import { sheetInfoOf, titleBlockOf, type IsoDocument } from '../model'
+import { sheetInfoOf, styleOf, titleBlockOf, type IsoDocument } from '../model'
 import { measureText, strokeText } from '../stroke-font'
+import { viewProject } from './layout'
 
 export interface SheetRow { id: number; qtyText: string; nd: string; description: string }
 /** Rectangles are [x0, y0, x1, y1] in sheet units. */
@@ -43,8 +44,9 @@ const REVISION_HEADER: Array<[string, number]> = [
   ['DISCIPLINE\nLEAD', 8], ['PROJECT\nLEADER', 9], ['APPROVED\nBY', 8]
 ]
 
-// Bill of materials: column widths and lettering. A row is 34 dots for one line plus 22 per further line; lines that
-// rise above the cap line (quotes, slashes) add 3, like the reference's at-least line spacing. Cells centre their ink.
+// Bill of materials: column widths and lettering. A row is 34 dots for one line plus 22 per further line, and at least
+// two lines tall when the list fits; lines that rise above the cap line (quotes, slashes) add 3, like the reference's
+// at-least line spacing. Cells centre their ink.
 const BOM_COLUMNS = [90, 135, 90, 493.5]
 const BOM_CAP = 13, BOM_ROW = 34, BOM_PITCH = 22, BOM_RAISE = 3, BOM_INSET = 6
 
@@ -54,9 +56,9 @@ const NOTE_WIDTH = 1.27
 const NOTE_CAP = 9.75, NOTE_PITCH = 16.6, NOTE_HEADER_X = 1621.4, NOTE_LABEL_X = 1629.7, NOTE_TEXT_X = 1661.5,
   NOTE_RIGHT = 2445, NOTE_BASELINE = TB - 11.5
 
-// North symbol: ellipse, tick lines on the iso diagonals and a filled upright N.
-const NORTH = { cx: 192, cy: 121.5, rx: 88, ry: 52.5, box: [104, 69, 280, 174] as SheetRect }
-const NORTH_TICKS: Array<[number, number, number, number]> = [[254, 84, 280, 69], [130, 84, 104, 69], [254, 159, 280, 174], [130, 159, 104, 174]]
+// North symbol: ellipse, a tick out from it on each of the plant's compass points as the view draws them (the iso
+// diagonals when north is not rotated), plant north an arrow, and a filled upright N.
+const NORTH = { cx: 192, cy: 121.5, rx: 88, ry: 52.5, box: [104, 69, 280, 174] as SheetRect, tick: 29, arrow: 15, barb: 5 }
 const NORTH_N: Point[] = [
   [147, 148.5], [147, 92.5], [161.9, 92.5], [221.25, 137], [221.25, 92.5], [235.25, 92.5], [235.25, 148.5], [220, 148.5],
   [161, 104.4], [161, 148.5]
@@ -144,14 +146,26 @@ export function drawSheet(input: {
   const northBox: SheetRect = [LEFT + ((NORTH.box[0] - LEFT) * st) / sx, TOP + ((NORTH.box[1] - TOP) * st) / sy,
     LEFT + ((NORTH.box[2] - LEFT) * st) / sx, TOP + ((NORTH.box[3] - TOP) * st) / sy]
   if (north) {
-    // Drawn at its own proportions from the frame corner.
-    const at = (x: number, y: number): Point => [X(LEFT) + (x - LEFT) * st, Y(TOP) + (y - TOP) * st]
+    // Drawn at its own proportions from the frame corner, smaller when a rotated north puts a tick past its box.
+    const ticks = [0, 1, 2, 3].map(k => {
+      const v = viewProject([Math.cos(k * Math.PI / 2), Math.sin(k * Math.PI / 2), 0], view, doc.north), l = Math.hypot(...v) || 1
+      const u: Point = [v[0] / l, v[1] / l], r = 1 / Math.hypot(u[0] / NORTH.rx, u[1] / NORTH.ry)
+      return { u, inner: [u[0] * r, u[1] * r] as Point, outer: [u[0] * (r + NORTH.tick), u[1] * (r + NORTH.tick)] as Point }
+    })
+    const half = [(NORTH.box[2] - NORTH.box[0]) / 2, (NORTH.box[3] - NORTH.box[1]) / 2]
+    const k = Math.min(1, ...ticks.map(t => Math.min(half[0] / Math.max(1e-9, Math.abs(t.outer[0])), half[1] / Math.max(1e-9, Math.abs(t.outer[1])))))
+    const at = (x: number, y: number): Point => [X(LEFT) + (NORTH.cx - LEFT + (x - NORTH.cx) * k) * st, Y(TOP) + (NORTH.cy - TOP + (y - NORTH.cy) * k) * st]
+    const off = (p: Point) => at(NORTH.cx + p[0], NORTH.cy + p[1])
     const n = 72
     out.push({
       type: 'polyline', layer: 'TEXT', weight: WEIGHT.north, closed: true,
       points: Array.from({ length: n }, (_, i) => at(NORTH.cx + NORTH.rx * Math.cos((2 * Math.PI * i) / n), NORTH.cy + NORTH.ry * Math.sin((2 * Math.PI * i) / n)))
     })
-    for (const [x0, y0, x1, y1] of NORTH_TICKS) out.push({ type: 'line', a: at(x0, y0), b: at(x1, y1), layer: 'TEXT', weight: WEIGHT.north })
+    for (const t of ticks) out.push({ type: 'line', a: off(t.inner), b: off(t.outer), layer: 'TEXT', weight: WEIGHT.north })
+    // Plant north's tick ends in an arrowhead.
+    const { u, outer } = ticks[1], base: Point = [outer[0] - u[0] * NORTH.arrow, outer[1] - u[1] * NORTH.arrow]
+    out.push({ type: 'polyline', layer: 'TEXT', weight: 0.2, closed: true, fill: true, points: [off(outer),
+      off([base[0] - u[1] * NORTH.barb, base[1] + u[0] * NORTH.barb]), off([base[0] + u[1] * NORTH.barb, base[1] - u[0] * NORTH.barb])] })
     out.push({ type: 'polyline', layer: 'TEXT', weight: 0.2, closed: true, fill: true, points: NORTH_N.map(([x, y]) => at(x, y)) })
     exclusions.push(rect(northBox))
   }
@@ -191,7 +205,7 @@ export function drawSheet(input: {
   const notesBox: SheetRect = [NOTE_HEADER_X, notesTop, RIGHT, TB]
 
   // Bill of materials: blocks from the top-right corner leftwards; the rows that do not fit continue in the next block.
-  const layoutBom = (f: number, compact = false): BomBlock[] | null => {
+  const layoutBom = (f: number, compact = false, tall = false): BomBlock[] | null => {
     const blockWidth = BOM_COLUMNS.reduce((a, b) => a + b, 0) * f
     // A long list narrows the QTY and ND columns to their contents, as drafted, so descriptions wrap less.
     const fitted = (values: string[], header: string, least: number, most: number) =>
@@ -236,7 +250,7 @@ export function drawSheet(input: {
           cell(String(row.id), widths[0] - 6 * f), cell(up(row.qtyText), widths[1] - 6 * f),
           cell(up(row.nd), widths[2] - 6 * f), cell(up(row.description), widths[3] - (BOM_INSET + 2) * f)
         ]
-        const h = Math.max(...cells.map(c => c.height))
+        const h = Math.max(tall ? (BOM_ROW + BOM_PITCH) * f : 0, ...cells.map(c => c.height))
         if (y + h > bottom) break
         block.rows.push({ row, cells, height: h })
         y += h
@@ -248,7 +262,9 @@ export function drawSheet(input: {
     }
     return blocks
   }
-  let bom: BomBlock[] | null = layoutBom(1)
+  // Issued tables draw single-line rows as tall as two-line ones; a list that then needs a second block keeps them short.
+  const tall = layoutBom(1, false, true)
+  let bom: BomBlock[] | null = tall?.length === 1 ? tall : layoutBom(1)
   if (bom && bom.length > 1) {
     // Before splitting the table, narrow QTY and ND and, if that is nearly enough, letter the table a little smaller.
     for (const f of [1, 0.97, 0.94, 0.91]) {
@@ -294,7 +310,7 @@ export function drawSheet(input: {
 
   // Title block.
   const tb = titleBlockOf(doc), info = sheetInfoOf(doc, spool)
-  const metric = doc.units === 'mm'
+  const metric = doc.units === 'mm', dateFormat = up(tb.dateFormat) || 'YY-MM-DD'
   for (const [y, x0, x1] of TB_H) line('TITLE', x0, y, x1, y, WEIGHT.title)
   for (const [x, y0, y1] of TB_V) line('TITLE', x, y0, x, y1, WEIGHT.title)
   const title = (value: string, x: number, y: number, size: number, anchor: 'start' | 'middle' = 'start', fit?: number) =>
@@ -306,7 +322,7 @@ export function drawSheet(input: {
 
   const people: Array<[string, string, number, number, number, number, number?]> = [
     ['DESIGNED BY', tb.designedBy, 588.5, 1326.5, 1363, 747.5],
-    ['DATE (YY-MM-DD)', tb.date, 747.5, 1326.5, 1363, 906.5],
+    [`DATE (${dateFormat})`, tb.date, 747.5, 1326.5, 1363, 906.5],
     ['CHECKED BY', tb.checkedBy, 588.5, 1407, 1452, 747.5],
     ['PROJECT LEADER', tb.projectLeader, 747.5, 1407, 1452, 906.5],
     ['DISCIPLINE LEADER', tb.disciplineLeader, 588.5, 1512, 1578, 747.5, 9],
@@ -361,16 +377,16 @@ export function drawSheet(input: {
     out.push({ type: 'image', p: [X((x0 + x1) / 2) - w / 2, Y((y0 + y1) / 2) - h / 2], width: w, height: h, href: logo.dataUrl, layer: 'TITLE' })
   })
 
-  // Revisions: the latest at the bottom, just above the column headings.
+  // Revisions fill up from the column headings: the first just above them, each later one above the last.
   const shown = tb.revisions.slice(-(REVISION_ROWS.length - 1))
   shown.forEach((rev, i) => {
-    const y0 = REVISION_ROWS[REVISION_ROWS.length - 1 - shown.length + i], y1 = REVISION_ROWS[REVISION_ROWS.length - shown.length + i]
+    const y0 = REVISION_ROWS[REVISION_ROWS.length - 2 - i], y1 = REVISION_ROWS[REVISION_ROWS.length - 1 - i]
     ;[rev.rev, rev.date, rev.description, rev.designedBy, rev.checkedBy, rev.disciplineLead, rev.projectLeader, rev.approvedBy]
       .forEach((value, c) => title(up(value), (REVISION_COLUMNS[c] + REVISION_COLUMNS[c + 1]) / 2, (y0 + y1) / 2 + 5, 10, 'middle',
         REVISION_COLUMNS[c + 1] - REVISION_COLUMNS[c] - 6))
   })
-  REVISION_HEADER.forEach(([label, size], c) => {
-    const x = (REVISION_COLUMNS[c] + REVISION_COLUMNS[c + 1]) / 2, room = REVISION_COLUMNS[c + 1] - REVISION_COLUMNS[c] - 4
+  REVISION_HEADER.forEach(([header, size], c) => {
+    const label = header.replace('YY-MM-DD', dateFormat), x = (REVISION_COLUMNS[c] + REVISION_COLUMNS[c + 1]) / 2, room = REVISION_COLUMNS[c + 1] - REVISION_COLUMNS[c] - 4
     const parts = label.split('\n')
     const fit = Math.min(size, ...parts.map(p => (size * room * kx) / measureText(p, size)))
     if (parts.length === 1) title(label, x, 1448, fit, 'middle')
@@ -387,6 +403,18 @@ export function drawSheet(input: {
     title(label, x0 + 14.5, y, labelSize, 'start', x1 - x0 - 16)
     title(up(value), (x0 + x1) / 2, 1559, valueSize, 'middle', x1 - x0 - 8)
   }
+  // A set of several spools names each sheet's spool and its place in the set, right of the box labels; a sheet
+  // not drawn to scale says so under its drawing number. A single to-scale sheet keeps the issued layout.
+  const flush = (value: string, x0: number, x1: number, y: number, size: number) => {
+    const room = x1 - x0 - 14, w = Math.min(room, measureText(value, size) / kx)
+    title(value, x1 - 12 - w, y, size, 'start', room)
+  }
+  const spools = [...new Set(doc.runs.map(r => r.spool))], sheetNo = spools.indexOf(spool)
+  if (spools.length > 1 && sheetNo >= 0) {
+    flush(`SPOOL ${up(spool)}`, 1617 + 14.5 + measureText('LINE No.', 13) / kx + 20, 1923.5, 1499, 11)
+    flush(`SHEET ${sheetNo + 1} OF ${spools.length}`, 1923.5 + 14.5 + measureText('DRAWING No.', 13) / kx + 20, 2252.5, 1497, 11)
+  }
+  if (styleOf(doc).layout === 'schematic') flush('SCALE: NTS', 2252.5 - 160, 2252.5, 1590, 10)
 
   const viewport = rect([LEFT + GAP, TOP + GAP, RIGHT - GAP, TB - GAP])
   const clip = (r: SheetRect): SheetRect =>
