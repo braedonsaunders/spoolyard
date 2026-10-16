@@ -175,6 +175,8 @@ export interface TitleBlock {
   projectNumber: string
   revisions: TitleBlockRevision[]
   logos: Array<{ name: string; dataUrl: string }>
+  /** How the sheet's dates are written, printed in the date labels; YY-MM-DD when unset. */
+  dateFormat?: string
 }
 export interface SheetInfo {
   drawingNumber?: string
@@ -1457,6 +1459,7 @@ export function parseIsoJson(raw: string): IsoDocument {
       !['designedBy', 'date', 'checkedBy', 'projectLeader', 'disciplineLeader', 'approvedBy', 'insulationThickness',
         'insulationCladding', 'tracing', 'pipeSpec', 'specRevision', 'designCode', 'product', 'refArea', 'lineNumber',
         'projectNumber'].every(k => isString(t[k as keyof TitleBlock], 200)) ||
+      (t.dateFormat != null && !isString(t.dateFormat, 200)) ||
       !isPlain(t.conditions) ||
       !(['design', 'operating', 'test'] as const).every(k => Array.isArray(t.conditions[k]) && t.conditions[k].length === 2 && strings(t.conditions[k], 2, 40)) ||
       !Array.isArray(t.revisions) || t.revisions.length > 20 ||

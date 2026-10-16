@@ -179,6 +179,8 @@ test('title block prints the document, sheet and latest revision values', () => 
   assert.equal(only.find(x => x.text === 'ISSUED FOR REVIEW')!.p[1], older.p[1], 'a single revision sits just above the headings');
   const rev = t.filter(x => x.text === 'B');
   assert.ok(rev.some(x => x.size > 10), 'large revision letter');
+  const slashed = texts(frame({ ...d, titleBlock: { ...d.titleBlock!, dateFormat: 'yy/mm/dd' } }).primitives, 'TITLE').map(x => x.text);
+  assert.ok(slashed.includes('DATE (YY/MM/DD)') && slashed.includes('YY/MM/DD') && !slashed.some(x => x.includes('YY-MM-DD')), 'date labels follow the date format');
   const metric = texts(frame({ ...d, units: 'mm' }).primitives, 'TITLE').map(x => x.text);
   assert.ok(metric.includes('PRESS(kPa)') && metric.includes('TEMP(°C)') && !metric.includes('PRESS(PSIG)'));
   for (const x of t) {

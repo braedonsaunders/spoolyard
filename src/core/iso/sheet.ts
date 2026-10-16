@@ -297,7 +297,7 @@ export function drawSheet(input: {
 
   // Title block.
   const tb = titleBlockOf(doc), info = sheetInfoOf(doc, spool)
-  const metric = doc.units === 'mm'
+  const metric = doc.units === 'mm', dateFormat = up(tb.dateFormat) || 'YY-MM-DD'
   for (const [y, x0, x1] of TB_H) line('TITLE', x0, y, x1, y, WEIGHT.title)
   for (const [x, y0, y1] of TB_V) line('TITLE', x, y0, x, y1, WEIGHT.title)
   const title = (value: string, x: number, y: number, size: number, anchor: 'start' | 'middle' = 'start', fit?: number) =>
@@ -309,7 +309,7 @@ export function drawSheet(input: {
 
   const people: Array<[string, string, number, number, number, number, number?]> = [
     ['DESIGNED BY', tb.designedBy, 588.5, 1326.5, 1363, 747.5],
-    ['DATE (YY-MM-DD)', tb.date, 747.5, 1326.5, 1363, 906.5],
+    [`DATE (${dateFormat})`, tb.date, 747.5, 1326.5, 1363, 906.5],
     ['CHECKED BY', tb.checkedBy, 588.5, 1407, 1452, 747.5],
     ['PROJECT LEADER', tb.projectLeader, 747.5, 1407, 1452, 906.5],
     ['DISCIPLINE LEADER', tb.disciplineLeader, 588.5, 1512, 1578, 747.5, 9],
@@ -372,8 +372,8 @@ export function drawSheet(input: {
       .forEach((value, c) => title(up(value), (REVISION_COLUMNS[c] + REVISION_COLUMNS[c + 1]) / 2, (y0 + y1) / 2 + 5, 10, 'middle',
         REVISION_COLUMNS[c + 1] - REVISION_COLUMNS[c] - 6))
   })
-  REVISION_HEADER.forEach(([label, size], c) => {
-    const x = (REVISION_COLUMNS[c] + REVISION_COLUMNS[c + 1]) / 2, room = REVISION_COLUMNS[c + 1] - REVISION_COLUMNS[c] - 4
+  REVISION_HEADER.forEach(([header, size], c) => {
+    const label = header.replace('YY-MM-DD', dateFormat), x = (REVISION_COLUMNS[c] + REVISION_COLUMNS[c + 1]) / 2, room = REVISION_COLUMNS[c + 1] - REVISION_COLUMNS[c] - 4
     const parts = label.split('\n')
     const fit = Math.min(size, ...parts.map(p => (size * room * kx) / measureText(p, size)))
     if (parts.length === 1) title(label, x, 1448, fit, 'middle')

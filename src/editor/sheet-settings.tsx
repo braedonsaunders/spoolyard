@@ -287,7 +287,8 @@ const DIMENSION_MODES: Array<[IsoDocument["dimensionMode"], string]> = [
 ];
 const PEOPLE: Array<[TitleText, string]> = [
   ["designedBy", "Designed by"],
-  ["date", "Date (YY-MM-DD)"],
+  ["date", "Date"],
+  ["dateFormat", "Date format"],
   ["checkedBy", "Checked by"],
   ["projectLeader", "Project leader"],
   ["disciplineLeader", "Discipline leader"],
@@ -412,8 +413,8 @@ export function SheetSettings({
     </Field>
   );
   const titleText = ([key, label]: [TitleText, string]) =>
-    text(label, draft[key], (d, v) => setTitleField(d, key, v), {
-      placeholder: key === "date" ? "YY-MM-DD" : printed[key] && printed[key] !== draft[key] ? printed[key] : undefined,
+    text(label, draft[key] ?? "", (d, v) => setTitleField(d, key, v), {
+      placeholder: key === "date" ? draft.dateFormat || "YY-MM-DD" : key === "dateFormat" ? "YY-MM-DD" : printed[key] && printed[key] !== draft[key] ? printed[key] : undefined,
     });
   const setStyle = (change: Partial<DrawingStyle>) => commit((d) => (d.style = { ...styleOf(d), ...change }));
   const upload = async (slot: 0 | 1, input: HTMLInputElement) => {
