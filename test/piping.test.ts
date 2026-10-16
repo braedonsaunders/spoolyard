@@ -109,7 +109,8 @@ test('invalid pipe cuts never become negative purchased quantities or weights',(
 
 test('one isometric block is a real length, and feet or inches stay valid in either unit mode', async () => {
   const { defaultBlockSpacing, defaultGrid, gridLines } = await import('../src/core/grid.ts');
-  const { resizeRunToCut, cutCsv } = await import('../src/core/model.ts');
+  const { resizeRunToCut } = await import('../src/core/model.ts');
+  const { cutCsv } = await import('../src/core/schedules.ts');
   assert.equal(defaultBlockSpacing('mm'), 100);
   assert.equal(parseLength('12 in', 'mm'), parseLength("1'", 'imperial'));
   assert.equal(parseLength('100 mm', 'imperial'), 100);
@@ -125,8 +126,8 @@ test('one isometric block is a real length, and feet or inches stay valid in eit
   if (overall && overall.type === 'text') assert.equal(overall.text, '12"');
   const grid = gridLines(drawing, [0, 0, 0], d.grid!, 'imperial');
   assert.match(grid!.caption, /1 block = 1′ 0″/);
-  assert.match(cutCsv(d), /1′ 0″/);
-  assert.doesNotMatch(cutCsv(d), /Overall mm/);
+  assert.match(cutCsv(d), /"1'-0"""/);
+  assert.match(cutCsv(d), /Overall \(ft-in\)/);
   resizeRunToCut(d, d.runs[0].id, 6 * 25.4);
   assert.ok(Math.abs(runResult(d, d.runs[0]).cut - 6 * 25.4) < 1e-6);
   assert.ok(Math.abs(runResult(d, d.runs[0]).overall - 6 * 25.4) < 1e-6);

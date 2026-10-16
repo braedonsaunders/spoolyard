@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import { SaveQueue } from '../src/editor/save-queue';
-import { lengthInputValue, parseLength, newIso, appendRun, bom, bomCsv, displayBom, formatAllowance } from '../src/core/model';
+import { lengthInputValue, parseLength, newIso, appendRun, bom, displayBom, formatAllowance } from '../src/core/model';
+import { materialCsv } from '../src/core/schedules';
 
 test('length edit values retain exact metric measurements in either working unit', () => {
   for (const mm of [1000, 100, 1.5, 0.5, 76.2, 304.8, 838.2, -1000, 123.456789]) {
@@ -26,8 +27,9 @@ test('imperial material schedules use feet and pounds without changing model qua
   assert.equal(imperial.unit, 'ft');
   assert.ok(Math.abs(imperial.weight! * 0.45359237 - metric.weight!) < 1e-9);
   doc.units = 'imperial';
-  assert.match(bomCsv(doc), /Weight lb/);
-  assert.match(bomCsv(doc), /"10","ft"/);
+  assert.match(materialCsv(doc), /Weight lb/);
+  // The material list orders pipe as the sheet does, in feet and inches.
+  assert.match(materialCsv(doc), /"10'","ft-in"/);
   assert.equal(bom(doc)[0].qty, 3.048);
   assert.notEqual(formatAllowance(0.5, 'imperial'), '0″');
   assert.ok(Math.abs(parseLength(formatAllowance(0.5, 'imperial'), 'imperial') - 0.5) < 1e-6);

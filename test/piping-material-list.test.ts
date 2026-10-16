@@ -32,8 +32,6 @@ test('a lap-joint sheet lists cut pieces, stub ends, flanges, bolts and gaskets 
   applyComponent(doc, top, 'FLG-RFLJ', doc.specs[0].fittings[2]);
   // The top joint's gasket and bolts are listed on the next sheet, which also receives this sheet's mating flange.
   top.jointSupply = { gasket: false, bolts: false }; top.quantity = 2;
-  // The bottom flange is dimensioned to its own face, as that sheet was drafted.
-  bottom.jointSupply = { gasket: true, bolts: true, measuredTo: 'flange' };
   const rows = sheetMaterials(doc, 'S-1').map(r => [r.id, r.qtyText, r.nd, r.description]);
   assert.deepEqual(rows, [
     [1, `1'-2"`, '2"', `PIPE, WELDED, ASTM A312 TP316L, SCH 10S, ASME B36.19, BE - CUT TO 1'-1 5/8"`],

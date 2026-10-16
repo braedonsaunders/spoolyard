@@ -2,6 +2,7 @@ import type { GridSettings } from './grid'
 import { COMPONENT_TYPES } from './components'
 import { defaultCode, flangedAllowance, flangedJoints, isFlangePair, nodeItem, pipeEndPrep } from './joints'
 import { boltSizeText } from './format'
+import { routeOrder } from './material-list'
 /** Spoolyard piping semantics (file schema id "bidwright-piping" is kept for compatibility). Coordinates and fabrication lengths are millimetres. */
 export type Vec3 = [number, number, number]
 export type Kind =
@@ -132,8 +133,8 @@ export interface PipeNode {
    * What a flanged joint at a pipe end (equipment, an existing flange or a break to another drawing) supplies on this
    * drawing: the flange itself (a lap-joint end keeps its stub end), the gasket and the bolting; whether the mate is a
    * flange (studs through both) or a lugged or tapped body such as a lug valve (lug bolts into it); and whether the end
-   * point is the face it bolts to, with the gasket this drawing supplies inside the dimension (the default), or this
-   * flange's own face.
+   * point is this flange's own face (the default) or the face it bolts to, with the gasket this drawing supplies inside
+   * the dimension.
    */
   jointSupply?: { gasket: boolean; bolts: boolean; flange?: boolean; mate?: 'flange' | 'lug'; measuredTo?: 'mate' | 'flange' }
 }
@@ -886,8 +887,17 @@ export function weldNumber(
 export function welds(doc: IsoDocument): Weld[] {
   let seq = doc.weldStart
   const out: Weld[] = []
-  for (const r of doc.runs) {
-    for (const [index, key] of [r.from, r.to].entries()) {
+  // Numbered in sequence along each spool, from an open end, in the order a fitter meets them.
+  const met = new Set<string>()
+  let last = ''
+  for (const r of [...new Set(doc.runs.map(r => r.spool))].flatMap(spool => routeOrder(doc, doc.runs.filter(r => r.spool === spool)))) {
+    // A pipe continues the walk from where the last one ended; a new walk starts at an open end.
+    const open = (id: string) => getNode(doc, id).kind !== 'weld' && connected(doc, id).filter(x => x.spool === r.spool).length === 1
+    const reversed = r.to === last || (r.from !== last && (open(r.to) !== open(r.from) ? open(r.to) : met.has(r.to) && !met.has(r.from)))
+    last = reversed ? r.from : r.to
+    met.add(r.from).add(r.to)
+    for (const index of reversed ? [1, 0] : [0, 1]) {
+      const key = index === 0 ? r.from : r.to
       const n = getNode(doc, key), prep = pipePrepAt(doc, r, index)
       if (
         n.kind === 'end' ||
@@ -1635,113 +1645,6 @@ export function csv(rows: unknown[][]): string {
     )
     .join('\r\n')
 }
-export function bomCsv(
-  doc: IsoDocument,
-  group: 'spool' | 'line' | 'global' = 'spool'
-): string {
-  return csv([
-    [
-      'Item',
-      'Description',
-      'Spec',
-      'NPS',
-      'Quantity',
-      'Unit',
-      doc.units === 'imperial' ? 'Weight lb' : 'Weight kg',
-      doc.units === 'imperial' ? 'Surface ft2' : 'Surface m2',
-      'Cost',
-      'Labor hours',
-      'Heat',
-      'Spool',
-      'Line'
-    ],
-    ...bom(doc, group).map(r => {
-      const shown = displayBom(r, doc.units)
-      return [
-      r.item,
-      r.description,
-      r.spec,
-      r.nps,
-      Number.isFinite(shown.quantity) ? round(shown.quantity, 3) : 'MISSING',
-      shown.unit,
-      shown.weight == null ? 'MISSING' : round(shown.weight),
-      shown.area == null ? 'MISSING' : round(shown.area, 3),
-      round(r.cost),
-      round(r.hours),
-      r.heat,
-      r.spool,
-      r.line
-    ]})
-  ])
-}
-export function cutCsv(doc: IsoDocument): string {
-  const length = (mm: number) =>
-    doc.units === 'mm' ? round(mm) : formatLength(mm, doc.units)
-  const suffix = doc.units === 'mm' ? ' mm' : ''
-  return csv([
-    [
-      'Pipe',
-      'Spool',
-      'Line',
-      'NPS',
-      'Spec',
-      'Overall' + suffix,
-      'Start takeout' + suffix,
-      'End takeout' + suffix,
-      'Start gap' + suffix,
-      'End gap' + suffix,
-      'Cut' + suffix,
-      'Heat',
-      'Start preparation',
-      'End preparation'
-    ],
-    ...doc.runs
-      .filter(r => !r.connector)
-      .map(r => {
-        const c = runResult(doc, r)
-        return [
-          r.id,
-          r.spool,
-          r.line,
-          r.nps,
-          r.specId,
-          length(c.overall),
-          ...c.takeouts.map(v => Number.isFinite(v) ? doc.units === 'mm' ? round(v) : formatAllowance(v, doc.units) : 'MISSING'),
-          ...c.gaps.map(v => doc.units === 'mm' ? round(v) : formatAllowance(v, doc.units)),
-          Number.isFinite(c.cut) && c.cut > 0 ? length(c.cut) : 'MISSING',
-          r.heat,
-          prepAt(r, 0),
-          prepAt(r, 1)
-        ]
-      })
-  ])
-}
-export function weldCsv(doc: IsoDocument): string {
-  return csv([
-    [
-      'Weld',
-      'Spool',
-      'Line',
-      'NPS',
-      'Location',
-      'End preparation',
-      'Diameter inches'
-    ],
-    ...welds(doc).map(w => {
-      const r = doc.runs.find(r => r.id === w.runId)!
-      return [
-        w.tag,
-        r.spool,
-        r.line,
-        w.nps,
-        w.field ? 'Field' : 'Shop',
-        w.prep,
-        w.nps
-      ]
-    })
-  ])
-}
-
 /** Remove an inline component without losing either outer connection's fabrication data. */
 export function removeComponent(doc: IsoDocument, nodeId: string): void {
   const node = getNode(doc, nodeId), edges = connected(doc, nodeId);
