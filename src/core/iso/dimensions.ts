@@ -135,11 +135,14 @@ function stations(ctx: IsoContext, leg: Leg, vents: Set<string>): Station[] {
       return
     }
     if (!end && node.kind === 'reducer' && !/CPLG/.test(code)) {
-      // A reducer is dimensioned to its ends on pipe. Welded straight to a fitting it is part of that fitting's make-up,
-      // which is measured on to the far joint.
-      for (const run of connected(ctx.doc, id).filter(r => own.has(r.id) && !r.connector && ctx.geometry.has(r.id))) {
+      // A reducer is dimensioned to both its ends, except where it is welded straight onto the elbow or tee it reduces
+      // from: that make-up is measured from the fitting's work point to the reducer's far end.
+      const runs = connected(ctx.doc, id).filter(r => own.has(r.id) && ctx.geometry.has(r.id)), large = Math.max(...runs.map(r => r.nps))
+      for (const run of runs) {
+        const across = getNode(ctx.doc, run.from === id ? run.to : run.from)
+        if (run.connector && run.nps === large && workPoint(across)) continue
         const g = ctx.geometry.get(run.id)!, t = takeout(ctx.doc, node, run.id) ?? 0
-        const out3 = sub(getNode(ctx.doc, run.from === id ? run.to : run.from).position, node.position), l = length(out3) || 1
+        const out3 = sub(across.position, node.position), l = length(out3) || 1
         const dir = run.from === id ? g.dir : scale2(g.dir, -1)
         at([0, 1, 2].map(k => node.position[k] + out3[k] / l * t) as Vec3, add2(page, scale2(dir, e)))
       }

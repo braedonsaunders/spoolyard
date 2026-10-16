@@ -88,6 +88,15 @@ test('fittings welded straight together are dimensioned from the work point to t
   const texts = dims(d);
   assert.ok(texts.includes(String(Math.round(small))), texts.join(' '));
   assert.ok(!texts.includes('150'));
+  // A reducer between two elbows belongs to the elbow it reduces from; its small end is where the smaller line starts.
+  const pair = doc();
+  const first = appendRun(pair, null, [1000, 0, 0], 'A', 3, 'SP-1', 'L-1');
+  const red = appendRun(pair, first.id, [0, 0, -158.75], 'A', 3, 'SP-1', 'L-1');
+  const second = appendRun(pair, red.id, [0, 0, -120.65], 'A', 2, 'SP-1', 'L-1');
+  appendRun(pair, second.id, [1000, 0, 0], 'A', 2, 'SP-1', 'L-1');
+  pair.runs[1].connector = pair.runs[2].connector = true;
+  applyComponent(pair, red, 'C-RED', pair.specs[0].fittings.find(f => f.component === 'C-RED' && f.nps === 3 && f.smallerNps === 2)!);
+  assert.ok(['203', '76'].every(t => dims(pair).includes(t)) && !dims(pair).includes('159'), dims(pair).join(' '));
 });
 
 test('supports are located by default, chained support to support from a fitting across a joint', () => {
