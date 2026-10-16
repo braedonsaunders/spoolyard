@@ -23,6 +23,9 @@ export interface StandardRow {
   boltLength?: number
   socketDepth?: number
   threadEngagement?: number
+  /** Branch outlets: height A from the outlet end to the run pipe's outside, which `takeout` is measured from. */
+  height?: number
+  takeoutReference?: 'header-outside'
   description: string
   source: string
 }
@@ -102,6 +105,13 @@ const WALL = [
   [24, 0.218, 0.25, 0.375, 0.5, 0.688, 0.969, 1.219, 1.812, 2.344, 0]
 ]
 const WALL_COLUMNS = ['5S', '10S', 'STD', 'XS', '40', '60', '80', '120', '160', 'XXS']
+/** ASME B36.10M outside diameter (in). */
+const OD = [[0.125, 0.405], [0.25, 0.54], [0.375, 0.675], [0.5, 0.84], [0.75, 1.05], [1, 1.315], [1.25, 1.66], [1.5, 1.9], [2, 2.375],
+  [2.5, 2.875], [3, 3.5], [3.5, 4], [4, 4.5], [5, 5.563], [6, 6.625], [8, 8.625], [10, 10.75], [12, 12.75]]
+/** Pipe outside diameter (mm); NPS 14 and up equal their size. */
+export function pipeOd(nps: number): number | undefined {
+  return nps >= 14 && isNps(nps) ? mmx(nps) : (v => v == null ? undefined : mmx(v))(at(OD, nps)?.[1])
+}
 /** Nominal pipe wall (mm) for a schedule ('STD', 'XS', 'XXS', '5S', '10S', '40S', '80S', '40', 'SCH.80', 'SCH 160'…); undefined if unknown. */
 export function pipeWall(nps: number, schedule = 'STD'): number | undefined {
   const s = schedule.toUpperCase().replace(/^SCH(EDULE)?\.?\s*/, '').replace(/\.$/, '').trim()
@@ -354,6 +364,16 @@ const TEE_M: Record<string, number[][]> = {
 }
 /** 45° laterals as catalogued (Bonney Forge, matching the library specs): [nps, short-side C-E, long-side and branch C-E] (in). */
 const LATERAL = [[1, 2.5, 6.5], [1.25, 2.75, 7], [1.5, 3, 8], [2, 4, 8.5], [2.5, 4.5, 10], [3, 5, 11], [3.5, 5.5, 12], [4, 6, 13], [5, 7, 14.5], [6, 8, 16.5], [8, 10, 20], [10, 12, 23], [12, 13, 27], [14, 14, 30], [16, 16, 33], [18, 17, 36]]
+/**
+ * MSS SP-97 branch outlets as catalogued (Bonney Forge): height A from the outlet end to the run pipe's outside at the
+ * branch centreline (in). [nps, weldolet STD, weldolet XS, sockolet/thredolet 3000, 6000]; 0 = not made.
+ */
+const OLET = [
+  [0.5, 0.75, 0.75, 1, 1.25], [0.75, 0.88, 0.88, 1.06, 1.44], [1, 1.06, 1.06, 1.31, 1.56], [1.25, 1.25, 1.25, 1.31, 1.62],
+  [1.5, 1.31, 1.31, 1.38, 1.69], [2, 1.5, 1.5, 1.5, 2.06], [2.5, 1.62, 1.62, 1.81, 0], [3, 1.75, 1.75, 2, 0], [3.5, 1.88, 1.88, 2.12, 0],
+  [4, 2, 2, 2.25, 0], [5, 2.25, 2.25, 0, 0], [6, 2.38, 3.06, 0, 0], [8, 2.75, 3.88, 0, 0], [10, 3.06, 3.69, 0, 0], [12, 3.38, 4.06, 0, 0],
+  [14, 3.5, 3.94, 0, 0], [16, 3.69, 4.19, 0, 0], [18, 3.81, 4.38, 0, 0], [20, 4, 4.69, 0, 0], [24, 4.56, 5.5, 0, 0]
+]
 /** MSS SP-95 swage nipple length (in). */
 const SWAGE = [[0.25, 2], [0.375, 2.5], [0.5, 2.75], [0.75, 3], [1, 3.5], [1.25, 4], [1.5, 4.5], [2, 6.5], [2.5, 7], [3, 8], [4, 9], [5, 11], [6, 12]]
 // ---- ASME B16.10 face-to-face (RF) / end-to-end (BW) (in). Class 600+ RF lengths include the raised faces.
@@ -559,6 +579,20 @@ export function standardRow(code: string, nps: number, rating?: string | number,
   if (/^[CE]-SW(AGE|G)$/.test(c)) {
     const l = at(SWAGE, nps)?.[1]
     return l && small != null && small < nps && isNps(small) ? row('reducer', nps, mm(l) / 2, c.startsWith('C') ? 'SWAGE CONC' : 'SWAGE ECC', 'MSS SP-95 swage length; takeout = half length', { ...sized, faceToFace: mm(l) }) : undefined
+  }
+  if (c === 'WOL' || c === 'SOL' || c === 'TOL') {
+    // Measured from the run pipe's outside: the pipe stops at the bevel, the socket bottom or the thread make-up.
+    const o = at(OLET, nps), fc = c === 'WOL' ? undefined : forgedClass(cls, c === 'TOL')
+    // An extra-strong weldolet suits any branch wall heavier than standard.
+    const heavy = (pipeWall(nps, schedule) ?? 0) > (pipeWall(nps) ?? Infinity) + 0.01
+    const a = o?.[c === 'WOL' ? (heavy ? 2 : 1) : fc === 6000 ? 4 : 3]
+    if (!a || (c !== 'WOL' && !fc)) return undefined
+    const h = mm(a), j = c === 'SOL' ? minSocket(nps) : undefined, e = c === 'TOL' ? engagement(nps) : undefined
+    if (c === 'TOL' && e == null) return undefined
+    const name = { WOL: `WELDOLET, ${heavy ? 'XS' : 'STD'}`, SOL: `SOCKOLET, CLASS ${fc}`, TOL: `THREDOLET, CLASS ${fc === 6000 ? 6000 : 3000}` }[c]
+    return row('olet', nps, h - (j ?? 0) - (e == null ? 0 : mm(e)), `${name}, MSS SP-97`,
+      `MSS SP-97 as catalogued (Bonney Forge): height A from the run pipe outside; takeout = A${c === 'SOL' ? ' less B16.11 socket depth J' : c === 'TOL' ? ' less NPT make-up engagement' : ''}`,
+      { height: h, takeoutReference: 'header-outside', ...(j != null ? { socketDepth: j } : {}), ...(e != null ? { threadEngagement: mm(e) } : {}) })
   }
   const sw = c.startsWith('SW-') || /SW$/.test(c), thd = c.startsWith('SC-') || /SC$/.test(c) || c === 'PLUG'
   if (!sw && !thd) return undefined

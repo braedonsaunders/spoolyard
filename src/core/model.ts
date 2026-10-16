@@ -2,6 +2,7 @@ import type { GridSettings } from './grid'
 import { COMPONENT_TYPES } from './components'
 import { defaultCode, flangedAllowance, flangedJoints, isFlangePair, nodeItem, pipeEndPrep } from './joints'
 import { boltSizeText } from './format'
+import { pipeOd } from './standards'
 /** Spoolyard piping semantics (file schema id "bidwright-piping" is kept for compatibility). Coordinates and fabrication lengths are millimetres. */
 export type Vec3 = [number, number, number]
 export type Kind =
@@ -49,6 +50,10 @@ export interface CatalogItem {
   centreToEnd?: number
   socketDepth?: number
   threadEngagement?: number
+  /** Branch outlet height A, outlet end to the run pipe's outside. */
+  height?: number
+  /** Where a branch outlet's takeout is measured from: the run pipe's outside (MSS SP-97) or its centreline (default). */
+  takeoutReference?: 'header-outside' | 'header-centre'
   faceToFace?: number
   flangeThickness?: number
   lengthThroughHub?: number
@@ -537,8 +542,20 @@ export function takeout(
   const item = nodeItem(doc, node), run = doc.runs.find(r => r.id === runId)
   const own = node.branchEdgeId === runId
     ? node.branchTakeout ?? (item?.takeoutMissing ? undefined : item?.branchTakeout)
-    : node.takeout ?? bendTakeout(doc, node) ?? (item?.takeoutMissing ? undefined : lateralLongSide(doc, node, runId, item) ?? item?.takeout)
+    : node.takeout ?? bendTakeout(doc, node) ?? (item?.takeoutMissing ? undefined : lateralLongSide(doc, node, runId, item) ?? oletTakeout(doc, node, item) ?? item?.takeout)
   return own == null || !run ? own : own + flangedAllowance(doc, node, run)
+}
+/**
+ * A branch outlet measured from the run pipe's outside (MSS SP-97) sits on its header's centreline: its takeout adds
+ * the header radius and the root gap under the outlet. An outlet drawn without its header is measured from its node.
+ */
+function oletTakeout(doc: IsoDocument, node: PipeNode, item?: CatalogItem): number | undefined {
+  if (node.kind !== 'olet' || item?.takeoutReference !== 'header-outside') return undefined
+  const header = doc.runs.find(r => r.id === node.associatedRunId)
+  if (!header) return undefined
+  const spec = doc.specs.find(s => s.id === header.specId)
+  const od = spec?.sizes.find(s => s.nps === header.nps)?.od ?? pipeOd(header.nps)
+  return od == null ? undefined : od / 2 + (header.rootGap ?? spec?.rootGap ?? 0) + item.takeout
 }
 /** Tangent length of a pipe bend of known radius: R · tan(θ/2) for the deflection θ the pipes make. */
 export function bendTakeout(doc: IsoDocument, node: PipeNode): number | undefined {
@@ -968,7 +985,7 @@ export function validateIso(doc: IsoDocument): string[] {
       if (!Number.isFinite(result.cut)) {
         for (const node of [getNode(doc, r.from), getNode(doc, r.to)]) {
           if (takeout(doc, node, r.id) != null) continue
-          issues.push(`${r.spool}: the ${itemName(doc, node)} (${r.nps}″) has no standard size. Enter its centre-to-end length so the pipe cut can be calculated.`)
+          issues.push(`${r.spool}: the ${itemName(doc, node)} (${r.nps}″) has no standard size and no length in the specification, so the pipe cannot be cut to fit. Enter its centre-to-end length.`)
         }
       }
       else if (!r.connector && result.cut <= 0)
@@ -998,7 +1015,7 @@ export function validateIso(doc: IsoDocument): string[] {
     const edges = connected(doc, n.id)
     if (resolved && resolved.socketDepth == null && resolved.threadEngagement == null && !/effective|engagement|insertion/i.test(resolved.source) &&
       edges.some(r => ['SW', 'THD'].includes(prepAtNode(r, n.id)) && n.takeout == null && n.portTakeouts?.[r.id] == null))
-      issues.push(`${at}the ${name} has no socket depth or thread engagement. Enter the length the pipe stops short of its centre.`)
+      issues.push(`${at}the ${name} has no socket depth or thread length in the specification, so it is not known how far the pipe goes into it. Enter the distance from ${n.kind === 'olet' ? 'the header centre' : 'its centre'} to the pipe end.`)
     if (item && edges.length) {
       // An olet sits on its header; only its branch pipe connects to it.
       const sizes = [...new Set(edges.map(r => r.nps))].sort((a, b) => b - a)
@@ -1553,7 +1570,9 @@ export function parseIsoJson(raw: string): IsoDocument {
           k => f[k as keyof CatalogItem] != null && !isString(f[k as keyof CatalogItem])
         ) ||
         (f.shopField != null && !['S', 'F'].includes(f.shopField)) ||
+        (f.takeoutReference != null && f.takeoutReference !== 'header-outside' && f.takeoutReference !== 'header-centre') ||
         !optionalNumbers(f, [
+          'height',
           'branchTakeout',
           'weightKg',
           'areaM2',

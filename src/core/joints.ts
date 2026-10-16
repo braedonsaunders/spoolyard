@@ -40,7 +40,7 @@ export function catalogRow(spec: PipeSpec, code: string, nps: number, smallerNps
   const rows = spec.fittings.filter(f => f.component === code && f.nps === nps && sameBranch(f, nps, smallerNps))
   const row = rows.find(f => !f.takeoutMissing)
   if (row) return row
-  const std = standardRow(code, nps, specRating(spec), smallerNps)
+  const std = standardRow(code, nps, specRating(spec), smallerNps, spec.sizes.find(s => s.nps === nps)?.schedule ?? spec.schedule)
   if (!std) return rows[0]
   const named = rows[0]
   return {

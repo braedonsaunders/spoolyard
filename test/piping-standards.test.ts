@@ -24,7 +24,8 @@ const DELIBERATE: Array<{ key: RegExp; nps?: number[]; reason: string }> = [
   { key: /\/SC-45ELL\/takeout$/, reason: 'library threaded 45° elbows carry the B16.11 Class 2000 centre-to-end; Class 3000 and 6000 are larger' },
   { key: /\/SC-R?CRS\/(takeout|branchTakeout)$/, reason: 'library threaded crosses are shorter than its own tees; B16.11 crosses share the tee centre-to-end' },
   { key: /\/[FH]-CPLGSC\/(takeout|faceToFace)$/, reason: 'library threaded couplings reuse the socket-weld coupling length; B16.11 threaded coupling length W (48 mm at NPS 1/2) gives a longer effective takeout' },
-  { key: /^d1\/CHECK-FL\/(takeout|faceToFace)$/, reason: 'spec D1 lists manufacturer check-valve lengths (its duplicate rows disagree with each other); B16.10 Class 900 check valves take the gate length' }
+  { key: /^d1\/CHECK-FL\/(takeout|faceToFace)$/, reason: 'spec D1 lists manufacturer check-valve lengths (its duplicate rows disagree with each other); B16.10 Class 900 check valves take the gate length' },
+  { key: /^d1\/WOL\/takeout$/, nps: [6, 8, 10, 12], reason: 'spec D1 lists standard-weight weldolets on its Schedule 80 branches; an extra-strong weldolet suits a wall heavier than standard' }
 ];
 
 test('rating classes parse from every spec spelling', () => {
