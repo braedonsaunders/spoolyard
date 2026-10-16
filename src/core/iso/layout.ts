@@ -212,18 +212,19 @@ export function layoutSheet(doc: IsoDocument, runs: PipeRun[], nodes: PipeNode[]
         const offsetLeg = Math.max(...d3.map(Math.abs)) / mm < 0.9999
         // Pipe drawn across the page is lengthened to fill a narrow drawing out.
         const u = [page[0] / span, page[1] / span]
-        const stretched = 1 + stretch * Math.abs(u[0])
+        // A leg drawn longer or shorter to clear another changes its pipe and joints, never the room its symbols need.
+        const factor = shape.legs?.[leg.key] ?? 1, stretched = (1 + stretch * Math.abs(u[0])) * factor
         // Each piece of the leg gets a compressed share of the length, so short pieces between fittings stay
         // readable, plus the room its end symbols and the hangers on it need. Fittings joined direct stay close.
         const weights = order.slice(1).map((id, i) => {
           const p = length(sub(position(id), position(order[i]))), ends = room(order[i]) + room(id) + hung(order[i], id)
           if (!between(order[i], id)?.connector) return (PIECE + base * schematicLength(p)) * stretched + ends
-          return p < GASKET ? JOIN / 2 : JOIN + ends
+          return p < GASKET ? JOIN / 2 : JOIN * factor + ends
         })
         const total = weights.reduce((x, y) => x + y, 0) || 1
         // Offsets are drawn at full length whatever their foreshortening, and never shorter than a pipe piece, so
         // their constructions stay legible without dwarfing the runs beside them.
-        const drawn = (offsetLeg ? Math.max(total, PIECE + base * schematicLength(mm) * 0.5) : total * span / mm) * (shape.legs?.[leg.key] ?? 1)
+        const drawn = offsetLeg ? Math.max(total, PIECE + base * schematicLength(mm) * 0.5) : total * span / mm
         const station = order.map((_, i) => weights.slice(0, i).reduce((x, y) => x + y, 0))
         const from = station[order.indexOf(at)]
         order.forEach((id, i) => {
@@ -269,7 +270,7 @@ const CLEAR = 8
  * How badly unrelated straights tangle in a not-to-scale layout: one for each pair of pieces that cross or come
  * within `CLEAR` of each other. Pieces of one leg, of legs that meet, and branches on their host do not count.
  */
-export function tangles(doc: IsoDocument, layout: Layout): Array<[Leg, Leg]> {
+export function tangles(doc: IsoDocument, layout: Layout): Array<[Leg, Leg, number]> {
   const pieces = layout.legs.flatMap(leg => leg.nodes.slice(1).flatMap((id, i) => {
     const a = layout.raw.get(leg.nodes[i]), b = layout.raw.get(id)
     return a && b && Math.hypot(...sub2(b, a)) > 1e-6 ? [{ leg, a, b }] : []
@@ -278,53 +279,58 @@ export function tangles(doc: IsoDocument, layout: Layout): Array<[Leg, Leg]> {
   const host = (leg: Leg) => leg.nodes.map(id => getNode(doc, id).associatedRunId).find(Boolean)
   const related = (x: Leg, y: Leg) => x === y || x.nodes.some(id => y.nodes.includes(id)) ||
     [[x, y], [y, x]].some(([p, q]) => q.runs.some(r => r.id === host(p))) || (!!host(x) && host(x) === host(y))
-  const out: Array<[Leg, Leg]> = []
+  // Each with how far the pair is from clearing.
+  const out: Array<[Leg, Leg, number]> = []
   for (let i = 0; i < pieces.length; i++)
     for (let j = i + 1; j < pieces.length; j++) {
-      const p = pieces[i], q = pieces[j]
-      if (!related(p.leg, q.leg) && segmentGap(p.a, p.b, q.a, q.b) < CLEAR) out.push([p.leg, q.leg])
+      const p = pieces[i], q = pieces[j], gap = related(p.leg, q.leg) ? Infinity : segmentGap(p.a, p.b, q.a, q.b)
+      if (gap < CLEAR) out.push([p.leg, q.leg, CLEAR - gap])
     }
   return out
 }
 
 /**
  * Leg length factors that keep unrelated straights of a not-to-scale layout from crossing or running into each
- * other, found by lengthening or shortening the legs that join each tangled pair, a few at a time.
+ * other, found by lengthening or shortening the legs that join each tangled pair, a step at a time while the
+ * tangles get fewer or shallower.
  */
 export function untangle(doc: IsoDocument, runs: PipeRun[], nodes: PipeNode[], view: View, base: number, shape: LegShape = {}): Record<string, number> {
   let legs = { ...shape.legs }
   const lay = (factors: Record<string, number>) => layoutSheet(doc, runs, nodes, view, true, base, { ...shape, legs: factors })
+  const score = (k: Array<[Leg, Leg, number]>) => k.length * 1e4 + k.reduce((sum, t) => sum + t[2], 0)
   let layout = lay(legs), knots = tangles(doc, layout)
   const change = (factors: Record<string, number>) => Object.values(factors).reduce((s, f) => s + Math.abs(Math.log(f)), 0)
-  for (let pass = 0; pass < 8 && knots.length; pass++) {
+  for (let pass = 0; pass < 12 && knots.length; pass++) {
     const [x, y] = knots[0]
     // The legs that join the tangled pair: each back to where their ways from the first leg laid out meet.
     const ancestry = (leg: Leg) => { const out: Leg[] = []; for (let l: Leg | undefined = leg; l && !out.includes(l); l = l.parent) out.push(l); return out }
     const ax = ancestry(x), ay = ancestry(y), meet = ax.find(l => ay.includes(l))
     const path = [...ax.slice(0, meet ? ax.indexOf(meet) + 1 : ax.length), ...ay.slice(0, meet ? ay.indexOf(meet) : ay.length)]
-    let best: { legs: Record<string, number>; layout: Layout; knots: Array<[Leg, Leg]> } | undefined
+    let best: { legs: Record<string, number>; layout: Layout; knots: Array<[Leg, Leg, number]> } | undefined
     for (const leg of path.reverse())
-      for (const f of [1.6, 0.6, 2.5, 0.4]) {
+      for (const f of [1.6, 0.6, 2.5, 0.4, 4, 0.25]) {
         const factor = Math.min(4, Math.max(0.25, (legs[leg.key] ?? 1) * f))
         const trial = { ...legs, [leg.key]: factor }, l = lay(trial), k = tangles(doc, l)
-        if (!best || k.length < best.knots.length || (k.length === best.knots.length && change(trial) < change(best.legs))) best = { legs: trial, layout: l, knots: k }
+        if (!best || score(k) < score(best.knots) - 1e-6 || (Math.abs(score(k) - score(best.knots)) < 1e-6 && change(trial) < change(best.legs))) best = { legs: trial, layout: l, knots: k }
       }
-    if (!best || best.knots.length >= knots.length) break
+    if (!best || score(best.knots) > score(knots) - 0.5) break
     ;({ legs, layout, knots } = best)
   }
   return legs
 }
 
-/** Least distance between two page segments (zero when they cross). */
+/** Least distance between two page segments, or less than zero when they cross. */
 function segmentGap(a: Point, b: Point, c: Point, d: Point): number {
   const cross = (o: Point, p: Point, q: Point) => (p[0] - o[0]) * (q[1] - o[1]) - (p[1] - o[1]) * (q[0] - o[0])
   const d1 = cross(c, d, a), d2 = cross(c, d, b), d3 = cross(a, b, c), d4 = cross(a, b, d)
-  if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) return 0
+  const crossed = ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))
   const toSegment = (p: Point, s: Point, e: Point) => {
     const v = sub2(e, s), l2 = v[0] * v[0] + v[1] * v[1], t = l2 ? Math.max(0, Math.min(1, ((p[0] - s[0]) * v[0] + (p[1] - s[1]) * v[1]) / l2)) : 0
     return Math.hypot(p[0] - s[0] - v[0] * t, p[1] - s[1] - v[1] * t)
   }
-  return Math.min(toSegment(a, c, d), toSegment(b, c, d), toSegment(c, a, b), toSegment(d, a, b))
+  const near = Math.min(toSegment(a, c, d), toSegment(b, c, d), toSegment(c, a, b), toSegment(d, a, b))
+  // Crossed, the gap is negative: how far the nearest end would have to come back to clear.
+  return crossed ? -near : near
 }
 const add2 = (a: Point, b: Point): Point => [a[0] + b[0], a[1] + b[1]]
 const sub2 = (a: Point, b: Point): Point => [a[0] - b[0], a[1] - b[1]]
