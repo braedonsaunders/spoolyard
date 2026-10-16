@@ -17,9 +17,11 @@ import {
   bom,
   prepAt,
   fitting,
-  runResult
+  getSpec,
+  runResult,
+  type CatalogItem
 } from './model'
-import { flangedAllowance, flangedJoints, gasketThickness } from './joints'
+import { flangedAllowance, flangedJoints, gasketThickness, nodeItem } from './joints'
 import { COMPONENT_TYPE_BY_CODE } from './components'
 interface PcfRecord {
   type: string
@@ -429,12 +431,13 @@ export function importPcf(text: string): {
   }
   if (!doc.runs.some(r => !r.connector))
     throw new Error('No PCF pipe runs were found.')
+  // Supports and bolts belong to the nearest pipe; an olet to the header its centre point lies on.
   for (const n of doc.nodes.filter(
-    n => n.kind === 'support' || n.kind === 'bolt'
+    n => n.kind === 'support' || n.kind === 'bolt' || (n.kind === 'olet' && !n.associatedRunId)
   )) {
     let nearest: PipeRun | undefined,
       best = Infinity
-    for (const r of doc.runs) {
+    for (const r of doc.runs.filter(r => r.from !== n.id && r.to !== n.id && !(n.kind === 'olet' && r.connector))) {
       const a = getNode(doc, r.from).position,
         b = getNode(doc, r.to).position,
         delta = sub(b, a)
@@ -456,6 +459,19 @@ export function importPcf(text: string): {
     n.associatedRunId = nearest?.id
   }
   return { doc: parseIsoJson(JSON.stringify(doc)), warnings }
+}
+/**
+ * Header centreline to the outlet of an olet, where its branch pipe starts: the header's outside radius plus the olet's
+ * height when its row is measured from the header outside. A takeout entered on the node, or one that already counts
+ * the radius, is from the centreline.
+ */
+function oletReach(doc: IsoDocument, node: PipeNode, run: PipeRun): number {
+  const t = takeout(doc, node, run.id) ?? 0
+  const header = doc.runs.find(r => r.id === node.associatedRunId), item = nodeItem(doc, node) as (CatalogItem & { takeoutReference?: string }) | undefined
+  if (!header || !item || node.takeout != null || node.branchTakeout != null || node.portTakeouts?.[run.id] != null) return t
+  if (item.takeoutReference !== 'header-outside' && !/header outside/i.test(item.source ?? '')) return t
+  if (![item.takeout, item.branchTakeout].some(v => v != null && Math.abs(v - t) < 1e-6)) return t
+  return t + (getSpec(doc, header.specId).sizes.find(s => s.nps === header.nps)?.od ?? 0) / 2
 }
 export function exportPcf(doc: IsoDocument): string {
   if (doc.runs.some(r => !Number.isFinite(runResult(doc, r).cut) || !r.connector && runResult(doc, r).cut <= 0))
@@ -483,7 +499,7 @@ export function exportPcf(doc: IsoDocument): string {
     const other = getNode(doc, r.from === n.id ? r.to : r.from)
     const delta = sub(other.position, n.position),
       d = distance(n.position, other.position),
-      t = (takeout(doc, n, r.id) ?? 0) - (face ? flangedAllowance(doc, n, r) : 0)
+      t = (n.kind === 'olet' ? oletReach(doc, n, r) : takeout(doc, n, r.id) ?? 0) - (face ? flangedAllowance(doc, n, r) : 0)
     return add(n.position, mul(delta, t / (d || 1)))
   }
   // A flanged component's mating flange, gasket and bolts are their own PCF components.
@@ -505,7 +521,9 @@ export function exportPcf(doc: IsoDocument): string {
   }
   for (const n of doc.nodes.filter(n => n.kind !== 'end' && n.kind !== 'annotation')) {
     const edges = doc.runs.filter(r => r.from === n.id || r.to === n.id),
-      associated = edges[0] ?? doc.runs.find(r => r.id === n.associatedRunId)
+      // An olet's centre is on its header, at the header's bore; its outlets are branch points.
+      header = n.kind === 'olet' ? doc.runs.find(r => r.id === n.associatedRunId) : undefined,
+      associated = header ?? edges[0] ?? doc.runs.find(r => r.id === n.associatedRunId)
     if (!associated) continue
     const type =
       Object.entries(TYPES).find(([, k]) => k === n.kind)?.[0] ?? 'ELBOW'
@@ -520,7 +538,7 @@ export function exportPcf(doc: IsoDocument): string {
     out.push(`    ATTRIBUTE96 SPOOLYARD-COMPONENT ${encodeURIComponent(JSON.stringify(Object.fromEntries(Object.entries(n).filter(([key]) => !['id', 'position', 'portTakeouts', 'branchEdgeId', 'associatedRunId'].includes(key)))))}`)
     for (const r of edges)
       out.push(
-        `    ${n.branchEdgeId === r.id ? 'BRANCH1-POINT' : 'END-POINT'} ${fmt(port(n, r, COMPONENT_TYPE_BY_CODE[n.component ?? '']?.endPrep === 'FL'), r.nps, prepAt(r, r.from === n.id ? 0 : 1))}`
+        `    ${n.branchEdgeId === r.id || header ? 'BRANCH1-POINT' : 'END-POINT'} ${fmt(port(n, r, COMPONENT_TYPE_BY_CODE[n.component ?? '']?.endPrep === 'FL'), r.nps, prepAt(r, r.from === n.id ? 0 : 1))}`
       )
     if (n.kind === 'support' || n.kind === 'bolt')
       out.push(`    CO-ORDS ${fmt(n.position, associated.nps)}`)
