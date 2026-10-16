@@ -361,10 +361,10 @@ export function drawSheet(input: {
     out.push({ type: 'image', p: [X((x0 + x1) / 2) - w / 2, Y((y0 + y1) / 2) - h / 2], width: w, height: h, href: logo.dataUrl, layer: 'TITLE' })
   })
 
-  // Revisions: the latest at the bottom, just above the column headings.
+  // Revisions fill up from the column headings: the first just above them, each later one above the last.
   const shown = tb.revisions.slice(-(REVISION_ROWS.length - 1))
   shown.forEach((rev, i) => {
-    const y0 = REVISION_ROWS[REVISION_ROWS.length - 1 - shown.length + i], y1 = REVISION_ROWS[REVISION_ROWS.length - shown.length + i]
+    const y0 = REVISION_ROWS[REVISION_ROWS.length - 2 - i], y1 = REVISION_ROWS[REVISION_ROWS.length - 1 - i]
     ;[rev.rev, rev.date, rev.description, rev.designedBy, rev.checkedBy, rev.disciplineLead, rev.projectLeader, rev.approvedBy]
       .forEach((value, c) => title(up(value), (REVISION_COLUMNS[c] + REVISION_COLUMNS[c + 1]) / 2, (y0 + y1) / 2 + 5, 10, 'middle',
         REVISION_COLUMNS[c + 1] - REVISION_COLUMNS[c] - 6))

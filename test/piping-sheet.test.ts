@@ -167,7 +167,9 @@ test('title block prints the document, sheet and latest revision values', () => 
     'PIPE SPEC:', 'CS150', 'SPEC REV:', 'DESIGN CODE:', 'ASME B31.3', 'REF. AREA', 'PRODUCT:', 'W', 'LINE No.', 'L-200', 'DRAWING No.',
     'ISO-77-1', 'PROJ. No.', 'PRJ-100', 'REV.', 'ISSUED FOR CONSTRUCTION', 'ISSUED FOR REVIEW', 'DESIGNED', 'YY-MM-DD'].forEach(has);
   const latest = t.find(x => x.text === 'ISSUED FOR CONSTRUCTION')!, older = t.find(x => x.text === 'ISSUED FOR REVIEW')!;
-  assert.ok(latest.p[1] > older.p[1], 'newest revision on the bottom row');
+  assert.ok(latest.p[1] < older.p[1], 'newest revision above the older one');
+  const only = texts(frame({ ...d, titleBlock: { ...d.titleBlock!, revisions: d.titleBlock!.revisions.slice(0, 1) } }).primitives, 'TITLE');
+  assert.equal(only.find(x => x.text === 'ISSUED FOR REVIEW')!.p[1], older.p[1], 'a single revision sits just above the headings');
   const rev = t.filter(x => x.text === 'B');
   assert.ok(rev.some(x => x.size > 10), 'large revision letter');
   const metric = texts(frame({ ...d, units: 'mm' }).primitives, 'TITLE').map(x => x.text);
