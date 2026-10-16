@@ -136,6 +136,8 @@ export interface PipeNode {
    * the dimension.
    */
   jointSupply?: { gasket: boolean; bolts: boolean; flange?: boolean; mate?: 'flange' | 'lug'; measuredTo?: 'mate' | 'flange' }
+  /** Flat side of an eccentric reducer: flat on top (FOT) or flat on bottom (FOB). */
+  flat?: 'top' | 'bottom'
 }
 export interface PortFlange {
   /** Mating flange component code, or 'NONE' when the mate is not supplied. */
@@ -225,6 +227,8 @@ export interface PipeRun {
   uncut?: boolean
   /** Bill-of-materials text for this pipe when it differs from its size's text in the specification. */
   description?: string
+  /** Flow direction along the pipe: forward runs from `from` to `to`. */
+  flow?: 'forward' | 'reverse'
 }
 export interface IsoDocument {
   schema: 'bidwright-piping'
@@ -1446,6 +1450,7 @@ export function parseIsoJson(raw: string): IsoDocument {
           (f.bolts == null || typeof f.bolts === 'boolean'))))
     )
       throw new Error('Invalid component callout.')
+    if (n.flat != null && n.flat !== 'top' && n.flat !== 'bottom') throw new Error('Invalid eccentric flat side.')
   }
   const strings = (v: unknown, count: number, max = 200) =>
     Array.isArray(v) && v.length <= count && v.every(s => isString(s, max))
@@ -1581,6 +1586,7 @@ export function parseIsoJson(raw: string): IsoDocument {
       )
         throw new Error('Invalid end preparation.')
     if (r.description != null && !isString(r.description, 300)) throw new Error('Invalid pipe description.')
+    if (r.flow != null && r.flow !== 'forward' && r.flow !== 'reverse') throw new Error('Invalid flow direction.')
     for (const key of ['connector', 'fromField', 'toField', 'uncut'])
       if (
         r[key as keyof PipeRun] != null &&
