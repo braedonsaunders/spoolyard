@@ -42,13 +42,9 @@ import { SheetSettings } from "./sheet-settings";
 import {
   appendRun,
   applyComponent,
-  bom,
-  bomCsv,
   clone,
   connected,
   formatLength,
-  formatAllowance,
-  displayBom,
   getNode,
   getSpec,
   defaultEndPrep,
@@ -69,7 +65,6 @@ import {
   sub,
   takeout,
   validateIso,
-  welds,
   type IsoDocument,
   type CatalogItem,
   type Kind,
@@ -79,6 +74,19 @@ import {
 import { createDrawing, sheetWidth, type Drawing, type Point, type SheetFit } from "../core/drawing";
 import { defaultGrid, GRID_ORIGIN, gridLines, gridSvg, pickGridPoint, pickOrthoPoint } from "../core/grid";
 import { importPcf, exportPcf } from "../core/pcf";
+import { sizeText } from "../core/format";
+import {
+  UNKNOWN,
+  allowanceText,
+  cutSchedule,
+  cutText,
+  lengthText,
+  lengthUnits,
+  materialCsv,
+  materialSchedule,
+  pieceText,
+  weldSchedule,
+} from "../core/schedules";
 import { download } from "./download";
 import { exportDwg } from "./dwg";
 import { isometricDxf, readIsometric } from "../core/document";
@@ -647,9 +655,10 @@ export function IsometricEditor({
       })
     : null;
   const issues = useMemo(() => validateIso(doc), [doc]),
-    materials = useMemo(() => bom(doc), [doc]),
+    materials = useMemo(() => materialSchedule(doc), [doc]),
     cuts = useMemo(() => doc.runs.filter(r => !r.connector).map((r) => runResult(doc, r)), [doc]),
-    joints = useMemo(() => welds(doc), [doc]);
+    pieces = useMemo(() => cutSchedule(doc), [doc]),
+    joints = useMemo(() => weldSchedule(doc), [doc]);
   const selectedRun = doc.runs.find((r) => r.id === selection),
     selectedNode = doc.nodes.find((n) => n.id === selection);
   const selectedTrack = selectedNode ? componentTrack(doc, selectedNode.id) : null;
@@ -869,7 +878,7 @@ export function IsometricEditor({
       else if (format === "SVG") exportSvg(doc);
       else if (format === "JSON")
         download(doc.drawing + ".piping", JSON.stringify(doc, null, 2), "application/json");
-      else if (format === "bom") download(doc.drawing + "-materials.csv", bomCsv(doc), "text/csv");
+      else if (format === "bom") download(doc.drawing + "-materials.csv", materialCsv(doc), "text/csv");
       else exportSchedule(doc, format as "cut" | "weld");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -2237,46 +2246,50 @@ export function IsometricEditor({
               </> : <p>One or more pipe cuts have no length remaining after fitting takeouts and root gaps. Review their measurements below.</p>}
             </div>}
             <h3>Bill of materials</h3>
+            <p>Each sheet's bill of materials, numbered as tagged on that sheet. Pipe QTY is the order length in {lengthUnits(doc.units)}.</p>
             <table>
               <thead>
                 <tr>
-                  {["Item", "Description", "Spec", "NPS", "Quantity", doc.units === "imperial" ? "Weight lb" : "Weight kg", "Spool", "Heat"].map(
-                    (s) => (
-                      <th key={s}>{s}</th>
-                    ),
-                  )}
-                </tr>
-              </thead>
-              <tbody>
-                {materials.map((m) => {
-                  const shown = displayBom(m, doc.units);
-                  return (
-                  <tr key={m.item}>
-                    <td>{m.item}</td>
-                    <td>{m.description}</td>
-                    <td>{m.spec}</td>
-                    <td>{m.nps}″</td>
-                    <td>
-                      {Number.isFinite(shown.quantity) ? `${round(shown.quantity)} ${shown.unit}` : "Pending cut lengths"}
-                    </td>
-                    <td>{shown.weight == null ? "MISSING" : round(shown.weight)}</td>
-                    <td>{m.spool}</td>
-                    <td>{m.heat}</td>
-                  </tr>
-                )})}
-              </tbody>
-            </table>
-            <h3>Pipe cut schedule</h3>
-            <table>
-              <thead>
-                <tr>
-                  {["Pipe", "Spool", "Overall", "Takeouts", "Root gaps", "Cut length"].map((s) => (
+                  {["Spool", "Item", "QTY", "ND", "Description", doc.units === "imperial" ? "Weight lb" : "Weight kg"].map((s) => (
                     <th key={s}>{s}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {cuts.map((c, i) => (
+                {materials.map((m) => (
+                  <tr
+                    key={m.spool + ":" + m.id}
+                    onClick={() => {
+                      // Joint parts (`<node>[:<pipe>]#part`) select their node.
+                      setSelection(m.memberIds[0].split("#")[0].split(":")[0]);
+                      setTab("draw");
+                    }}
+                  >
+                    <td>{m.spool}</td>
+                    <td>{m.id}</td>
+                    <td>{m.qtyText}</td>
+                    <td>{m.nd}</td>
+                    <td>{m.description}</td>
+                    <td>{m.weightKg == null ? UNKNOWN : round(m.weightKg / (doc.units === "imperial" ? 0.45359237 : 1))}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <h3>Pipe cut schedule</h3>
+            <p>
+              Lengths in {lengthUnits(doc.units)}. Item is the pipe's number on its sheet; overall runs between the sheet's dimension
+              points, and cut = overall − takeouts − root gaps. Ends: BE bevelled, PE plain, TE threaded.
+            </p>
+            <table>
+              <thead>
+                <tr>
+                  {["Spool", "Item", "ND", "Overall", "Takeouts", "Root gaps", "Cut", "Ends"].map((s) => (
+                    <th key={s}>{s}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {pieces.map((c) => (
                   <tr
                     key={c.run.id}
                     onClick={() => {
@@ -2284,14 +2297,14 @@ export function IsometricEditor({
                       setTab("draw");
                     }}
                   >
-                    <td>P{i + 1}</td>
-                    <td>{c.run.spool}</td>
-                    <td>{formatLength(c.overall, doc.units)}</td>
-                    <td>{c.takeouts.map(v => Number.isFinite(v) ? formatAllowance(v, doc.units) : 'MISSING').join(" + ")}</td>
-                    <td>{c.gaps.map(v => formatAllowance(v, doc.units)).join(" + ")}</td>
-                    <td>
-                      {Number.isFinite(c.cut) && c.cut > 0 ? formatLength(c.cut, doc.units) : "MISSING"}
-                    </td>
+                    <td>{c.spool}</td>
+                    <td>{pieceText(c)}</td>
+                    <td>{sizeText(c.run.nps)}</td>
+                    <td>{lengthText(c.overall, doc.units)}</td>
+                    <td>{c.takeouts.map((v) => allowanceText(v, doc.units)).join(" + ")}</td>
+                    <td>{c.gaps.map((v) => allowanceText(v, doc.units)).join(" + ")}</td>
+                    <td>{cutText(c, doc.units)}</td>
+                    <td>{c.ends.join(" / ")}</td>
                   </tr>
                 ))}
               </tbody>
@@ -2344,7 +2357,7 @@ export function IsometricEditor({
             <table>
               <thead>
                 <tr>
-                  {["Weld", "NPS", "Preparation", "Location", "Position XYZ"].map((s) => (
+                  {["Weld", "Spool", "Type", "Size", "Schedule", "Joint", "Shop / field"].map((s) => (
                     <th key={s}>{s}</th>
                   ))}
                 </tr>
@@ -2352,17 +2365,19 @@ export function IsometricEditor({
               <tbody>
                 {joints.map((w, i) => (
                   <tr
-                    key={w.tag + i}
+                    key={w.weld.tag + i}
                     onClick={() => {
-                      setSelection(w.runId);
+                      setSelection(w.weld.runId);
                       setTab("draw");
                     }}
                   >
-                    <td>{w.tag}</td>
-                    <td>{w.nps}″</td>
-                    <td>{w.prep}</td>
-                    <td>{w.field ? "Field" : "Shop"}</td>
-                    <td>{w.position.map((v) => lengthInputValue(v, doc.units)).join(", ")}</td>
+                    <td>{w.weld.tag}</td>
+                    <td>{w.spool}</td>
+                    <td>{w.type}</td>
+                    <td>{w.size}</td>
+                    <td>{w.schedule}</td>
+                    <td>{w.joint}</td>
+                    <td>{w.weld.field ? "Field" : "Shop"}</td>
                   </tr>
                 ))}
               </tbody>

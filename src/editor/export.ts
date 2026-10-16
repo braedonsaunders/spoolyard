@@ -30,22 +30,22 @@ import {
 } from "pdf-lib";
 import fontkit from "@pdf-lib/fontkit";
 import { LINE_SPACING, strokeText } from "../core/stroke-font";
-import {
-  type IsoDocument,
-  bom,
-  cutCsv,
-  weldCsv,
-  validateIso,
-  round,
-  welds,
-  csv,
-  runResult,
-  prepAt,
-  formatLength,
-  formatAllowance,
-  displayBom,
-} from "../core/model";
+import { type IsoDocument, bom, validateIso, round, csv } from "../core/model";
 import { createDrawing, drawingSvg, weightOf, type Drawing, type Primitive } from "../core/drawing";
+import { sizeText } from "../core/format";
+import {
+  UNKNOWN,
+  allowanceText,
+  cutCsv,
+  cutSchedule,
+  cutText,
+  lengthText,
+  lengthUnits,
+  materialSchedule,
+  pieceText,
+  weldCsv,
+  weldSchedule,
+} from "../core/schedules";
 
 const hex = (value: string) =>
   rgb(...([1, 3, 5].map((i) => parseInt(value.slice(i, i + 2), 16) / 255) as [number, number, number]));
@@ -239,22 +239,31 @@ export async function exportPdf(doc: IsoDocument): Promise<Blob> {
           color: rgb(0.8, 0.1, 0.1),
         });
     }
-  function schedule(heading: string, headers: string[], rows: string[][], widths: number[]) {
+  /** A schedule: a note on what it lists, column headings, and rows under a heading (a string) for each spool's sheet. */
+  function schedule(heading: string, note: string, headers: string[], rows: Array<string[] | string>, widths: number[]) {
     let page = pdf.addPage([792, 612]),
-      y = 537;
-    title(page, `${doc.drawing} - ${heading}`);
+      y = 537,
+      group = "";
+    const grey = rgb(0.3, 0.35, 0.4);
     const wrap = (s: string, width: number, size: number): string[] => {
       const lines: string[] = [];
       for (const paragraph of s.split(/\r?\n/)) {
         let line = "";
-        for (const char of paragraph) {
-          if (line && font.widthOfTextAtSize(line + char, size) > width) {
-            lines.push(line);
+        // Lines break between words; a word longer than the column breaks where it must.
+        for (const word of paragraph.split(/(?<= )/)) {
+          if (line && font.widthOfTextAtSize(line + word.trimEnd(), size) > width) {
+            lines.push(line.trimEnd());
             line = "";
           }
-          line += char;
+          for (const char of word) {
+            if (line && font.widthOfTextAtSize(line + char, size) > width) {
+              lines.push(line);
+              line = "";
+            }
+            line += char;
+          }
         }
-        lines.push(line);
+        lines.push(line.trimEnd());
       }
       return lines;
     };
@@ -264,16 +273,37 @@ export async function exportPdf(doc: IsoDocument): Promise<Blob> {
         page.drawText(s, { x, y, size: 9, font });
         x += widths[i];
       });
+      page.drawLine({ start: { x: 32, y: y - 6 }, end: { x: 760, y: y - 6 }, thickness: 0.5, color: grey });
       y -= 22;
+    }
+    function groupHeading(s: string) {
+      page.drawText(s, { x: 32, y, size: 9, font, color: rgb(0.07, 0.13, 0.2) });
+      y -= 18;
     }
     const nextPage = () => {
       page = pdf.addPage([792, 612]);
       title(page, `${doc.drawing} - ${heading} (continued)`);
       y = 537;
       header();
+      if (group) groupHeading(`${group} (continued)`);
     };
+    title(page, `${doc.drawing} - ${heading}`);
+    for (const line of wrap(note, 728, 8)) {
+      page.drawText(line, { x: 32, y: y + 22, size: 8, font, color: grey });
+      y -= 11;
+    }
+    y -= 4;
     header();
     for (const row of rows) {
+      if (typeof row === "string") {
+        const first = !group;
+        group = "";
+        if (y < 80) nextPage();
+        else if (!first) y -= 6;
+        group = row;
+        groupHeading(row);
+        continue;
+      }
       const cells = row.map((s, i) => wrap(s, widths[i] - 8, 8));
       const count = Math.max(...cells.map((c) => c.length));
       // Split exceptionally long imported descriptions across pages without running below the margin.
@@ -288,61 +318,64 @@ export async function exportPdf(doc: IsoDocument): Promise<Blob> {
             .forEach((line, j) => page.drawText(line, { x, y: y - j * 12, size: 8, font }));
           x += widths[i];
         });
+        page.drawLine({ start: { x: 32, y: y - (take - 1) * 12 - 7 }, end: { x: 760, y: y - (take - 1) * 12 - 7 }, thickness: 0.25, color: rgb(0.8, 0.82, 0.85) });
         y -= Math.max(20, take * 12 + 5);
         first += take;
         if (first < count) nextPage();
       }
     }
   }
+  /** Rows under a heading for each spool's sheet. */
+  const bySheet = <T extends { spool: string; drawing: string }>(items: T[], row: (item: T) => string[]) =>
+    items.flatMap((item, i) => [
+      ...(i && items[i - 1].spool === item.spool ? [] : [`SPOOL ${item.spool || "-"} · DRAWING ${item.drawing}`]),
+      row(item),
+    ]);
+  const imperial = doc.units === "imperial";
   schedule(
     "Material schedule",
-    ["Item", "Description", "Spec / NPS", "Quantity", doc.units === "imperial" ? "Weight lb" : "Weight kg", doc.units === "imperial" ? "Area ft2" : "Area m2", "Spool / heat"],
-    bom(doc).map((r) => {
-      const shown = displayBom(r, doc.units);
-      return [
-      String(r.item),
+    `Each sheet's bill of materials, with the item numbers tagged on that sheet. QTY: pipe order length in ${lengthUnits(doc.units)} ` +
+      `(the cut rounded up to the next ${imperial ? "whole inch" : "10 mm"}, with 1/8" saw kerf between pieces of one item); everything else each. ` +
+      `${UNKNOWN} = not known.`,
+    ["Item", "QTY", "ND", "Description", imperial ? "Weight lb" : "Weight kg", imperial ? "Area ft2" : "Area m2"],
+    bySheet(materialSchedule(doc), (r) => [
+      String(r.id),
+      r.qtyText,
+      r.nd,
       r.description,
-      `${r.spec} / ${r.nps}"`,
-      Number.isFinite(shown.quantity) ? `${round(shown.quantity, 3)} ${shown.unit}` : "Pending cuts",
-      shown.weight == null ? "MISSING" : String(round(shown.weight)),
-      shown.area == null ? "MISSING" : String(round(shown.area, 3)),
-      `${r.spool} / ${r.heat}`,
-    ]}),
-    [30, 200, 95, 72, 72, 72, 187],
+      r.weightKg == null ? UNKNOWN : String(round(r.weightKg / (imperial ? 0.45359237 : 1))),
+      r.areaM2 == null ? UNKNOWN : String(round(r.areaM2 / (imperial ? 0.09290304 : 1), 3)),
+    ]),
+    [40, 70, 75, 403, 70, 70],
   );
   schedule(
     "Pipe cut schedule",
-    ["Pipe / spool", "Line / heat", "NPS", "Overall", "Takeouts / gaps", "Cut length", "Start / end"],
-    doc.runs
-      .filter((r) => !r.connector)
-      .map((r, index) => {
-        const v = runResult(doc, r);
-        return [
-          String(index + 1) + " / " + r.spool,
-          r.line + " / " + r.heat,
-          String(r.nps),
-          formatLength(v.overall, doc.units),
-          v.takeouts.map((t) => (Number.isFinite(t) ? formatAllowance(t, doc.units) : "MISSING")).join(" + ") +
-            " / " +
-            v.gaps.map((g) => formatAllowance(g, doc.units)).join(" + "),
-          formatLength(v.cut, doc.units),
-          prepAt(r, 0) + " / " + prepAt(r, 1),
-        ];
-      }),
-    [95, 125, 40, 95, 158, 115, 100],
+    `Lengths in ${lengthUnits(doc.units)}. Item: the pipe's item number on its sheet. Overall: between the dimension points on the sheet ` +
+      "(fitting centres, valve flange faces, reducer ends); cut = overall - takeouts - root gaps. Ends: BE bevelled, PE plain, TE threaded.",
+    ["Item", "ND", "Line / heat", "Overall", "Takeouts", "Root gaps", "Cut", "Ends"],
+    bySheet(cutSchedule(doc), (r) => [
+      pieceText(r),
+      sizeText(r.run.nps),
+      r.run.line + (r.run.heat ? " / " + r.run.heat : ""),
+      lengthText(r.overall, doc.units),
+      r.takeouts.map((t) => allowanceText(t, doc.units)).join(" + "),
+      r.gaps.map((g) => allowanceText(g, doc.units)).join(" + "),
+      cutText(r, doc.units),
+      r.ends.join(" / "),
+    ]),
+    [70, 50, 150, 85, 120, 90, 90, 73],
   );
   schedule(
     "Weld map",
-    ["Tag", "Spool", "Line", "NPS", "Location", "Prep"],
-    welds(doc).map((w) => {
-      const r = doc.runs.find((r) => r.id === w.runId)!;
-      return [w.tag, r.spool, r.line, String(w.nps), w.field ? "FIELD" : "SHOP", w.prep];
-    }),
-    [85, 125, 210, 65, 100, 85],
+    "Welds numbered in sequence along each spool, as on the sheets. WPS, NDE and welder are completed by the shop.",
+    ["Weld", "Type", "Size", "Schedule", "Joint", "Shop / field", "WPS", "NDE %", "Welder"],
+    bySheet(weldSchedule(doc), (r) => [r.weld.tag, r.type, r.size, r.schedule, r.joint, r.weld.field ? "FIELD" : "SHOP", "", "", ""]),
+    [60, 95, 75, 65, 120, 70, 85, 60, 98],
   );
   if (issues.length)
     schedule(
       "Data requiring completion",
+      "Resolve these before the package is issued for fabrication.",
       ["Issue"],
       issues.map((s) => [s]),
       [720],
