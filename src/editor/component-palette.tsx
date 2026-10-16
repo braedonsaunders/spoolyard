@@ -30,8 +30,9 @@ export function ComponentPalette({
   const [all, setAll] = useState(false);
   const rowsByCode = useMemo(() => {
     const map = new Map<string, CatalogItem[]>();
+    // Reducers are offered both ways round: reducing from this size, or expanding to a larger one.
     for (const f of spec.fittings)
-      if (f.nps === nps) {
+      if (f.nps === nps || (f.kind === "reducer" && f.smallerNps === nps)) {
         const code = rowComponent(f)?.code;
         if (code) map.set(code, [...(map.get(code) ?? []), f]);
       }
@@ -77,7 +78,7 @@ export function ComponentPalette({
                   <span>
                     {t.label}
                     <small>
-                      {[row.smallerNps ? nps + "×" + row.smallerNps + "″" : "", row.rating, row.schedule, row.description]
+                      {[row.smallerNps ? row.nps + "×" + row.smallerNps + "″" : "", row.rating, row.schedule, row.description]
                         .filter(Boolean)
                         .join(" · ")}
                     </small>

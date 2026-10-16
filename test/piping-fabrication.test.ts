@@ -233,6 +233,19 @@ test('a check valve bolted to a gate valve is one joint: one gasket, one bolt se
   assert.match(validateIso(doc).join(), /bolted face to face but stand 10 mm apart/);
 });
 
+test('a reducer fits either way round, and one between equal sizes is reported', () => {
+  const doc = newIso(); doc.specs = [clone(specA)];
+  appendRun(doc, null, [1500, 0, 0], 'A', 4, 'SP', 'L');
+  const expander = doc.specs[0].fittings.find(f => f.component === 'C-RED' && f.nps === 6 && f.smallerNps === 4)!;
+  const node = placeComponentOnPipe(doc, doc.runs[0].id, COMPONENT_TYPES.find(t => t.code === 'C-RED')!, 0.5, expander);
+  assert.equal(node.catalogId, expander.id);
+  assert.deepEqual(doc.runs.map(r => r.nps), [4, 6]);
+  assert.equal(sheetMaterials(doc, 'SP').find(r => r.category === 'reducer')!.nd, '6"X4"');
+  assert.deepEqual(validateIso(doc), []);
+  doc.runs[1].nps = 4;
+  assert.match(validateIso(doc).join(), /joins two pipes of the same size/);
+});
+
 test('a slip-on flange sets the pipe back a wall and 1/16" from its face', () => {
   assert.equal(standardRow('FLG-RFSO', 2, '150#', undefined, 'STD')!.takeout, 3.91 + 1.59);
   assert.equal(standardRow('FLG-RFSO', 2, '150#', undefined, '10S')!.takeout, 2.77 + 1.59);

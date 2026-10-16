@@ -132,8 +132,10 @@ export function placeComponentOnPipe(doc: IsoDocument, runId: string, type: Comp
   if (type.code === 'NIPPLE') return getNode(doc, makeNipple(doc, runId).to);
   const specRows = getSpec(doc, run.specId).fittings;
   const code = (f: CatalogItem) => f.component ?? COMPONENT_TYPES.find(t => t.kind === f.kind)?.code;
+  // A reducer fits either way round: its large end on the pipe reduces the line, its small end expands it.
+  const expanding = type.kind === 'reducer' && row?.smallerNps === run.nps && row.nps !== run.nps;
   const match =
-    (row && row.nps === run.nps && specRows.some(f => f.id === row.id) ? row : undefined) ??
+    (row && (row.nps === run.nps || expanding) && specRows.some(f => f.id === row.id) ? row : undefined) ??
     specRows.find(f => code(f) === type.code && f.nps === run.nps && (row?.smallerNps == null || f.smallerNps === row.smallerNps));
   const attached = ['support', 'bolt', 'annotation'].includes(type.kind);
   const atEnd = fraction <= 0 || fraction >= 1;
@@ -154,7 +156,7 @@ export function placeComponentOnPipe(doc: IsoDocument, runId: string, type: Comp
   applyComponent(doc, node, type.code, match);
   if (type.kind === 'reducer' && match?.smallerNps) {
     const next = doc.runs.find(r => r.from === node.id)!;
-    next.nps = match.smallerNps;
+    next.nps = match.nps === run.nps ? match.smallerNps : match.nps;
     setAutoFitting(doc, next.to);
   }
   // A flanged component dropped against another bolts straight to it, face to face, with no pipe between.
