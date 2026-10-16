@@ -5,6 +5,7 @@ import { appendRun, applyComponent, attachComponent, bom, clone, getNode, insert
 import { nodeItem } from '../src/core/joints.ts';
 import { cutSchedule } from '../src/core/schedules.ts';
 import { sheetMaterials } from '../src/core/material-list.ts';
+import { draftLength } from '../src/core/format.ts';
 import { standardRow } from '../src/core/standards.ts';
 import { COMPONENT_TYPES } from '../src/core/components.ts';
 import { placeComponentOnPipe } from '../src/core/component-position.ts';
@@ -306,6 +307,26 @@ test('a joint at a spool break is listed once: each sheet its own flange, the fi
   const valve = split('GATE-FL');
   assert.deepEqual(['valve', 'flange', 'gasket', 'bolt'].map(c => [count(valve.doc, 'S1', c), count(valve.doc, 'S2', c)]), [[1, 0], [1, 1], [2, 0], [16, 0]]);
   assert.deepEqual(bom(valve.doc).filter(r => /VALVE/.test(r.description)).map(r => [r.spool, r.qty]), [['S1', 1]]);
+});
+
+test('a field-fit weld leaves the pipe long by the makeup length, for trimming on site', () => {
+  const doc = newIso(); doc.specs = [clone(specA)]; doc.units = 'imperial';
+  const a = appendRun(doc, null, [1500, 0, 0], 'A', 4, 'SP', 'L');
+  const b = appendRun(doc, a.id, [0, 1500, 0], 'A', 4, 'SP', 'L');
+  appendRun(doc, b.id, [1500, 0, 0], 'A', 4, 'SP', 'L');
+  const pipe = doc.runs[1], before = runResult(doc, pipe).cut;
+  pipe.toFieldFit = true;
+  const fit = runResult(doc, pipe);
+  assert.deepEqual([fit.gaps[1], fit.makeup[1]], [0, 76.2]);
+  close(fit.cut, before + 1.6 + 76.2);
+  const weld = welds(doc).find(w => w.runId === pipe.id && w.nodeId === pipe.to)!;
+  assert.deepEqual([weld.field, weld.fieldFit], [true, true]);
+  assert.match(sheetMaterials(doc, 'SP').find(r => r.memberIds.includes(pipe.id))!.description, new RegExp(`CUT TO ${draftLength(fit.cut, 'imperial')}`));
+  doc.units = 'mm';
+  assert.equal(runResult(doc, pipe).makeup[1], 100);
+  doc.fieldFitMakeup = 150;
+  assert.equal(runResult(doc, pipe).makeup[1], 150);
+  assert.throws(() => parseIsoJson(JSON.stringify({ ...doc, fieldFitMakeup: -1 })), /settings/);
 });
 
 test('a slip-on flange sets the pipe back a wall and 1/16" from its face', () => {

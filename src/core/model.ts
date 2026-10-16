@@ -254,6 +254,9 @@ export interface PipeRun {
   toPrep?: EndPrep
   fromField?: boolean
   toField?: boolean
+  /** A field-fit weld at this end: the pipe is cut long by the drawing's makeup length and trimmed to fit on site. */
+  fromFieldFit?: boolean
+  toFieldFit?: boolean
   fromTag?: string
   toTag?: string
   rootGap?: number
@@ -296,6 +299,8 @@ export interface IsoDocument {
   weldStart: number
   weldPrefix: string
   weldNumbering?: 'numeric' | 'alphabetic'
+  /** Extra pipe (mm) left at a field-fit weld for trimming on site; 3" (100 mm on a metric drawing) if unset. */
+  fieldFitMakeup?: number
   titleBlock?: TitleBlock
   /** Per-spool sheet identity; a spool is one issued sheet. */
   sheets?: Record<string, SheetInfo>
@@ -309,6 +314,8 @@ export interface RunResult {
   cut: number
   takeouts: [number, number]
   gaps: [number, number]
+  /** Extra length left at each field-fit end. */
+  makeup: [number, number]
   weightKg: number
   areaM2: number
 }
@@ -321,6 +328,8 @@ export interface Weld {
   prep: string
   /** Butt, socket, slip-on fillet (bore and hub), branch connection, reinforcing pad or support attachment. */
   type: 'BW' | 'SW' | 'SO' | 'BR' | 'RP' | 'AT'
+  /** A field-fit weld: made on site after trimming the pipe left long. */
+  fieldFit?: boolean
   position: Vec3
 }
 export interface BomRow {
@@ -635,24 +644,29 @@ export function runResult(doc: IsoDocument, run: PipeRun): RunResult {
     takeout(doc, a, run.id) ?? NaN,
     takeout(doc, b, run.id) ?? NaN
   ]
+  // A field-fit end is cut long and trimmed on site: it takes the makeup instead of a gap.
+  const fit = [run.fromFieldFit, run.toFieldFit].map(f => f && !run.connector ? fieldFitMakeup(doc) : 0) as [number, number]
   const gaps = [a, b].map((n, i) => {
-    if (run.connector || ['end', 'support', 'annotation', 'gasket', 'bolt'].includes(n.kind)) return 0
+    if (run.connector || fit[i] || ['end', 'support', 'annotation', 'gasket', 'bolt'].includes(n.kind)) return 0
     const prep = pipePrepAt(doc, run, i)
     // A pipe-to-pipe butt weld splits its root gap; a socket stops the pipe short of its bottom.
     if (prep === 'BW') return (run.rootGap ?? spec.rootGap) / (n.kind === 'weld' ? 2 : 1)
     return prep === 'SW' && n.kind !== 'weld' ? spec.socketGap ?? 0 : 0
   }) as [number, number]
-  const cut = overall - ts[0] - ts[1] - gaps[0] - gaps[1]
+  const cut = overall - ts[0] - ts[1] - gaps[0] - gaps[1] + fit[0] + fit[1]
   return {
     run,
     overall,
     cut,
     takeouts: ts,
     gaps,
+    makeup: fit,
     weightKg: size ? (size.kgM * cut) / 1000 : NaN,
     areaM2: size ? (Math.PI * size.od * cut) / 1e6 : NaN
   }
 }
+/** Extra pipe left at a field-fit weld: the drawing's setting, else 3" (100 mm on a metric drawing). */
+export const fieldFitMakeup = (doc: IsoDocument) => doc.fieldFitMakeup ?? (doc.units === 'mm' ? 100 : 76.2)
 export function connected(doc: IsoDocument, nodeId: string): PipeRun[] {
   return doc.runs.filter(r => r.from === nodeId || r.to === nodeId)
 }
@@ -929,7 +943,7 @@ export function resizeRunToCut(doc: IsoDocument, runId: string, cut: number): vo
   if (!run || run.connector) throw new Error('Select a pipe to change its length.')
   if (!Number.isFinite(cut) || cut <= 0) throw new Error('Enter a positive cut length.')
   const result = runResult(doc, run)
-  const extra = result.takeouts[0] + result.takeouts[1] + result.gaps[0] + result.gaps[1]
+  const extra = result.takeouts[0] + result.takeouts[1] + result.gaps[0] + result.gaps[1] - result.makeup[0] - result.makeup[1]
   if (!Number.isFinite(extra))
     throw new Error('Enter fitting takeouts before editing the cut length.')
   resizeRun(doc, runId, cut + extra)
@@ -1032,13 +1046,18 @@ export function welds(doc: IsoDocument): Weld[] {
       if (r.connector && out.some(w => distance(w.position, position) < 0.001 && w.nps === r.nps)) continue
       const jointEnds = n.kind === 'weld' ? connected(doc, n.id).map(edge => ({
         tag: edge.from === n.id ? edge.fromTag : edge.toTag,
-        field: edge.from === n.id ? edge.fromField : edge.toField
+        field: edge.from === n.id ? edge.fromField : edge.toField,
+        fit: edge.from === n.id ? edge.fromFieldFit : edge.toFieldFit
       })) : []
+      const fieldFit = !!(index === 0 ? r.fromFieldFit : r.toFieldFit) || jointEnds.some(end => end.fit)
       const tag =
         (index === 0 ? r.fromTag : r.toTag) ??
         jointEnds.find(end => end.tag)?.tag ??
         (n.kind === 'weld' ? n.tag : undefined)
-      numbered({ runId: r.id, nodeId: n.id, nps: r.nps, field: jointEnds.some(end => end.field) || field, prep, type: prep === 'SW' ? 'SW' : 'BW', position }, tag)
+      numbered({
+        runId: r.id, nodeId: n.id, nps: r.nps, field: fieldFit || jointEnds.some(end => end.field) || field, prep, type: prep === 'SW' ? 'SW' : 'BW', position,
+        ...(fieldFit ? { fieldFit } : {})
+      }, tag)
     }
   }
   return out
@@ -1512,6 +1531,7 @@ export function parseIsoJson(raw: string): IsoDocument {
     !['overall', 'cut', 'both'].includes(d.dimensionMode) ||
     !finite(d.north) ||
     !Number.isInteger(d.weldStart) ||
+    (d.fieldFitMakeup != null && !nonnegative(d.fieldFitMakeup)) ||
     d.weldStart < 1 ||
     (d.weldNumbering != null &&
       !['numeric', 'alphabetic'].includes(d.weldNumbering))
@@ -1757,7 +1777,7 @@ export function parseIsoJson(raw: string): IsoDocument {
     if (r.nipple != null && (!isPlain(r.nipple) || (r.nipple.length != null && !positive(r.nipple.length))))
       throw new Error('Invalid pipe nipple.')
     if (r.flow != null && r.flow !== 'forward' && r.flow !== 'reverse') throw new Error('Invalid flow direction.')
-    for (const key of ['connector', 'fromField', 'toField', 'uncut'])
+    for (const key of ['connector', 'fromField', 'toField', 'fromFieldFit', 'toFieldFit', 'uncut'])
       if (
         r[key as keyof PipeRun] != null &&
         typeof r[key as keyof PipeRun] !== 'boolean'
