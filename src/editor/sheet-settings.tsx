@@ -594,9 +594,24 @@ export function SheetSettings({
               <Field label="Material table width on paper (mm)"><TextInput label={`Material table width in mm on paper for ${s}`} value={own.bomWidth==null?'':String(+(own.bomWidth*({letter:215.9,tabloid:279.4,a3:297,a4:210}[doc.paper??'tabloid'])/850).toFixed(2))}
                 placeholder="Automatic" onError={onError} onCommit={value=>{
                   const mm=({letter:215.9,tabloid:279.4,a3:297,a4:210}[doc.paper??'tabloid'])/850,width=Number(value)/mm;
-                  if(value.trim()&&(!Number.isFinite(width)||width<250||width>1000)){onError(`Enter a table width between ${(250*mm).toFixed(1)} and ${(1000*mm).toFixed(1)} mm.`);return false;}
+                  if(value.trim()&&(!Number.isFinite(width)||width<250||width>1000||own.bomColumns&&own.bomColumns.reduce((a,b)=>a+b,0)>width-40)){onError(`Enter a table width between ${(250*mm).toFixed(1)} and ${(1000*mm).toFixed(1)} mm, leaving room for the description.`);return false;}
                   edit(d=>{const info=((d.sheets??={})[s]??={});if(value.trim())info.bomWidth=width;else delete info.bomWidth;});
                 }} /></Field>
+              <label className="iso-check">
+                <input type="checkbox" checked={!!own.bomColumns} onChange={e=>edit(d=>{
+                  const info=((d.sheets??={})[s]??={});if(e.target.checked)info.bomColumns=[46,69,46];else delete info.bomColumns;
+                })} />Set material column widths
+              </label>
+              {own.bomColumns&&(['Item','Quantity','Size'] as const).map((label,i)=><Field key={label} label={`${label} column width on paper (mm)`}>
+                <TextInput label={`${label} material column width for ${s}`} value={String(+(own.bomColumns![i]*({letter:215.9,tabloid:279.4,a3:297,a4:210}[doc.paper??'tabloid'])/850).toFixed(2))} onError={onError} onCommit={value=>{
+                  const mm=({letter:215.9,tabloid:279.4,a3:297,a4:210}[doc.paper??'tabloid'])/850,width=Number(value)/mm;
+                  const next=[...own.bomColumns!] as [number,number,number];next[i]=width;
+                  if(!value.trim()||!Number.isFinite(width)||width<12||width>150||next.reduce((a,b)=>a+b,0)>Math.min(300,(own.bomWidth??1000)-40)){
+                    onError(`Enter a column width between ${(12*mm).toFixed(1)} and ${(150*mm).toFixed(1)} mm, leaving room for the description.`);return false;
+                  }
+                  edit(d=>{((d.sheets??={})[s]??={}).bomColumns=next;});
+                }} />
+              </Field>)}
               <label className="iso-check">
                 <input
                   type="checkbox"

@@ -276,6 +276,22 @@ test('an issued material-table width gives its descriptions more room without mo
   d.sheets.S1.bomWidth=-1;assert.throws(()=>parseIsoJson(JSON.stringify(d)),/sheet information/);
 });
 
+test('held material columns preserve their paper widths and lettering through native-file reopening',()=>{
+  const d=document(),r=rows(4),before=frame(d,r);
+  d.sheets={S1:{bomColumns:[30,42,32]}};
+  const reopened=parseIsoJson(JSON.stringify(d)),after=frame(reopened,r);
+  const vertical=after.primitives.filter(p=>p.type==='line'&&p.layer==='BOM'&&p.a[0]===p.b[0]);
+  const xs=[...new Set(vertical.map(p=>p.type==='line'?p.a[0]:0))].sort((a,b)=>a-b);
+  assert.equal(xs.length,5);
+  assert.deepEqual(xs.slice(1,4).map(x=>Math.round((x-xs[0])*1000)/1000),[30,72,104]);
+  const cap=(primitives:Primitive[])=>primitives.find(p=>p.type==='text'&&p.text==='ID');
+  assert.equal((cap(before.primitives) as {size:number}).size,(cap(after.primitives) as {size:number}).size);
+  assert.deepEqual(reopened.sheets!.S1.bomColumns,[30,42,32]);
+  for(const bad of [[30,42],[0,42,32],[150,150,150]]){
+    d.sheets!.S1.bomColumns=bad as [number,number,number];assert.throws(()=>parseIsoJson(JSON.stringify(d)),/sheet information/);
+  }
+});
+
 test('classic paper restores the Spoolyard heading and ISO view without dropping the native model or material schedule',()=>{
  const d=newIso();appendRun(d,null,[1000,0,0],'CS40',2,'S1','L1');
  const before=JSON.stringify(d.nodes);d.sheetFormat='classic';

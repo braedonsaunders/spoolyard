@@ -261,6 +261,8 @@ export interface SheetInfo {
   bomRowHeights?: Record<string, number>
   /** Total material-table width on paper; extra room goes to the description column. */
   bomWidth?: number
+  /** Item, quantity and size column widths on paper; the description uses the remaining table width. */
+  bomColumns?: [number,number,number]
   /** Verbatim cells retained when reproducing an issued drawing; calculated fabrication quantities remain intact. */
   issuedValues?: Record<string, { qtyText?: string; nd?: string; description?: string }>
   /** Drafter's positions on the isometric paper (sheet units); routing and fabrication coordinates are unchanged. */
@@ -1799,6 +1801,9 @@ export function parseIsoJson(raw: string): IsoDocument {
         ['drawingNumber', 'lineNumber', 'revision'].every(f => s[f as keyof SheetInfo] == null || isString(s[f as keyof SheetInfo], 120)) &&
         (s.bomOrder == null || (Array.isArray(s.bomOrder) && s.bomOrder.length <= 500 && s.bomOrder.every(k => isString(k, 2000)))) &&
         (s.bomWidth == null || finite(s.bomWidth) && s.bomWidth>=250 && s.bomWidth<=1000) &&
+        (s.bomColumns == null || Array.isArray(s.bomColumns) && s.bomColumns.length===3 &&
+          s.bomColumns.every(w=>finite(w)&&w>=12&&w<=150) &&
+          s.bomColumns.reduce((a,b)=>a+b,0)<=Math.min(300,(s.bomWidth??1000)-40)) &&
         (s.bomRowHeights == null || (isPlain(s.bomRowHeights) && Object.keys(s.bomRowHeights).length <= 500 &&
           Object.entries(s.bomRowHeights).every(([key, height]) => isString(key,2000) && finite(height) && height >= 8 && height <= 200))) &&
         (s.nodePositions == null || (isPlain(s.nodePositions) && Object.keys(s.nodePositions).length <= 5000 &&

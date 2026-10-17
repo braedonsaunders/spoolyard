@@ -106,7 +106,7 @@ const extent = (text: string, size: number): [number, number] => {
 }
 
 interface BomCell { lines: string[]; base: number[]; height: number; ink: [number, number] }
-interface BomBlock { x0: number; x1: number; top: number; widths: number[]; rows: Array<{ row: SheetRow; cells: BomCell[]; height: number }> }
+interface BomBlock { x0: number; x1: number; top: number; scale: number; widths: number[]; rows: Array<{ row: SheetRow; cells: BomCell[]; height: number }> }
 
 /**
  * The production sheet frame: border, north symbol, bill of materials, notes and title block for one spool, with
@@ -226,11 +226,17 @@ export function drawSheet(input: {
     const fitted = (values: string[], header: string, least: number, most: number) =>
       Math.min(most, Math.max(least, ...[header, ...values].map(v => Math.max(...wrapText(up(v), BOM_CAP, Infinity).map(l => measureText(l, BOM_CAP))) / kx + 14)))
     // A wide QTY or ND widens its column rather than wrapping.
-    const columns = compact
+    let columns = compact
       ? [BOM_COLUMNS[0], fitted(rows.map(r => r.qtyText), 'QTY', 78, BOM_COLUMNS[1]), fitted(rows.flatMap(r => r.nd.split(' ')), 'ND', 73, BOM_COLUMNS[2])]
       : [BOM_COLUMNS[0], fitted(rows.map(r => r.qtyText), 'QTY', BOM_COLUMNS[1], BOM_COLUMNS[1] * 1.5),
         // Words never split, so the ND column is as wide as its longest word ("1/2"X1/4""); bolt sizes still wrap.
         fitted(rows.flatMap(r => r.nd.split(' ')), 'ND', BOM_COLUMNS[2], BOM_COLUMNS[2] * 1.8)]
+    const heldColumns=doc.sheets?.[spool]?.bomColumns
+    if(heldColumns){
+      const wanted=heldColumns.map(w=>w/sx),sum=wanted.reduce((a,b)=>a+b,0)
+      const fit=Math.min(1,Math.max(1,bomWidth-80)/sum)
+      columns=wanted.map(w=>w*fit)
+    }
     const cap = BOM_CAP * f
     const cell = (value: string, room: number): BomCell => {
       const lines = wrapText(value, cap, room * kx)
@@ -257,7 +263,7 @@ export function drawSheet(input: {
       const bottom = Math.min((notes.length && span(notesBox) ? notesTop : TB) - GAP,input.bomBottom==null?Infinity:input.bomBottom/sy)
       const widths = [...columns, bomWidth - columns.reduce((a, b) => a + b, 0)].map(w => w * f)
       widths[3] -= blockWidth - (x1 - x0)
-      const block: BomBlock = { x0, x1, top, widths, rows: [] }
+      const block: BomBlock = { x0, x1, top, scale:f, widths, rows: [] }
       let y = top + 2 * BOM_ROW * f
       while (next < rows.length) {
         const row = rows[next]
@@ -293,7 +299,7 @@ export function drawSheet(input: {
   for (let f = 1; !bom && f > 0.2; f *= 0.9) bom = layoutBom(f)
   bom ??= layoutBom(0.2)
   for (const block of bom ?? []) {
-    const f = block.widths[0] / BOM_COLUMNS[0]
+    const f = block.scale
     const cap = BOM_CAP * f, row = BOM_ROW * f
     const xs = block.widths.reduce((acc, w) => [...acc, acc[acc.length - 1] + w], [block.x0])
     const end = block.top + 2 * row + block.rows.reduce((sum, r) => sum + r.height, 0)
