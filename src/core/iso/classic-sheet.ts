@@ -5,8 +5,8 @@ import {viewProject} from './layout'
 import {type SheetFrame} from './sheet'
 
 /** Spoolyard's original paper presentation, with the current complete material schedule. */
-export function classicSheet(doc:IsoDocument,spool:string,width:number,height:number,view:string,production:SheetFrame):SheetFrame{
- const out:Primitive[]=production.primitives.filter(p=>p.layer==='BOM'),info=sheetInfoOf(doc,spool),scale=height/850,Y=(y:number)=>y*scale;
+export function classicSheet(doc:IsoDocument,spool:string,width:number,height:number,view:string,production:SheetFrame,withoutNotes:()=>SheetFrame):SheetFrame{
+ const out:Primitive[]=[],info=sheetInfoOf(doc,spool),scale=height/850,Y=(y:number)=>y*scale;
  const line=(a:Point,b:Point)=>out.push({type:'line',a,b,layer:'BORDER',weight:CAD_STROKE_WIDTH});
  const text=(p:Point,value:string,size:number)=>out.push({type:'text',p,text:value,size:size*scale,layer:'TITLE',lettering:'sans'});
  const rect=(x:number,y:number,w:number,h:number)=>{line([x,Y(y)],[x+w,Y(y)]);line([x+w,Y(y)],[x+w,Y(y+h)]);line([x+w,Y(y+h)],[x,Y(y+h)]);line([x,Y(y+h)],[x,Y(y)])};
@@ -23,6 +23,8 @@ export function classicSheet(doc:IsoDocument,spool:string,width:number,height:nu
  // Sans size is cap height; SVG/PDF use a larger em to obtain that height.
  const noteColumns=Math.max(20,Math.floor((split-65*scale)/(9*scale*.62/.72)));
  const notes=doc.notes.split('\n').flatMap(value=>{const lines:string[]=[];let row='';for(const word of value.split(/\s+/)){if(row&&row.length+word.length+1>noteColumns){lines.push(row);row=''}row+=(row?' ':'')+word}if(row)lines.push(row);return lines});
+ const schedule=notes.length<=7?withoutNotes():production;
+ out.unshift(...schedule.primitives.filter(p=>p.layer==='BOM'));
  if(notes.length<=7)notes.forEach((v,i)=>text([48*scale,Y(726+i*13)],v,9));
  else{out.push(...production.primitives.filter(p=>p.layer==='NOTES'));text([48*scale,Y(728)],'NOTES: SEE DRAWING ABOVE',10)}
  text([split+15*scale,Y(727)],'DIMENSIONS GOVERN · NOT TO SCALE',10);
@@ -32,5 +34,5 @@ export function classicSheet(doc:IsoDocument,spool:string,width:number,height:nu
  const dir=viewProject([0,1,0],view as 'iso'|'plan'|'front'|'side',doc.north),length=Math.hypot(...dir)||1,u:Point=[dir[0]/length,dir[1]/length],origin:Point=[bomLeft-65*scale,Y(82)],tip:Point=[origin[0]+u[0]*22*scale,origin[1]+u[1]*22*scale];
  if(Math.hypot(...dir)>1e-6){line(origin,tip);for(const side of [-1,1])line(tip,[tip[0]-u[0]*8*scale-u[1]*4*side*scale,tip[1]-u[1]*8*scale+u[0]*4*side*scale]);
  text([tip[0]+u[0]*12*scale-4*scale,tip[1]+u[1]*12*scale+4*scale],'N',13)}
- return {primitives:out,viewport:[40*scale,Y(115),width-40*scale,Y(630)],exclusions:[...production.exclusions.filter(b=>b[0]>width*.5&&(b[1]<Y(100)||notes.length>7)),[origin[0]-40*scale,Y(40),origin[0]+40*scale,Y(110)]]};
+ return {primitives:out,viewport:[40*scale,Y(115),width-40*scale,Y(630)],exclusions:[...schedule.exclusions.filter(b=>b[0]>width*.5&&(b[1]<Y(100)||notes.length>7)),[origin[0]-40*scale,Y(40),origin[0]+40*scale,Y(110)]]};
 }

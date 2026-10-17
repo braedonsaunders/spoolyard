@@ -298,3 +298,11 @@ test('classic notes wrap before the right footer and long notes remain on the dr
  assert.ok(notes.length>1);
  for(const p of notes)if(p.type==='text')assert.ok(p.p[0]+p.text.length*p.size*.62/.72<drawing.width-385);
 });
+
+test('classic material tables use the room freed when notes move into the footer',()=>{
+ const d=newIso();d.notes='VERIFY PIPE BEFORE CUTTING.\nCHECK ALL CONNECTIONS BEFORE INSTALLATION.\nUSE THE CURRENT APPROVED REVISION.';
+ const materialRows=Array.from({length:20},(_,i)=>({id:i+1,key:`test-row-${i}`,qtyText:'1',nd:'2"',description:'STAINLESS STEEL PIPE FITTING'}));
+ d.sheets={S1:{bomRowHeights:Object.fromEntries(materialRows.map(r=>[r.key,29]))}};
+ const blocks=(format:'classic'|'production')=>drawSheet({doc:{...d,sheetFormat:format},spool:'S1',width:1314,height:850,rows:materialRows}).primitives.filter(p=>p.type==='text'&&p.text==='BILL OF MATERIALS').length;
+ assert.equal(blocks('production'),2);assert.equal(blocks('classic'),1);
+});

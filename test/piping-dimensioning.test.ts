@@ -483,6 +483,15 @@ test('triangle leg lettering can be omitted while its measured angle and travel 
   assert.equal(parseIsoJson(JSON.stringify(d)).runs.find(q=>q.id===r.id)!.offsetDrawing!.showLegValues,false);
 });
 
+test('a planar offset accepts a held construction corner without changing its calculated lengths',()=>{
+ const d=doc(),a=run(d,null,[1000,0,0]),b=run(d,a.id,[400,300,0]),r=d.runs.at(-1)!;run(d,b.id,[1000,0,0]);
+ const cuts=d.runs.map(r=>runResult(d,r).cut),corner:[number,number]=[450,400];
+ r.offsetDrawing={planPoint:corner};const drawing=createDrawing(d);
+ assert.ok(drawing.primitives.some(p=>p.type==='line'&&p.layer==='DIM'&&[p.a,p.b].some(v=>Math.hypot(v[0]-corner[0],v[1]-corner[1])<1e-6)));
+ assert.deepEqual(d.runs.map(r=>runResult(d,r).cut),cuts);
+ assert.deepEqual(parseIsoJson(JSON.stringify(d)).runs.find(q=>q.id===r.id)!.offsetDrawing!.planPoint,corner);
+});
+
 test('rolling construction hatches can choose their plane and corner around a held paper plan point', () => {
   const d=doc(),a=run(d,null,[1000,0,0]),b=run(d,a.id,[400,300,500]),r=d.runs.at(-1)!;run(d,b.id,[1000,0,0]);
   const cuts=d.runs.map(r=>runResult(d,r).cut),hatches=()=>createDrawing(d).primitives.filter(p=>p.layer==='HATCH');

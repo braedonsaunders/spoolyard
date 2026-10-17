@@ -574,7 +574,10 @@ export function drawDimensions(ctx: IsoContext) {
       const score = (o: { corner: Point }) => chainExt
         ? (dot2(sub2(o.corner, centre0), chainExt) > 0 ? 1000 : 0)
         : ctx.place.cost([start.page, o.corner, end.page] as Poly)
-      const { p, q, corner } = options.reduce((x, y) => score(y) < score(x) ? y : x)
+      const selected = drafting?.planPoint
+        ? options.reduce((x,y)=>len2(sub2(y.corner,drafting.planPoint!))<len2(sub2(x.corner,drafting.planPoint!))?y:x)
+        : options.reduce((x, y) => score(y) < score(x) ? y : x)
+      const {p,q}=selected,corner=drafting?.planPoint??selected.corner
       legs.push([start.page, corner, Math.abs(d[p]), q], [corner, end.page, Math.abs(d[q]), p])
       // The angle is given off the longer leg, at the end of the pipe where that leg meets it.
       const long = Math.abs(d[p]) + 1e-6 >= Math.abs(d[q])

@@ -121,7 +121,9 @@ export function drawSheet(input: {
   view?: 'iso' | 'plan' | 'front' | 'side'
 }): SheetFrame {
   const { doc, spool, width, height, rows, view = 'iso' } = input
-  if(doc.sheetFormat==='classic')return classicSheet(doc,spool,width,height,view,drawSheet({...input,doc:{...doc,sheetFormat:'production'}}))
+  if(doc.sheetFormat==='classic')return classicSheet(doc,spool,width,height,view,
+    drawSheet({...input,doc:{...doc,sheetFormat:'production'}}),
+    ()=>drawSheet({...input,doc:{...doc,sheetFormat:'production',notes:''}}))
   const sx = width / REF_W, sy = height / REF_H, st = Math.min(sx, sy)
   // Lettering is measured in reference dots; a dot of line length is `kx` dots of lettering.
   const kx = sx / st
