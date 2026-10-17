@@ -327,6 +327,10 @@ export function drawAnnotations(ctx: IsoContext) {
       // A label of several lines is placed as the block it is, so no line lands on other lettering.
       const rows = label.split('\n'), width = Math.max(...rows.map(l => measureText(l, T))), height = T + (rows.length - 1) * T * LINE_SPACING
       if (label.trim()) {
+        if(node.supportSymbol==='callout'){
+          callout(at,rows,node.id,{key:`support:${node.id}`})
+          continue
+        }
         const g = node.associatedRunId && ctx.geometry.get(node.associatedRunId)
         if (node.calloutPlane === 'pipe' && g) {
           const turn = planeText(g.dir, acrossOf(ctx, g.dir, g.dir3))

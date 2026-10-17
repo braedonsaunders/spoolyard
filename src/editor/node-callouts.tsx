@@ -4,7 +4,7 @@ import { drawingReference } from "../core/references";
 import { flangedJoints, isLapJoint, nodeCode, nodeItem } from "../core/joints";
 import { boltSizeText, draftLength } from "../core/format";
 import { sheetMaterials } from "../core/material-list";
-import { connected, formatAllowance, getNode, getSpec, parseIsoJson, type IsoDocument, type FlatSide, type PipeNode } from "../core/model";
+import { connected, formatAllowance, getNode, getSpec, parseIsoJson, pruneSheetAnchors, type IsoDocument, type FlatSide, type PipeNode } from "../core/model";
 
 const TEMPLATES = ["CONT'D ON\nDWG# ", "CONT'D FROM\nDWG# ", "CONNECT TO ", "CLOSED"];
 const OPERATORS = ["OPERATOR UP", "OPERATOR DOWN", "OPERATOR NORTH", "OPERATOR SOUTH", "OPERATOR EAST", "OPERATOR WEST"];
@@ -138,7 +138,7 @@ export function NodeCallouts({ doc, nodeId, commit, sheetPoint }: { doc: IsoDocu
             try {
               const source = parseIsoJson(await file.text());
               const reference = drawingReference(doc, nodeId, source);
-              commit(d => { d.references = [...(d.references ?? []).filter(r => r.atNodeId !== nodeId), reference]; });
+              commit(d => { d.references = [...(d.references ?? []).filter(r => r.atNodeId !== nodeId), reference]; pruneSheetAnchors(d); });
               setReferenceError("");
             } catch (error) { setReferenceError(error instanceof Error ? error.message : "Could not open the adjacent drawing."); }
           }} />
@@ -164,13 +164,14 @@ export function NodeCallouts({ doc, nodeId, commit, sheetPoint }: { doc: IsoDocu
               <Row label="Dimension to">
                 <select aria-label="Adjacent dimension point" value={r.dimensionTo ?? ""} onChange={e => commit(d => {
                   d.references!.find(x => x.id === r.id)!.dimensionTo = e.target.value || undefined;
+                  pruneSheetAnchors(d);
                 })}>
                   <option value="">No dimension into the adjacent drawing</option>
                   {r.nodes.filter(n => n.id !== r.anchorNodeId && !["end", "weld", "annotation", "support"].includes(n.kind)).map((n, i) =>
                     <option key={n.id} value={n.id}>{n.tag || COMPONENT_TYPE_BY_CODE[n.component ?? ""]?.label || n.kind} {i + 1}</option>)}
                 </select>
               </Row>
-              <button onClick={() => commit(d => { d.references = d.references?.filter(x => x.id !== r.id); })}>Remove adjacent drawing</button>
+              <button onClick={() => commit(d => { d.references = d.references?.filter(x => x.id !== r.id); pruneSheetAnchors(d); })}>Remove adjacent drawing</button>
             </div>
           ))}
         </>
@@ -190,6 +191,7 @@ export function NodeCallouts({ doc, nodeId, commit, sheetPoint }: { doc: IsoDocu
         <input type="checkbox" checked={node.calloutPlane==='pipe'} onChange={e=>edit(n=>{n.calloutPlane=e.target.checked?'pipe':undefined;})} />
         Draw instrument bubble in the pipe plane
       </label>}
+      {node.kind === 'support' && <Row label="Support mark"><select aria-label="Support mark" value={node.supportSymbol??'standard'} onChange={e=>edit(n=>{n.supportSymbol=e.target.value as 'standard'|'callout'})}><option value="standard">Symbol and caption</option><option value="callout">Arrowed caption only</option></select></Row>}
       {node.kind === 'support' && node.associatedRunId && <label className="iso-check">
         <input type="checkbox" checked={node.calloutPlane === 'pipe'} onChange={e => edit(n => { n.calloutPlane=e.target.checked?'pipe':undefined; })} />
         Align support lettering with pipe

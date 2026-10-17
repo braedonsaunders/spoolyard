@@ -275,6 +275,10 @@ export function drawDimensions(ctx: IsoContext) {
   const replaced: Array<{ from: Vec3; to: Vec3; ext: Point }> = []
   if (drafted) {
     const anchor = (a: DimensionAnchor): Station | undefined => {
+      if(a.adjacent){
+        const point=ctx.referenceDimensions?.find(p=>p.atNodeId===a.nodeId&&p.referenceId===a.adjacent)
+        return point?{model:point.model,page:point.page,along:0}:undefined
+      }
       const n = ctx.nodes.find(n => n.id === a.nodeId), page = ctx.pos.get(a.nodeId)
       if (!n || !page) return
       if (!a.face || !a.runId) return { model: n.position, page, along: 0, node: n.id }

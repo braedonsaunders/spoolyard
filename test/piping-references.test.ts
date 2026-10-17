@@ -147,3 +147,16 @@ test('adjacent line lettering is opt-in and paper anchors survive pruning unrela
   assert.deepEqual(host.sheets.S1.nodePositions![ref.nodes[1].id],[200,100]);assert.equal(host.sheets.S1.nodePositions!.deleted,undefined);
   assert.equal(parseIsoJson(JSON.stringify(host)).references![0].runs[0].showLineNumber,true);
 });
+
+test('drafted dimensions reach a linked work point even when its fitting symbol is omitted',()=>{
+ const {host,end,source,elbow}=documents(),start=host.nodes[0],reference=drawingReference(host,end.id,source);
+ host.references=[reference];reference.components=0;reference.dimensionTo=reference.nodes.find(n=>n.id.endsWith(elbow.id))!.id;
+ const before=sheetMaterials(host,'S1'),cut=runResult(host,host.runs[0]).cut;
+ host.sheets={S1:{dimensions:[{from:{nodeId:start.id},to:{nodeId:end.id,adjacent:reference.id},axis:[0,0,-1],offset:50}]}};
+ const d=createDrawing(host,'S1'),caption=d.primitives.find(p=>p.type==='text'&&p.label?.key==='drafted-dimension:0');
+ assert.ok(caption?.type==='text');assert.equal(caption.text,'1150');
+ assert.deepEqual(sheetMaterials(host,'S1'),before);assert.equal(runResult(host,host.runs[0]).cut,cut);
+ assert.equal(parseIsoJson(JSON.stringify(host)).sheets!.S1.dimensions![0].to.adjacent,reference.id);
+ const broken=clone(host);broken.sheets!.S1.dimensions![0].to.adjacent='missing';assert.throws(()=>parseIsoJson(JSON.stringify(broken)),/sheet information/);
+ host.references=[];pruneSheetAnchors(host);assert.deepEqual(host.sheets!.S1.dimensions,[]);
+});

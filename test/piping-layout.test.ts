@@ -103,6 +103,7 @@ test('not to scale, fittings joined with no pipe stay close and a gasket joint i
 test('not to scale, legs that would cross are drawn apart, and the shape is held while routing', () => {
   // A tee cut into a line that, laid out as compressed, would run back across the riser.
   const doc = newIso();
+  doc.sheetFormat='production'; // Keep the viewport that makes this routing fixture cross before untangling.
   const base = appendRun(doc, null, [0, 0, 4800], 'CS40', 1, 'SP-1', 'L-1');
   const south = appendRun(doc, base.id, [0, -850, 0], 'CS40', 1, 'SP-1', 'L-1');
   const tee = appendRun(doc, south.id, [-120, 0, 0], 'CS40', 1, 'SP-1', 'L-1');

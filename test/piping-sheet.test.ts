@@ -292,6 +292,7 @@ test('classic notes wrap before the right footer and long notes remain on the dr
  let drawing=createDrawing(d,'S1');
  assert.ok(drawing.primitives.some(p=>p.layer==='NOTES'));
  assert.ok(drawing.primitives.some(p=>p.type==='text'&&p.text==='NOTES: SEE DRAWING ABOVE'));
+ for(const p of drawing.primitives)if(p.type==='text'&&p.layer==='NOTES')assert.ok(p.p[1]+p.size*.3<650,'continued notes stay above the footer');
  d.notes=Array(7).fill('VERIFY PIPE BEFORE CUTTING.').join(' ');
  drawing=createDrawing(d,'S1');
  const notes=drawing.primitives.filter(p=>p.type==='text'&&p.layer==='TITLE'&&p.p[0]===48&&p.p[1]>=726&&p.size===9);
@@ -300,9 +301,22 @@ test('classic notes wrap before the right footer and long notes remain on the dr
 });
 
 test('classic material tables use the room freed when notes move into the footer',()=>{
- const d=newIso();d.notes='VERIFY PIPE BEFORE CUTTING.\nCHECK ALL CONNECTIONS BEFORE INSTALLATION.\nUSE THE CURRENT APPROVED REVISION.';
+ const d=newIso();d.notes=Array(3).fill('VERIFY PIPE BEFORE CUTTING AND CHECK EVERY CONNECTION AGAINST THE CURRENT APPROVED DRAWING REVISION.').join('\n');
  const materialRows=Array.from({length:20},(_,i)=>({id:i+1,key:`test-row-${i}`,qtyText:'1',nd:'2"',description:'STAINLESS STEEL PIPE FITTING'}));
- d.sheets={S1:{bomRowHeights:Object.fromEntries(materialRows.map(r=>[r.key,29]))}};
+ d.sheets={S1:{bomRowHeights:Object.fromEntries(materialRows.map(r=>[r.key,28]))}};
  const blocks=(format:'classic'|'production')=>drawSheet({doc:{...d,sheetFormat:format},spool:'S1',width:1314,height:850,rows:materialRows}).primitives.filter(p=>p.type==='text'&&p.text==='BILL OF MATERIALS').length;
  assert.equal(blocks('production'),2);assert.equal(blocks('classic'),1);
+});
+
+test('dense classic sheets keep every material block above the footer and reserve the left blocks',()=>{
+ const d=newIso();d.title='COMPLETE DRAWING TITLE FOR A LONG MULTI-SPOOL FABRICATION AND INSTALLATION PACKAGE';
+ const materialRows=rows(40),f=drawSheet({doc:d,spool:'S1',width:1314,height:850,rows:materialRows});
+ const headers=f.primitives.filter(p=>p.type==='text'&&p.text==='BILL OF MATERIALS');assert.ok(headers.length>1);
+ const tableLines=f.primitives.filter(p=>p.type==='line'&&p.layer==='BOM');
+ for(const p of tableLines)if(p.type==='line')assert.ok(Math.max(p.a[1],p.b[1])<=640+1e-6);
+ const left=Math.min(...tableLines.flatMap(p=>p.type==='line'?[p.a[0],p.b[0]]:[]));assert.ok(left<657);
+ const leftEnd=Math.max(...tableLines.flatMap(p=>p.type==='line'&&Math.abs(p.a[0]-left)<1e-6&&Math.abs(p.b[0]-left)<1e-6?[p.a[1],p.b[1]]:[]));
+ assert.ok(f.exclusions.some(b=>b[0]<=left&&b[2]>left+100&&b[3]>=leftEnd));
+ const title=f.primitives.find(p=>p.type==='text'&&p.text===d.title);assert.ok(title?.type==='text');
+ assert.ok(title.p[0]+title.text.length*title.size*.62/.72<left-70);
 });

@@ -575,3 +575,17 @@ test('a box actuator changes the operator symbol without changing the purchased 
  assert.equal(JSON.stringify(doc.runs),pipes);assert.equal(mid.catalogId,catalog);
  assert.equal(parseIsoJson(JSON.stringify(doc)).nodes.find(n=>n.id===mid.id)!.valveOperator,'box');
 });
+
+test('an existing support can use an arrowed caption without a new support glyph',()=>{
+ const doc=sheet(),{mid}=straight(doc),support=attachComponent(doc,doc.runs[0].id,'support',.5);
+ support.component='HANGER';support.calloutText='EXISTING HANGER';
+ const before=doc.nodes.map(n=>[...n.position]);assert.ok(symbols(owned(draw(doc),support.id)).length>0);
+ support.supportSymbol='callout';const output=owned(draw(doc),support.id);
+ assert.equal(symbols(output).length,0);
+ assert.ok(output.some(p=>p.layer==='LEADER'&&p.type==='polyline'&&p.fill));
+ assert.ok(texts(output).some(p=>p.text==='EXISTING HANGER'));
+ assert.deepEqual(doc.nodes.map(n=>n.position),before);
+ assert.equal(parseIsoJson(JSON.stringify(doc)).nodes.find(n=>n.id===support.id)!.supportSymbol,'callout');
+ support.supportSymbol='invalid' as any;assert.throws(()=>parseIsoJson(JSON.stringify(doc)),/component callout/);
+ assert.ok(mid.id);
+});

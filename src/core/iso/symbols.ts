@@ -289,7 +289,7 @@ export function drawPipes(ctx: IsoContext) {
     ctx.doc = referenceDocument(ownDoc, r)
     ctx.pos.set(r.anchorNodeId, at)
     try { ghosts(getNode(ctx.doc, r.anchorNodeId), r.components ?? 1, r.dimensionTo, r.atNodeId,
-      getNode(ownDoc, r.atNodeId).kind !== getNode(ctx.doc, r.anchorNodeId).kind, r.termination !== 'plain',r.pipeWeight) }
+      getNode(ownDoc, r.atNodeId).kind !== getNode(ctx.doc, r.anchorNodeId).kind, r.termination !== 'plain',r.pipeWeight,r.id) }
     finally { ctx.doc = ownDoc; ctx.pos.delete(r.anchorNodeId); ctx.extent.delete(r.anchorNodeId) }
   }
 
@@ -575,7 +575,7 @@ export function drawPipes(ctx: IsoContext) {
     for (const [a, b] of [[-F, -F * 0.55], [-F * 0.25, F * 0.25], [F * 0.55, F]]) line(f(x, a), f(x, b), 'SYMBOL', owner, 0.5, false)
   }
   /** Up to three components of the next spool beyond a shared point, thin, with dashed pipe and no tags. */
-  function ghosts(start: PipeNode, limit = 3, dimensionTo?: string, atNodeId?: string, drawAnchor = false, endBreak = true, pipeWeight = false) {
+  function ghosts(start: PipeNode, limit = 3, dimensionTo?: string, atNodeId?: string, drawAnchor = false, endBreak = true, pipeWeight = false,referenceId?:string) {
     const placed: string[] = [], walked: PipeRun[] = []
     const queue: Array<[PipeNode, PipeRun]> = connected(ctx.doc, start.id).filter(r => !ctx.runs.includes(r)).map(r => [start, r])
     let count = 0
@@ -649,9 +649,9 @@ export function drawPipes(ctx: IsoContext) {
       text(at,run.line,SIZE.text,'TEXT',run.id,{rotation:plane.rotation,oblique:plane.oblique,anchor:'middle',label:{key,at,spool:ctx.spool}})
     }
     for (const p of ctx.out.slice(mark)) if (p.type === 'line' || p.type === 'polyline' || p.type === 'circle') p.weight = pipeWeight ? p.weight : Math.min(p.weight ?? CAD_STROKE_WIDTH, CAD_STROKE_WIDTH)
-    if (limit > 0 && dimensionTo && atNodeId && placed.includes(dimensionTo)) {
+    if (dimensionTo && atNodeId && placed.includes(dimensionTo)) {
       ctx.referenceDimensions ??= []
-      ctx.referenceDimensions.push({ atNodeId, model: getNode(ctx.doc, dimensionTo).position, page: ctx.pos.get(dimensionTo)! })
+      ctx.referenceDimensions.push({ atNodeId,referenceId, model: getNode(ctx.doc, dimensionTo).position, page: ctx.pos.get(dimensionTo)! })
     }
     for (const id of placed) { ctx.pos.delete(id); ctx.extent.delete(id) }
     for (const run of walked) ctx.geometry.delete(run.id)
@@ -705,6 +705,7 @@ export function drawPipes(ctx: IsoContext) {
     catalogue(code, 'olet', frame(at, branch, scale2(acrossOf(ctx, branch, g.dir3), -1)), owner)
   }
   function support(node: PipeNode, code: string, at: Point, along: Point, across: Point) {
+    if(node.supportSymbol==='callout')return
     const owner = node.id, f = frame(at, along, across)
     // A hanger is a triangle standing on the pipe, its far half filled; a U-bolt is an X across the pipe.
     if (/HANG|HNGR|SPRG|SPRING/.test(code)) {

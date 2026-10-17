@@ -680,12 +680,14 @@ export function SheetSettings({
                         </select>
                       </Field>
                       <Field label="Measured point">
-                        <select aria-label={`Dimension ${i + 1} ${end} point`} value={dim[end].face ? `${dim[end].face}:${dim[end].runId}` : 'work'} onChange={e => change(v => {
+                        <select aria-label={`Dimension ${i + 1} ${end} point`} value={dim[end].adjacent ? `adjacent:${dim[end].adjacent}` : dim[end].face ? `${dim[end].face}:${dim[end].runId}` : 'work'} onChange={e => change(v => {
                           const value = e.target.value;
                           if (value === 'work') v[end] = { nodeId: v[end].nodeId };
-                          else { const split = value.indexOf(':'); v[end].face = value.slice(0, split) as 'body' | 'mate'; v[end].runId = value.slice(split + 1); }
+                          else if(value.startsWith('adjacent:'))v[end]={nodeId:v[end].nodeId,adjacent:value.slice(9)};
+                          else { const split = value.indexOf(':'); v[end] = {nodeId:v[end].nodeId,face:value.slice(0, split) as 'body' | 'mate',runId:value.slice(split + 1)}; }
                         })}>
                           <option value="work">Work point</option>
+                          {(doc.references??[]).filter(r=>r.atNodeId===dim[end].nodeId&&r.dimensionTo).map(r=><option key={r.id} value={`adjacent:${r.id}`}>Adjacent work point · {r.name}</option>)}
                           {doc.runs.filter(r => [r.from, r.to].includes(dim[end].nodeId)).flatMap(r => (['body', 'mate'] as const).map(face =>
                             <option key={`${face}:${r.id}`} value={`${face}:${r.id}`}>{face === 'body' ? 'Body face' : 'Mating face'} · {r.id.slice(0, 8)}</option>))}
                         </select>

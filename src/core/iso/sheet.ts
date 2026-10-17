@@ -119,11 +119,15 @@ export function drawSheet(input: {
   height: number
   rows: SheetRow[]
   view?: 'iso' | 'plan' | 'front' | 'side'
+  /** Internal paper-frame limit for the material table, in sheet units. */
+  bomBottom?: number
+  /** Internal paper-frame limit for the last general-note baseline, in sheet units. */
+  notesBottom?: number
 }): SheetFrame {
   const { doc, spool, width, height, rows, view = 'iso' } = input
   if(doc.sheetFormat==='classic')return classicSheet(doc,spool,width,height,view,
-    drawSheet({...input,doc:{...doc,sheetFormat:'production'}}),
-    ()=>drawSheet({...input,doc:{...doc,sheetFormat:'production',notes:''}}))
+    drawSheet({...input,bomBottom:height*640/850,notesBottom:height*640/850,doc:{...doc,sheetFormat:'production'}}),
+    ()=>drawSheet({...input,bomBottom:height*640/850,notesBottom:height*640/850,doc:{...doc,sheetFormat:'production',notes:''}}))
   const sx = width / REF_W, sy = height / REF_H, st = Math.min(sx, sy)
   // Lettering is measured in reference dots; a dot of line length is `kx` dots of lettering.
   const kx = sx / st
@@ -181,6 +185,8 @@ export function drawSheet(input: {
   // Notes, numbered with a hanging indent, growing up from the title block.
   const notes = doc.notes.replace(/\r\n?/g, '\n').split('\n').map(s => up(s)).filter(Boolean)
   if (notes[0] && /^NOTES?:?$/.test(notes[0])) notes.shift()
+  const noteBaseline=Math.min(NOTE_BASELINE,input.notesBottom==null?Infinity:input.notesBottom/sy)
+  const noteBoxBottom=Math.min(TB,input.notesBottom==null?Infinity:input.notesBottom/sy+GAP)
   let notesTop = Infinity
   if (notes.length) {
     let scale = 1, laid: Array<{ label: string; lines: string[] }> = []
@@ -193,13 +199,13 @@ export function drawSheet(input: {
         return { label, lines: wrapText(own ? own[2] : note, NOTE_CAP * scale, (NOTE_RIGHT - NOTE_TEXT_X) * kx, NOTE_WIDTH) }
       })
       const total = laid.reduce((sum, n) => sum + n.lines.length, 1)
-      const room = (NOTE_BASELINE - TOP) / 2
+      const room = (noteBaseline - TOP) / 2
       if (total * NOTE_PITCH * scale <= room) break
       scale *= Math.max(0.5, Math.sqrt(room / (total * NOTE_PITCH * scale)))
     }
     const cap = NOTE_CAP * scale, pitch = NOTE_PITCH * scale
     const total = laid.reduce((sum, n) => sum + n.lines.length, 0)
-    let y = NOTE_BASELINE - total * pitch
+    let y = noteBaseline - total * pitch
     text('NOTES', 'NOTES:', NOTE_HEADER_X, y, cap)
     notesTop = y - cap
     for (const note of laid) {
@@ -208,9 +214,9 @@ export function drawSheet(input: {
       note.lines.forEach((l, i) => text('NOTES', l, NOTE_TEXT_X, y + i * pitch, cap, 'start', undefined, NOTE_WIDTH))
       y += (note.lines.length - 1) * pitch
     }
-    exclusions.push(rect([NOTE_HEADER_X - GAP / 2, notesTop - GAP / 2, RIGHT - GAP / 2, TB - 4]))
+    exclusions.push(rect([NOTE_HEADER_X - GAP / 2, notesTop - GAP / 2, RIGHT - GAP / 2, noteBoxBottom - 4]))
   }
-  const notesBox: SheetRect = [NOTE_HEADER_X, notesTop, RIGHT, TB]
+  const notesBox: SheetRect = [NOTE_HEADER_X, notesTop, RIGHT, noteBoxBottom]
 
   const bomWidth = doc.sheets?.[spool]?.bomWidth == null ? BOM_COLUMNS.reduce((a,b)=>a+b,0) : doc.sheets[spool].bomWidth! / sx
   // Bill of materials: blocks from the top-right corner leftwards; the rows that do not fit continue in the next block.
@@ -248,7 +254,7 @@ export function drawSheet(input: {
       }
       const span = (r: SheetRect) => r[0] < x1 && r[2] > x0
       const top = north && span(northBox) ? northBox[3] + GAP : TOP
-      const bottom = (notes.length && span(notesBox) ? notesTop : TB) - GAP
+      const bottom = Math.min((notes.length && span(notesBox) ? notesTop : TB) - GAP,input.bomBottom==null?Infinity:input.bomBottom/sy)
       const widths = [...columns, bomWidth - columns.reduce((a, b) => a + b, 0)].map(w => w * f)
       widths[3] -= blockWidth - (x1 - x0)
       const block: BomBlock = { x0, x1, top, widths, rows: [] }

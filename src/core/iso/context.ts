@@ -63,7 +63,7 @@ export interface IsoContext {
   /** Page extent of each node's symbol along its pipe, so pipes stop at valve bodies. */
   extent: Map<string, number>
   out: Primitive[]
-  referenceDimensions?: Array<{ atNodeId: string; model: Vec3; page: Point }>
+  referenceDimensions?: Array<{ atNodeId: string; referenceId?: string; model: Vec3; page: Point }>
   labelPositions?: Record<string, Point>
   paperPositions?: Record<string, Point>
 }

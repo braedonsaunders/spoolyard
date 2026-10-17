@@ -151,6 +151,8 @@ export interface PipeNode {
   showSize?: boolean
   sizeLabelFormat?: 'standard' | 'compact'
   calloutOrder?: 'item-first' | 'tag-first' | 'item-tag-first'
+  /** Existing supports may be referenced by an arrowed note without drawing a new support symbol. */
+  supportSymbol?: 'standard' | 'callout'
   valveSymbol?: 'disc' | 'bowtie' | 'swing' | 'triangle'
   /** Drawing plane of the fitting body; independent of its measured ports. */
   symbolPlane?: 'plan' | 'vertical' | 'alternate'
@@ -235,6 +237,8 @@ export interface TitleBlock {
 /** A dimension endpoint follows a work point or a component's face on a connected run. */
 export interface DimensionAnchor {
   nodeId: string
+  /** Use the selected work point of this linked drawing at nodeId. */
+  adjacent?: string
   runId?: string
   face?: 'body' | 'mate'
 }
@@ -1732,6 +1736,7 @@ export function parseIsoJson(raw: string): IsoDocument {
         (n.tiePoint.label != null && !isString(n.tiePoint.label, 120)))) ||
       (n.operator != null && !isString(n.operator, 120)) ||
       (n.calloutOrder != null && !['item-first', 'tag-first', 'item-tag-first'].includes(n.calloutOrder)) ||
+      (n.supportSymbol != null && !['standard','callout'].includes(n.supportSymbol)) ||
       (n.valveSymbol != null && !['disc', 'bowtie', 'swing', 'triangle'].includes(n.valveSymbol)) ||
       (n.symbolPlane != null && !['plan', 'vertical','alternate'].includes(n.symbolPlane)) ||
       (n.hosePath != null && (!Array.isArray(n.hosePath) || n.hosePath.length<2 || n.hosePath.length>500 || !n.hosePath.every(p=>Array.isArray(p)&&p.length===2&&p.every(finite)))) ||
@@ -1812,6 +1817,7 @@ export function parseIsoJson(raw: string): IsoDocument {
         (s.dimensionScope == null || ['sheet', 'legs'].includes(s.dimensionScope)) &&
         (s.dimensions == null || (Array.isArray(s.dimensions) && s.dimensions.length <= 500 && s.dimensions.every(dim =>
           isPlain(dim) && [dim.from, dim.to].every(a => isPlain(a) && isString(a.nodeId) &&
+            (a.adjacent == null || isString(a.adjacent) && a.face==null && a.runId==null && Array.isArray(d.references) && d.references.some(r=>r.id===a.adjacent&&r.atNodeId===a.nodeId&&r.dimensionTo)) &&
             d.nodes.some(n => n.id === a.nodeId) && (a.face == null || ['body', 'mate'].includes(a.face) && a.runId != null) &&
             (a.runId == null || isString(a.runId) && d.runs.some(r => r.id === a.runId && [r.from, r.to].includes(a.nodeId)))) &&
           Array.isArray(dim.axis) && dim.axis.length === 3 && dim.axis.every(finite) && Math.hypot(...dim.axis) > 0 &&
@@ -2034,7 +2040,7 @@ export function pruneSheetAnchors(doc: IsoDocument): void {
     if (info.nodePositions) for (const key of Object.keys(info.nodePositions))
       if (!paperNodes.has(key)) delete info.nodePositions[key];
     if (info.dimensions) info.dimensions = info.dimensions.filter(dim => [dim.from, dim.to].every(a =>
-      doc.nodes.some(n => n.id === a.nodeId) && (!a.runId || doc.runs.some(r => r.id === a.runId && [r.from, r.to].includes(a.nodeId)))));
+      doc.nodes.some(n => n.id === a.nodeId) && (!a.adjacent || doc.references?.some(r=>r.id===a.adjacent&&r.atNodeId===a.nodeId&&r.dimensionTo)) && (!a.runId || doc.runs.some(r => r.id === a.runId && [r.from, r.to].includes(a.nodeId)))));
   }
 }
 /** Remove an inline component without losing either outer connection's fabrication data. */
