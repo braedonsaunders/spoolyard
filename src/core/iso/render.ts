@@ -107,7 +107,7 @@ export function renderIso(
   const paint = (fit: SheetFit) => {
     const toSheet = (q: Point): Point => [(q[0] - fit.centre[0]) * fit.scale + cx, (q[1] - fit.centre[1]) * fit.scale + cy]
     const pos = new Map([...layout.raw].map(([id, p]) => [id, toSheet(p)] as [string, Point]))
-    const pins = !model && facing === 'iso' && spool ? doc.sheets?.[spool]?.nodePositions : undefined
+    const pins = !model && facing === 'iso' ? doc.sheets?.[spool]?.nodePositions : undefined
     const automatic = new Map(pos)
     for (const [id, p] of Object.entries(pins ?? {})) if (pos.has(id)) pos.set(id, [...p])
     if (pins) for (const node of nodes) {
@@ -142,12 +142,14 @@ export function renderIso(
       geometry.set(run.id, { run, a, b, dir: length ? [d[0] / length, d[1] / length] : [1, 0], length, dir3: unit3([pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]]) })
     }
     const ctx: IsoContext = {
-      doc, spool, view: facing, style, runs, nodes, pos, project, axis, direction, geometry,
+      doc, spool, view: facing, style, schematic, runs, nodes, pos, project, axis, direction, geometry,
+      labelPositions: !model && facing === 'iso' ? doc.sheets?.[spool]?.labelPositions : undefined,
+      paperPositions: pins,
       place: new Placement(viewport, exclusions), materials, joints, extent: new Map(), out: []
     }
     // Free notes stay where the drafter put them, so every label is placed clear of them.
     for (const note of doc.sheetNotes ?? [])
-      if (note.spool === spool || !spool) ctx.place.add(textPoly(note.at, note.text.toUpperCase(), SIZE.text, 0, 0, 'start', 1), 'text', note.id)
+      if (note.spool === spool || !spool) ctx.place.add(textPoly(note.at, note.text.toUpperCase(), note.size ?? SIZE.text, note.rotation, note.oblique, 'start', 1), 'text', note.id)
     drawPipes(ctx)
     drawDimensions(ctx)
     drawAnnotations(ctx)

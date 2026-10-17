@@ -30,7 +30,8 @@ where it powers piping isometrics in Files and Tools.
 ## What it does
 
 - **Production isometrics.** Sheets are issued the way piping drafters draw them:
-  - a full title block with revisions (newest on top), logos, spool and sheet n of m;
+  - classic Spoolyard paper with a large drawing heading and simple bottom title block, or a detailed title grid
+    with revisions (newest on top), optional logos, spool and sheet n of m;
   - a north arrow on plant north;
   - an ID / QTY / ND / DESCRIPTION bill of materials with `CUT TO` lengths;
   - boxed item tags with leaders, and `F12 B13 G14` flanged-joint callouts with gasket marks;
@@ -45,6 +46,9 @@ where it powers piping isometrics in Files and Tools.
   calculated values, arrange nodes on the paper without changing plant coordinates, and draft dimensions between
   selected work points, body faces or mating faces. Choose closed dimension chains or independent legacy rounding,
   body-face chains, stacked size labels and compass ticks in Drawing setup.
+  Move item numbers independently of their captions, hold leader bends, adjust individual label lettering,
+  repeat line identifiers on selected pipes, and control elevation callouts. Offset constructions have editable
+  angle corners, radii, arrows and hatching; hoses and equipment connections can follow editable paper routes.
 - **Measured routing.** Click along the six iso directions with Ortho on, or type a length and pick East, North
   or Up. Bends and branches get the specification's elbows and tees automatically; rolling offsets route in XYZ.
   Click a pipe to branch off it, place olets on a header, and fit reducers either way round.

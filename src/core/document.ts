@@ -161,8 +161,9 @@ export function isometricDxf(doc: IsoDocument, drawing: Drawing = createDrawing(
   for (const [name, font, factor] of [["STANDARD", "txt", 1], ["ROMANS", "romans.shx", ROMANS_WIDTH_FACTOR]] as const)
     put(0, "STYLE", 5, next(), 100, "AcDbSymbolTableRecord", 100, "AcDbTextStyleTableRecord", 2, name, 70, 0, 40, 0, 41, factor, 50, 0, 71, 0, 42, 2.5, 3, font, 4, "");
   put(0, "ENDTAB", 0, "ENDSEC", 0, "SECTION", 2, "ENTITIES");
+  let entityColor:string|undefined;
   const entity = (type: string, layer: string, weight?: number) =>
-    put(0, type, 5, next(), 100, "AcDbEntity", 8, "BW-ISO-" + layer, ...(weight == null ? [] : [370, lineweight(weight)]));
+    put(0, type, 5, next(), 100, "AcDbEntity", 8, "BW-ISO-" + layer, ...(weight == null ? [] : [370, lineweight(weight)]),...(entityColor?[420,parseInt(entityColor.slice(1),16)]:[]));
   const polyline = (points: Point[], closed: boolean, layer: string, weight: number) => {
     entity("LWPOLYLINE", layer, weight);
     put(100, "AcDbPolyline", 90, points.length, 70, closed ? 1 : 0);
@@ -174,7 +175,7 @@ export function isometricDxf(doc: IsoDocument, drawing: Drawing = createDrawing(
     put(97, 0, 75, 0, 76, 1, 98, 1, 10, X(seed[0]), 20, Y(seed[1]));
   };
   /** One TEXT per line, stacked and slanted like the stroke lettering; middle/end text keeps its anchor as the alignment point. */
-  const text = (at: Point, value: string, size: number, layer: string, rotation = 0, oblique = 0, anchor = "start", factor = 1) => {
+  const text = (at: Point, value: string, size: number, layer: string, rotation = 0, oblique = 0, anchor = "start", factor = 1, textCad=cad) => {
     const angle = (rotation * Math.PI) / 180,
       cos = Math.cos(angle),
       sin = Math.sin(angle),
@@ -185,19 +186,20 @@ export function isometricDxf(doc: IsoDocument, drawing: Drawing = createDrawing(
       const v = row * LINE_SPACING * size,
         base: Point = [at[0] - v * slant * cos + v * sin, at[1] + v * slant * sin + v * cos],
         shift = anchor === "middle" ? 0.5 : anchor === "end" ? 1 : 0,
-        width = measureText(line, size, (cad ? 1 : 1 / ROMANS_WIDTH_FACTOR) * factor) * shift,
+        width = measureText(line, size, (textCad ? 1 : 1 / ROMANS_WIDTH_FACTOR) * factor) * shift,
         start: Point = [base[0] - width * cos, base[1] + width * sin];
       entity("TEXT", layer, Math.max(0.35, size * 0.1));
       put(100, "AcDbText", 10, X(start[0]), 20, Y(start[1]), 30, 0, 40, paper(size), 1, content);
       if (rotation) put(50, ((rotation % 360) + 360) % 360);
-      if (cad || factor !== 1) put(41, (cad ? ROMANS_WIDTH_FACTOR : 1) * factor);
+      if (textCad || factor !== 1) put(41, (textCad ? ROMANS_WIDTH_FACTOR : 1) * factor);
       if (oblique) put(51, Math.max(-85, Math.min(85, oblique)));
-      put(7, cad ? "ROMANS" : "STANDARD");
+      put(7, textCad ? "ROMANS" : "STANDARD");
       if (shift) put(72, shift === 1 ? 2 : 1, 11, X(base[0]), 21, Y(base[1]), 31, 0);
       put(100, "AcDbText", 73, 0);
     });
   };
   for (const p of drawing.primitives) {
+    entityColor=p.color;
     if (p.type === "line") {
       entity("LINE", p.layer, weightOf(p));
       put(100, "AcDbLine", 10, X(p.a[0]), 20, Y(p.a[1]), 30, 0, 11, X(p.b[0]), 21, Y(p.b[1]), 31, 0);
@@ -213,7 +215,7 @@ export function isometricDxf(doc: IsoDocument, drawing: Drawing = createDrawing(
       entity("CIRCLE", p.layer, weightOf(p));
       put(100, "AcDbCircle", 10, X(p.p[0]), 20, Y(p.p[1]), 30, 0, 40, paper(p.r));
       if (p.fill) hatch(p.layer, [92, 1, 93, 1, 72, 2, 10, X(p.p[0]), 20, Y(p.p[1]), 40, paper(p.r), 50, 0, 51, 360, 73, 1], p.p);
-    } else if (p.type === "text") text(p.p, p.text, p.size, p.layer, p.rotation, p.oblique, p.anchor, p.width ?? 1);
+    } else if (p.type === "text") text(p.p, p.text, p.size, p.layer, p.rotation, p.oblique, p.anchor, p.width ?? 1, p.lettering==null?cad:p.lettering==='cad');
     else {
       // DXF R2000 cannot embed a raster, so a logo is its frame and name for the drafter to re-attach.
       const [x, y] = p.p,

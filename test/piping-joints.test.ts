@@ -6,6 +6,7 @@ import { continuationPoint, flangedJoints } from '../src/core/joints.ts';
 import { COMPONENT_TYPES } from '../src/core/components.ts';
 import { placeComponentOnPipe } from '../src/core/component-position.ts';
 import { createDrawing } from '../src/core/drawing.ts';
+import { sheetMaterials } from '../src/core/material-list.ts';
 
 const specA = JSON.parse(readFileSync(new URL('../public/library/specs/a.json', import.meta.url), 'utf8')) as PipeSpec;
 const straight = (length = 2000) => {
@@ -14,6 +15,20 @@ const straight = (length = 2000) => {
   return doc;
 };
 const type = (code: string) => COMPONENT_TYPES.find(t => t.code === code)!;
+
+test('an issued joint callout can reference existing material items without purchasing them twice', () => {
+  const doc=straight(), run=doc.runs[0];
+  const a=placeComponentOnPipe(doc,run.id,type('FLG-RFWN'),0), b=placeComponentOnPipe(doc,run.id,type('FLG-RFWN'),1);
+  a.jointSupply={bolts:false,gasket:false};
+  const before=sheetMaterials(doc,'SP-1'), bolts=before.find(r=>r.category==='bolt')!, gasket=before.find(r=>r.category==='gasket')!;
+  const joint=flangedJoints(doc,'SP-1').find(j=>j.nodeId===a.id)!;
+  doc.sheets={'SP-1':{jointItems:{[joint.id]:{bolts:bolts.key,gasket:gasket.key}}}};
+  assert.deepEqual(sheetMaterials(doc,'SP-1'),before);
+  assert.ok(createDrawing(doc,'SP-1').primitives.some(p=>p.type==='text' && p.owner===a.id && p.text.includes(`B${bolts.id} G${gasket.id}`)));
+  assert.deepEqual(parseIsoJson(JSON.stringify(doc)).sheets,doc.sheets);
+  doc.sheets['SP-1'].jointItems![joint.id].bolts='missing';
+  assert.ok(!createDrawing(doc,'SP-1').primitives.some(p=>p.type==='text' && p.owner===a.id && /B\d/.test(p.text)));
+});
 
 test('a continuation coordinate can use either flange face without changing cuts or dimension points', () => {
   const doc = straight(), run = doc.runs[0];
@@ -234,4 +249,17 @@ test('a pipe flanged at one end only loses the flange allowance at that end alon
     assert.ok(!bom(doc).some(r => /GASKET|STUD/.test(r.description)), code);
     assert.equal(validateIso(doc).length, 0, code);
   }
+});
+
+
+test('measured flanged component bodies put their joint faces at the same distances used for pipe cuts', () => {
+  const doc=newIso(),meter=appendRun(doc,null,[1000,0,0],'CS40',2,'S1','L1');
+  appendRun(doc,meter.id,[1000,0,0],'CS40',2,'S1','L1');applyComponent(doc,meter,'FLOWMETER-FL');
+  meter.takeout=101.6;
+  const cuts=doc.runs.map(r=>runResult(doc,r).cut),joints=flangedJoints(doc,'S1').filter(j=>j.nodeId===meter.id);
+  assert.equal(joints.length,2);
+  assert.deepEqual(joints.map(j=>Math.round((j.position[0]-meter.position[0])*10)/10),[-101.6,101.6]);
+  createDrawing(doc,'S1');assert.deepEqual(doc.runs.map(r=>runResult(doc,r).cut),cuts);
+  meter.takeout=152.4;
+  assert.deepEqual(flangedJoints(doc,'S1').filter(j=>j.nodeId===meter.id).map(j=>Math.round((j.position[0]-meter.position[0])*10)/10),[-152.4,152.4]);
 });

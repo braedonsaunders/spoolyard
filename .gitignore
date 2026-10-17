@@ -5,3 +5,12 @@ release/
 *.log
 .playwright-cli/
 output/
+
+# Local customer projects and drawing exports are never source assets.
+*.piping
+*.pdf
+*.dxf
+*.dwg
+private-drawings/
+reference-drawings/
+!public/samples/cooling-water-return.piping

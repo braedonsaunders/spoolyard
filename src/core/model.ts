@@ -136,18 +136,31 @@ export interface PipeNode {
   labelOffset?: [number, number]
   /** Component-type code chosen from the catalogue; drives the drawn symbol. */
   component?: string
+  /** Equipment context at a pipe end: vessel on a skid or pump end view. */
+  equipmentShape?: 'vessel' | 'pump'
   /** Deflection of a measured/custom bend; standard elbows use their catalogue angle. */
   bendAngle?: number
   /** Centreline radius of a pipe bend: its takeout is the radius times the tangent of half the deflection. */
   bendRadius?: number
   /** Open-end callout, e.g. "CONT'D ON\nDWG# ISO-201-2", optionally followed by plant coordinates. */
-  continuation?: { text: string; coordinates?: boolean; coordinateFace?: 'flange' | 'mate' }
+  continuation?: { text: string; coordinates?: boolean; coordinateFace?: 'flange' | 'mate'; paperPath?: Array<[number,number]>; endMarker?: 'tube' | 'break' | 'plain'; leaderAt?:'node'|'end' }
   elevationCallout?: boolean
   tiePoint?: { id: string; label?: string }
   /** Valve operator orientation, e.g. "OPERATOR SOUTH"; the valve tag is `tag`. */
   operator?: string
+  showSize?: boolean
+  sizeLabelFormat?: 'standard' | 'compact'
+  calloutOrder?: 'item-first' | 'tag-first' | 'item-tag-first'
+  valveSymbol?: 'disc' | 'bowtie' | 'swing' | 'triangle'
+  /** Drawing plane of the fitting body; independent of its measured ports. */
+  symbolPlane?: 'plan' | 'vertical' | 'alternate'
+  /** Drafted flexible hose centreline on paper; catalogue length and plant ports remain measured. */
+  hosePath?: Array<[number,number]>
+  /** Symbol shown on the valve stem; independent of its catalogue description and orientation callout. */
+  valveOperator?: 'none' | 'lever' | 'actuator' | 'handwheel' | 'box'
   /** Sheet label for supports and annotations, e.g. "U-BOLT", "HANGER", "CLOSED". */
   calloutText?: string
+  calloutPlane?: 'sheet' | 'pipe'
   /** Dimension this support's location along its pipe. */
   dimensioned?: boolean
   /** Which dimension chain locates this branch work point when component-face tiers are shown. */
@@ -231,6 +244,8 @@ export interface SheetDimension {
   /** Extension direction in plant axes and distance on paper, independent of model length. */
   axis: Vec3
   offset: number
+  reverseText?: boolean
+  format?:'feet'|'inches'|'feet-short'
 }
 export interface SheetInfo {
   drawingNumber?: string
@@ -238,12 +253,26 @@ export interface SheetInfo {
   revision?: string
   /** Item numbers held as issued: material row keys in ID order. New items follow, in the usual order. */
   bomOrder?: string[]
+  /** Held material-table row heights on paper, keyed by material row; text always retains enough room. */
+  bomRowHeights?: Record<string, number>
+  /** Total material-table width on paper; extra room goes to the description column. */
+  bomWidth?: number
   /** Verbatim cells retained when reproducing an issued drawing; calculated fabrication quantities remain intact. */
   issuedValues?: Record<string, { qtyText?: string; nd?: string; description?: string }>
   /** Drafter's positions on the isometric paper (sheet units); routing and fabrication coordinates are unchanged. */
   nodePositions?: Record<string, [number, number]>
+  /** Held callout and item-label positions on isometric paper. */
+  labelPositions?: Record<string, [number, number]>
+  /** Lettering choices for an editable label, independent of its measured geometry. */
+  labelStyles?: Record<string,{size?:number;rotation?:number;oblique?:number}>
+  /** Held dimension-line placement and lettering on paper. */
+  dimensionLayout?: Record<string, { axis?: Vec3; offset?: number; reverseText?: boolean; format?:'feet'|'inches'|'feet-short' }>
+  /** Issued joint callouts may reference existing BOM items without purchasing those parts again at this joint. */
+  jointItems?: Record<string, { flange?: string; bolts?: string; gasket?: string }>
   /** An explicitly drafted set replaces automatic dimensions on this sheet. Lengths still come from the model. */
   dimensions?: SheetDimension[]
+  /** Replace only the measured straights, retaining automatic dimensions and offset constructions elsewhere. */
+  dimensionScope?: 'sheet' | 'legs'
 }
 export interface DrawingStyle {
   layout: 'scale' | 'schematic'
@@ -265,11 +294,21 @@ export interface PlantCoordinates {
   origin: Vec3
 }
 export interface SheetNote {
+  size?: number
+  lettering?: 'cad' | 'sans'
+  /** Optional paper-space callout box and leader, independent of plant geometry. */
+  box?: { at: [number,number]; width: number; height: number }
+  leader?: Array<[number,number]>
+  arrow?: boolean
+  color?: string
+  textColor?: string
   id: string
   spool: string
   text: string
   /** Sheet units. */
   at: [number, number]
+  rotation?: number
+  oblique?: number
 }
 export type EndPrep = 'BW' | 'SW' | 'THD' | 'FL' | 'PLAIN'
 export interface PipeRun {
@@ -307,6 +346,20 @@ export interface PipeRun {
   nipple?: { length?: number }
   /** Flow direction along the pipe: forward runs from `from` to `to`. */
   flow?: 'forward' | 'reverse'
+  /** Held arrow position along this drawn pipe, from 0 at `from` to 1 at `to`. */
+  flowPosition?: number
+  /** Show a pipe arrow independently of the stored installation flow direction. */
+  showFlow?: boolean
+  /** Held extension-line direction for this straight's automatic dimension chains, in plant axes. */
+  dimensionAxis?: Vec3
+  /** Letter the line identifier in the vertical or plan isometric plane. */
+  showSize?: boolean
+  lineNumberPlane?: 'vertical' | 'plan' | 'normal' | 'alternate'
+  /** Explicitly letter this pipe (including repeats), or exclude it from automatic placement. */
+  showLineNumber?: boolean
+  dimensionReverse?: boolean
+  /** Paper drafting choices for this offset; all values and angles still come from its model vector. */
+  offsetDrawing?: { angleOutwardH?:boolean; angleOutwardV?:boolean; rightAngleSize?:number; angleFromH?:'start'|'end'; angleFromV?:'start'|'end'; angleArrows?:boolean; showTrueLength?:boolean; angleRadiusH?:number; angleRadiusV?:number; dimensionLegs?: boolean; showLegValues?: boolean; trueLengthOffset?: number; setAndRoll?: boolean; hatchCount?: number; hatchSpacing?: number; hatchStart?: number; hatchGap?: number; hatchFrom?:'start'|'end'; hatchPlane?:'H'|'V'; planPoint?:[number,number]; legPlane?:'construction'|'vertical' }
 }
 export interface IsoDocument {
   schema: 'bidwright-piping'
@@ -324,6 +377,7 @@ export interface IsoDocument {
   dimensionMode: 'overall' | 'cut' | 'both'
   grid?: GridSettings
   paper?: 'letter' | 'tabloid' | 'a3' | 'a4'
+  sheetFormat?: 'classic'|'production'
   outputViews?: Array<'iso' | 'plan' | 'front' | 'side'>
   specs: PipeSpec[]
   nodes: PipeNode[]
@@ -350,8 +404,12 @@ export interface DrawingReference {
   nodes: PipeNode[]
   runs: PipeRun[]
   specs: PipeSpec[]
+  /** Number of adjacent fittings to show; zero shows the adjoining pipe cut only. */
   components?: number
   dimensionTo?: string
+  /** End the visible adjacent fragment with a drafting break or a plain cut line. */
+  termination?: 'break' | 'plain'
+  pipeWeight?: boolean
 }
 export interface RunResult {
   run: PipeRun
@@ -536,6 +594,7 @@ export function newIso(): IsoDocument {
     schema: 'bidwright-piping',
     version: 1,
     title: 'Piping isometric',
+    sheetFormat:'classic',
     drawing: 'ISO-001',
     revision: '0',
     customer: '',
@@ -1592,6 +1651,7 @@ export function parseIsoJson(raw: string): IsoDocument {
       !['xy', 'xz', 'yz'].includes(d.grid.plane))
   )
     throw new Error('Invalid isometric grid settings.')
+  if(d.sheetFormat!=null&&!['classic','production'].includes(d.sheetFormat))throw new Error('Invalid sheet format.')
   if (d.paper != null && !['letter', 'tabloid', 'a3', 'a4'].includes(d.paper))
     throw new Error('Invalid PDF paper size.')
   if (
@@ -1655,9 +1715,15 @@ export function parseIsoJson(raw: string): IsoDocument {
       throw new Error('Invalid port takeout.')
     if (
       (n.continuation != null && (!isPlain(n.continuation) || !isString(n.continuation.text, 600) ||
+        (n.continuation.paperPath!=null && (!Array.isArray(n.continuation.paperPath) || n.continuation.paperPath.length<2 || n.continuation.paperPath.length>500 || !n.continuation.paperPath.every(p=>Array.isArray(p)&&p.length===2&&p.every(finite)))) ||
+        (n.continuation.leaderAt!=null && !['node','end'].includes(n.continuation.leaderAt)) ||
+        (n.continuation.endMarker!=null && !['tube','break','plain'].includes(n.continuation.endMarker)) ||
         (n.continuation.coordinates != null && typeof n.continuation.coordinates !== 'boolean') ||
         (n.continuation.coordinateFace != null && !['flange', 'mate'].includes(n.continuation.coordinateFace)))) ||
       (n.elevationCallout != null && typeof n.elevationCallout !== 'boolean') ||
+      (n.equipmentShape != null && !['vessel','pump'].includes(n.equipmentShape)) ||
+      (n.showSize != null && typeof n.showSize!=='boolean') ||
+      (n.sizeLabelFormat != null && !['standard','compact'].includes(n.sizeLabelFormat)) ||
       (n.dimensioned != null && typeof n.dimensioned !== 'boolean') ||
       (n.dimensionChain != null && !['both', 'body', 'mate'].includes(n.dimensionChain)) ||
       (n.approximate != null && typeof n.approximate !== 'boolean') ||
@@ -1665,6 +1731,12 @@ export function parseIsoJson(raw: string): IsoDocument {
       (n.tiePoint != null && (!isPlain(n.tiePoint) || !isString(n.tiePoint.id, 40) ||
         (n.tiePoint.label != null && !isString(n.tiePoint.label, 120)))) ||
       (n.operator != null && !isString(n.operator, 120)) ||
+      (n.calloutOrder != null && !['item-first', 'tag-first', 'item-tag-first'].includes(n.calloutOrder)) ||
+      (n.valveSymbol != null && !['disc', 'bowtie', 'swing', 'triangle'].includes(n.valveSymbol)) ||
+      (n.symbolPlane != null && !['plan', 'vertical','alternate'].includes(n.symbolPlane)) ||
+      (n.hosePath != null && (!Array.isArray(n.hosePath) || n.hosePath.length<2 || n.hosePath.length>500 || !n.hosePath.every(p=>Array.isArray(p)&&p.length===2&&p.every(finite)))) ||
+      (n.valveOperator != null && !['none', 'lever', 'actuator', 'handwheel', 'box'].includes(n.valveOperator)) ||
+      (n.calloutPlane != null && !['sheet', 'pipe'].includes(n.calloutPlane)) ||
       (n.calloutText != null && !isString(n.calloutText, 300)) ||
       (n.jointSupply != null && (!isPlain(n.jointSupply) ||
         typeof n.jointSupply.gasket !== 'boolean' || typeof n.jointSupply.bolts !== 'boolean' ||
@@ -1721,14 +1793,29 @@ export function parseIsoJson(raw: string): IsoDocument {
       !Object.entries(d.sheets).every(([k, s]) => isString(k) && isPlain(s) &&
         ['drawingNumber', 'lineNumber', 'revision'].every(f => s[f as keyof SheetInfo] == null || isString(s[f as keyof SheetInfo], 120)) &&
         (s.bomOrder == null || (Array.isArray(s.bomOrder) && s.bomOrder.length <= 500 && s.bomOrder.every(k => isString(k, 2000)))) &&
+        (s.bomWidth == null || finite(s.bomWidth) && s.bomWidth>=250 && s.bomWidth<=1000) &&
+        (s.bomRowHeights == null || (isPlain(s.bomRowHeights) && Object.keys(s.bomRowHeights).length <= 500 &&
+          Object.entries(s.bomRowHeights).every(([key, height]) => isString(key,2000) && finite(height) && height >= 8 && height <= 200))) &&
         (s.nodePositions == null || (isPlain(s.nodePositions) && Object.keys(s.nodePositions).length <= 5000 &&
           Object.entries(s.nodePositions).every(([key, point]) => isString(key) && Array.isArray(point) && point.length === 2 && point.every(finite)))) &&
+        (s.labelPositions == null || (isPlain(s.labelPositions) && Object.keys(s.labelPositions).length <= 5000 &&
+          Object.entries(s.labelPositions).every(([key, point]) => isString(key, 2000) && Array.isArray(point) && point.length === 2 && point.every(finite)))) &&
+        (s.labelStyles == null || isPlain(s.labelStyles) && Object.keys(s.labelStyles).length<=5000 && Object.entries(s.labelStyles).every(([key,v])=>isString(key,2000)&&isPlain(v)&&(v.size==null||finite(v.size)&&v.size>0&&v.size<=100)&&(v.rotation==null||finite(v.rotation)&&Math.abs(v.rotation)<=360)&&(v.oblique==null||finite(v.oblique)&&Math.abs(v.oblique)<=85))) &&
+        (s.dimensionLayout == null || (isPlain(s.dimensionLayout) && Object.keys(s.dimensionLayout).length <= 1000 &&
+          Object.entries(s.dimensionLayout).every(([key, layout]) => isString(key,2000) && isPlain(layout) &&
+            (layout.axis == null || Array.isArray(layout.axis) && layout.axis.length===3 && layout.axis.every(finite) && Math.hypot(...layout.axis)>1e-8) &&
+            (layout.offset == null || finite(layout.offset) && Math.abs(layout.offset)<=5000) &&
+            (layout.reverseText == null || typeof layout.reverseText==='boolean') && (layout.format==null || ['feet','inches','feet-short'].includes(layout.format))))) &&
+        (s.jointItems == null || (isPlain(s.jointItems) && Object.keys(s.jointItems).length <= 5000 &&
+          Object.entries(s.jointItems).every(([key, parts]) => isString(key,2000) && isPlain(parts) &&
+            ['flange','bolts','gasket'].every(k => parts[k as keyof typeof parts] == null || isString(parts[k as keyof typeof parts],2000))))) &&
+        (s.dimensionScope == null || ['sheet', 'legs'].includes(s.dimensionScope)) &&
         (s.dimensions == null || (Array.isArray(s.dimensions) && s.dimensions.length <= 500 && s.dimensions.every(dim =>
           isPlain(dim) && [dim.from, dim.to].every(a => isPlain(a) && isString(a.nodeId) &&
             d.nodes.some(n => n.id === a.nodeId) && (a.face == null || ['body', 'mate'].includes(a.face) && a.runId != null) &&
             (a.runId == null || isString(a.runId) && d.runs.some(r => r.id === a.runId && [r.from, r.to].includes(a.nodeId)))) &&
           Array.isArray(dim.axis) && dim.axis.length === 3 && dim.axis.every(finite) && Math.hypot(...dim.axis) > 0 &&
-          finite(dim.offset) && Math.abs(dim.offset) <= 5000))) &&
+          finite(dim.offset) && Math.abs(dim.offset) <= 5000 && (dim.reverseText == null || typeof dim.reverseText === 'boolean') && (dim.format==null || ['feet','inches','feet-short'].includes(dim.format))))) &&
         (s.issuedValues == null || (isPlain(s.issuedValues) && Object.keys(s.issuedValues).length <= 500 &&
           Object.entries(s.issuedValues).every(([key, value]) => isString(key, 2000) && isPlain(value) &&
             (['qtyText', 'nd', 'description'] as const).every(k => value[k] == null || isString(value[k], k === 'description' ? 2000 : 120)))))))
@@ -1744,7 +1831,14 @@ export function parseIsoJson(raw: string): IsoDocument {
     d.sheetNotes != null &&
     (!Array.isArray(d.sheetNotes) || d.sheetNotes.length > 500 ||
       !d.sheetNotes.every(s => isPlain(s) && isString(s.id) && !!s.id && isString(s.spool) && isString(s.text, 2000) &&
-        Array.isArray(s.at) && s.at.length === 2 && s.at.every(finite)))
+        Array.isArray(s.at) && s.at.length === 2 && s.at.every(finite) &&
+        (s.size == null || positive(s.size) && s.size<=200) &&
+        (s.lettering==null || ['cad','sans'].includes(s.lettering)) &&
+        (['color','textColor'] as const).every(k=>s[k]==null || typeof s[k]==='string' && /^#[0-9a-f]{6}$/i.test(s[k])) &&
+        (s.arrow==null || typeof s.arrow==='boolean') &&
+        (s.leader==null || Array.isArray(s.leader) && s.leader.length>=2 && s.leader.length<=100 && s.leader.every(p=>Array.isArray(p)&&p.length===2&&p.every(finite))) &&
+        (s.box==null || isPlain(s.box) && Array.isArray(s.box.at) && s.box.at.length===2 && s.box.at.every(finite) && positive(s.box.width) && positive(s.box.height)) &&
+        (s.rotation == null || finite(s.rotation)) && (s.oblique == null || finite(s.oblique) && Math.abs(s.oblique)<89)))
   )
     throw new Error('Invalid sheet note.')
   const specs = new Set<string>(),
@@ -1843,6 +1937,26 @@ export function parseIsoJson(raw: string): IsoDocument {
     if (r.nipple != null && (!isPlain(r.nipple) || (r.nipple.length != null && !positive(r.nipple.length))))
       throw new Error('Invalid pipe nipple.')
     if (r.flow != null && r.flow !== 'forward' && r.flow !== 'reverse') throw new Error('Invalid flow direction.')
+    if (r.showFlow != null && typeof r.showFlow !== 'boolean') throw new Error('Invalid flow arrow visibility.')
+    if (r.flowPosition != null && (!finite(r.flowPosition) || r.flowPosition<0 || r.flowPosition>1)) throw new Error('Invalid flow arrow position.')
+    if(r.showSize!=null && typeof r.showSize!=='boolean')throw Error('Invalid size label placement.')
+    if(r.showLineNumber != null && typeof r.showLineNumber!=='boolean')throw new Error('Invalid line number placement.')
+    if (r.lineNumberPlane != null && !['vertical', 'plan', 'normal', 'alternate'].includes(r.lineNumberPlane)) throw new Error('Invalid line number lettering plane.')
+    if (r.dimensionReverse != null && typeof r.dimensionReverse !== 'boolean') throw new Error('Invalid dimension lettering direction.')
+    if (r.dimensionAxis != null && (!Array.isArray(r.dimensionAxis) || r.dimensionAxis.length !== 3 ||
+      !r.dimensionAxis.every(finite) || Math.hypot(...r.dimensionAxis) < 1e-8)) throw new Error('Invalid dimension direction.')
+    if (r.offsetDrawing != null && (!isPlain(r.offsetDrawing) ||
+      (r.offsetDrawing.angleFromH!=null && !['start','end'].includes(r.offsetDrawing.angleFromH)) ||
+      (r.offsetDrawing.angleFromV!=null && !['start','end'].includes(r.offsetDrawing.angleFromV)) ||
+      (r.offsetDrawing.legPlane!=null && !['construction','vertical'].includes(r.offsetDrawing.legPlane)) ||
+      (r.offsetDrawing.hatchFrom!=null && !['start','end'].includes(r.offsetDrawing.hatchFrom)) ||
+      (r.offsetDrawing.hatchPlane!=null && !['H','V'].includes(r.offsetDrawing.hatchPlane)) ||
+      (r.offsetDrawing.planPoint!=null && (!Array.isArray(r.offsetDrawing.planPoint)||r.offsetDrawing.planPoint.length!==2||!r.offsetDrawing.planPoint.every(finite))) ||
+      (r.offsetDrawing.hatchCount != null && (!Number.isInteger(r.offsetDrawing.hatchCount) || r.offsetDrawing.hatchCount<0 || r.offsetDrawing.hatchCount>200)) ||
+      ['rightAngleSize','angleRadiusH','angleRadiusV','hatchSpacing','hatchStart','hatchGap'].some(k=>{const v=r.offsetDrawing![k as 'rightAngleSize'|'angleRadiusH'|'angleRadiusV'|'hatchSpacing'|'hatchStart'|'hatchGap'];return v!=null&&(!finite(v)||v<0||v>5000)}) ||
+      ['angleOutwardH','angleOutwardV','angleArrows','showTrueLength','dimensionLegs','setAndRoll','showLegValues'].some(k => r.offsetDrawing![k as 'angleOutwardH'|'angleOutwardV'|'angleArrows'|'showTrueLength'|'dimensionLegs'|'setAndRoll'|'showLegValues'] != null && typeof r.offsetDrawing![k as 'angleOutwardH'|'angleOutwardV'|'angleArrows'|'showTrueLength'|'dimensionLegs'|'setAndRoll'|'showLegValues'] !== 'boolean') ||
+      (r.offsetDrawing.trueLengthOffset != null && (!finite(r.offsetDrawing.trueLengthOffset) || Math.abs(r.offsetDrawing.trueLengthOffset)>5000))))
+      throw new Error('Invalid offset drafting.')
     for (const key of ['connector', 'fromField', 'toField', 'fromFieldFit', 'toFieldFit', 'uncut'])
       if (
         r[key as keyof PipeRun] != null &&
@@ -1886,8 +2000,10 @@ export function parseIsoJson(raw: string): IsoDocument {
       if (!isPlain(r) || !isString(r.id, 200) || !r.id || references.has(r.id) || !ids.has(r.atNodeId) ||
         !isString(r.name, 200) || !isString(r.anchorNodeId) || !Array.isArray(r.nodes) || r.nodes.length > 100 ||
         !Array.isArray(r.runs) || r.runs.length > 100 || !Array.isArray(r.specs) ||
-        (r.components != null && (!Number.isInteger(r.components) || r.components < 1 || r.components > 3)) ||
-        (r.dimensionTo != null && !isString(r.dimensionTo))) throw new Error('Invalid adjacent drawing.')
+        (r.components != null && (!Number.isInteger(r.components) || r.components < 0 || r.components > 3)) ||
+        (r.dimensionTo != null && !isString(r.dimensionTo)) ||
+        (r.pipeWeight!=null && typeof r.pipeWeight!=='boolean') ||
+        (r.termination != null && !['break', 'plain'].includes(r.termination))) throw new Error('Invalid adjacent drawing.')
       // Validate each isolated reference using the same graph and catalogue rules as an ordinary document.
       const source = parseIsoJson(JSON.stringify({ ...d, nodes: r.nodes, runs: r.runs, specs: r.specs,
         references: undefined, sheets: undefined, sheetNotes: undefined }))
@@ -1913,9 +2029,10 @@ export function csv(rows: unknown[][]): string {
 }
 /** Discard paper anchors when their underlying geometry has been removed. */
 export function pruneSheetAnchors(doc: IsoDocument): void {
+  const paperNodes=new Set([...doc.nodes,...(doc.references??[]).flatMap(r=>r.nodes)].map(n=>n.id));
   for (const info of Object.values(doc.sheets ?? {})) {
     if (info.nodePositions) for (const key of Object.keys(info.nodePositions))
-      if (!doc.nodes.some(n => n.id === key)) delete info.nodePositions[key];
+      if (!paperNodes.has(key)) delete info.nodePositions[key];
     if (info.dimensions) info.dimensions = info.dimensions.filter(dim => [dim.from, dim.to].every(a =>
       doc.nodes.some(n => n.id === a.nodeId) && (!a.runId || doc.runs.some(r => r.id === a.runId && [r.from, r.to].includes(a.nodeId)))));
   }

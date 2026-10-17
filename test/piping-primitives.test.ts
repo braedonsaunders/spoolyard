@@ -6,10 +6,10 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { PDFDocument } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
-import { drawingSvg, type Drawing, type Primitive } from '../src/core/drawing.ts';
-import { appendRun, newIso } from '../src/core/model.ts';
+import { createDrawing, drawingSvg, type Drawing, type Primitive } from '../src/core/drawing.ts';
+import { appendRun, newIso, parseIsoJson } from '../src/core/model.ts';
 import { isometricDxf, readIsometric } from '../src/core/document.ts';
-import { LINE_SPACING, measureText } from '../src/core/stroke-font.ts';
+import { CAD_STROKE_WIDTH, LINE_SPACING, measureText } from '../src/core/stroke-font.ts';
 import { drawPrimitives } from '../src/editor/export.ts';
 import { SheetLayer } from '../src/editor/sheet-layer.tsx';
 
@@ -113,9 +113,11 @@ test('the editor layer draws every primitive with its owner, length handle and s
   assert.match(sans, new RegExp(`<tspan x="20">CONT&#x27;D ON</tspan><tspan x="20" dy="${LINE_SPACING * 7}">DWG# ISO-2</tspan>`));
   // CAD lettering is stroked, still carries the length handle, and owned text gets a box to click.
   assert.ok(!cad.includes('<text'));
-  assert.match(cad, /<path data-owner="run-1" data-length="overall" data-text="2&#x27;-6 1\/2&quot;" d="M[^"]+" stroke-width="1" class="iso-cad-text iso-layer-dim selected"/);
-  assert.match(cad, /<path data-owner="node-9" [^>]*stroke-width="0.70*\d?"/);
-  assert.match(cad, new RegExp(`<rect data-owner="node-9" x="18" y="191" width="${measureText(`CONT'D ON\nDWG# ISO-2\n℄ EL +1'-4″`, 7) + 4}" height="11" fill="transparent"`));
+  assert.match(cad, /<path data-owner="run-1" data-length="overall" data-text="2&#x27;-6 1\/2&quot;" d="M[^"]+" stroke-width="[^"]+" class="iso-cad-text iso-layer-dim selected"/);
+  assert.ok(cad.includes(`stroke-width="${CAD_STROKE_WIDTH}" class="iso-cad-text iso-layer-dim selected"`));
+  assert.match(cad, /<path data-owner="node-9" [^>]*stroke-width="[^"]+"/);
+  assert.ok(cad.includes(`stroke-width="${CAD_STROKE_WIDTH}" class="iso-cad-text iso-layer-text"`));
+  assert.match(cad, new RegExp(`<rect data-owner="node-9" x="18" y="191" width="${measureText(`CONT'D ON\nDWG# ISO-2\n℄ EL +1'-4″`, 7) + 4}" height="${7 + 2 * LINE_SPACING * 7 + 4}" fill="transparent"`));
   const editing = render('cad', { runId: 'run-1', role: 'overall' });
   assert.match(editing, /<path data-owner="run-1" data-length="overall" [^>]*style="visibility:hidden"/);
   assert.ok(!editing.includes('class="iso-length-hit"'));
@@ -140,7 +142,7 @@ test('DXF writes polylines, fills, styled text, lineweights and image frames', (
     assert.equal(value(style, 41), '0.8');
     assert.ok(all.some(r => r[0][1] === 'LAYER' && value(r, 2) === 'BW-ISO-TITLE'));
     const of = (type: string) => list.filter(e => e[0][1] === type);
-    assert.deepEqual(of('LINE').map(e => value(e, 370)), ['53', '20', '158']);
+    assert.deepEqual(of('LINE').map(e => value(e, 370)), ['53', '18', '158']);
     const polylines = of('LWPOLYLINE');
     assert.deepEqual(polylines.map(e => [value(e, 8), value(e, 90), value(e, 70)]), [
       ['BW-ISO-SYMBOL', '3', '0'], ['BW-ISO-TAG', '4', '1'], ['BW-ISO-LEADER', '4', '1'], ['BW-ISO-TITLE', '4', '1'],
@@ -216,4 +218,38 @@ test('PDF draws every primitive kind for both letterings and embeds images once'
   // One PNG on both pages: its image and alpha mask, written once.
   assert.equal(bytes.toString('latin1').match(/\/Subtype \/Image/g)?.length, 2);
   assert.equal((await PDFDocument.load(bytes)).getPageCount(), 2);
+});
+
+
+test('boxed callouts preserve their colour, leader and lettering through save and each drawing output', async () => {
+  const doc=newIso();appendRun(doc,null,[1000,0,0],'CS40',2,'S1','L1');
+  doc.sheetNotes=[{id:'check-callout',spool:'S1',text:'CHECK',at:[250,400],size:9,lettering:'sans',textColor:'#000000',color:'#ff0000',box:{at:[248,387],width:120,height:18},leader:[[430,300],[380,396],[368,396]],arrow:true}];
+  const loaded=parseIsoJson(JSON.stringify(doc)), d=createDrawing(loaded,'S1');
+  assert.deepEqual(loaded.sheetNotes,doc.sheetNotes);
+  const own=d.primitives.filter(p=>p.owner==='check-callout');
+  assert.equal(own.filter(p=>p.color==='#ff0000').length,3);
+  assert.ok(own.some(p=>p.type==='text'&&p.lettering==='sans'));
+  assert.match(drawingSvg(d),/style="stroke:#ff0000/);
+  assert.match(drawingSvg(d),/<text[^>]+>.*CHECK/);
+  const react=renderToStaticMarkup(createElement(SheetLayer,{primitives:own,lettering:'cad',background:'white',selection:'',editing:null,onEditLength:()=>{}}));
+  assert.match(react,/<text/);assert.match(react,/stroke:#ff0000/);
+  const {entities:list}=entities(isometricDxf(loaded,d));
+  assert.equal(list.filter(e=>value(e,420)==='16711680').length,3);
+  const pdf=await PDFDocument.create(),font=await pdf.embedFont('Helvetica'),page=pdf.addPage([1224,792]);
+  await drawPrimitives(page,{...d,primitives:own},font,{x:0,y:792,scale:792/850});
+  const bytes=await pdf.save();assert.equal((await PDFDocument.load(bytes)).getPageCount(),1);
+  loaded.sheetNotes![0].color='red;bad';assert.throws(()=>parseIsoJson(JSON.stringify(loaded)),/sheet note/);
+});
+
+test('per-label lettering survives saving and exports as native text without changing model dimensions',()=>{
+ const doc=newIso();appendRun(doc,null,[1000,300,0],'CS40',2,'S1','L1');
+ const before=JSON.stringify(doc.nodes.map(n=>n.position)),first=createDrawing(doc,'S1');
+ const label=first.primitives.find(p=>p.type==='text'&&p.label&&p.layer==='DIM')!;assert.equal(label.type,'text');if(label.type!=='text')return;
+ doc.sheets={S1:{labelStyles:{[label.label!.key]:{size:8,rotation:30,oblique:-30}}}};
+ const saved=parseIsoJson(JSON.stringify(doc)),drawing=createDrawing(saved,'S1'),styled=drawing.primitives.find(p=>p.type==='text'&&p.label?.key===label.label!.key)!;
+ assert.equal(styled.type,'text');if(styled.type!=='text')return;
+ assert.equal(styled.size,8);assert.equal(styled.rotation,30);assert.equal(styled.oblique,-30);assert.equal(styled.text,label.text);
+ assert.equal(JSON.stringify(saved.nodes.map(n=>n.position)),before);
+ assert.ok(isometricDxf(saved,drawing).includes('ROMANS'));
+ saved.sheets!.S1.labelStyles![label.label!.key].oblique=90;assert.throws(()=>parseIsoJson(JSON.stringify(saved)),/sheet/i);
 });

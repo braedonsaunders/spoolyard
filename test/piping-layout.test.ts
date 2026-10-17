@@ -8,6 +8,22 @@ type Point = [number, number];
 const angleOffVertical = (p: Point) => Math.abs(Math.atan2(p[0], Math.abs(p[1]))) * 180 / Math.PI;
 const draw = (doc: IsoDocument) => createDrawing(doc, doc.runs[0].spool);
 
+test('an explicit hidden elevation overrides an automatic riser callout and survives reopening', () => {
+  const doc = newIso(); doc.coordinates = { origin: [0, 0, 0] };
+  doc.style!.elevations = true;
+  const elbow = appendRun(doc, null, [0, 0, 1000], 'CS40', 2, 'SP-1', 'L');
+  appendRun(doc, elbow.id, [1000, 0, 0], 'CS40', 2, 'SP-1', 'L');
+  const key = `elevation:${elbow.id}`;
+  const hasLabel = (d: IsoDocument) => draw(d).primitives.some(p => p.type === 'text' && p.label?.key === key);
+  assert.ok(hasLabel(doc));
+  const positions = doc.nodes.map(n => n.position);
+  elbow.elevationCallout = false;
+  assert.equal(hasLabel(parseIsoJson(JSON.stringify(doc))), false);
+  assert.deepEqual(doc.nodes.map(n => n.position), positions);
+  elbow.elevationCallout = true;
+  assert.ok(hasLabel(doc));
+});
+
 test('paper positions arrange a schematic without changing model geometry, cuts or model-space views', () => {
   const doc = newIso(), end = appendRun(doc, null, [1000, 0, 0], 'CS40', 2, 'SP-1', 'L');
   const before = clone(doc), start = doc.runs[0].from, cut = runResult(doc, doc.runs[0]).cut;
@@ -188,4 +204,74 @@ test('no lettering overprints other lettering: two-line support labels, rolling 
   for (let i = 0; i < texts.length; i++)
     for (let j = i + 1; j < texts.length; j++)
       assert.ok(!overlaps(boxes[i], boxes[j]), `${JSON.stringify(texts[i].text)} overprints ${JSON.stringify(texts[j].text)}`);
+});
+
+test('held paper labels move their boxes and leaders without changing measured fabrication data', () => {
+  const doc = newIso(), end = appendRun(doc, null, [1000, 0, 0], 'CS40', 2, 'SP-1', 'L');
+  const run = doc.runs[0], start = doc.nodes.find(n => n.id === run.from)!;
+  start.continuation = { text: 'CONTINUED ON\nDRAWING X-2', coordinates: false };
+  const before = clone(doc), cut = runResult(doc, run).cut;
+  const positions: Record<string, Point> = { [`continuation:${start.id}`]: [200,200], [`pipe-tag:${run.id}`]: [350,250], 'dimension:0': [500,300] };
+  doc.sheets = { 'SP-1': { labelPositions: positions } };
+  const drawing = createDrawing(doc);
+  for (const [key, at] of Object.entries(positions)) {
+    const text = drawing.primitives.find(p => p.type === 'text' && p.label?.key === key);
+    assert.ok(text?.type === 'text', key);
+    assert.deepEqual(text.label!.at, at);
+    assert.equal(text.label!.spool, 'SP-1');
+  }
+  assert.deepEqual(doc.nodes, before.nodes);
+  assert.equal(runResult(doc, run).cut, cut);
+  assert.deepEqual(createDrawing(doc, '', 'iso', undefined, {model:true}).primitives,
+    createDrawing(before, '', 'iso', undefined, {model:true}).primitives);
+  const restored = parseIsoJson(JSON.stringify(doc));
+  assert.deepEqual(createDrawing(restored).primitives, drawing.primitives);
+  (restored.sheets!['SP-1'].labelPositions!['dimension:0'] as any)[0] = 'bad';
+  assert.throws(() => parseIsoJson(JSON.stringify(restored)), /sheet information/);
+  assert.ok(end.id);
+});
+
+test('a valve can letter its tag and operator above its boxed item number', async () => {
+  const {applyComponent} = await import('../src/core/model.ts');
+  const d = newIso(), valve = appendRun(d,null,[1000,0,0],'CS40',2,'SP-1','L');
+  appendRun(d,valve.id,[1000,0,0],'CS40',2,'SP-1','L');
+  applyComponent(d,valve,'BALL-FL'); valve.tag='HV-TEST';valve.operator='OPERATOR UP';valve.calloutOrder='tag-first';
+  const text=createDrawing(d).primitives.find(p=>p.type==='text'&&p.label?.key===`item:${valve.id}`);
+  assert.ok(text?.type==='text');
+  assert.equal(text.text,'HV-TEST\nOPERATOR UP\n');
+  const numberKey=`item-number:item:${valve.id}`,before=JSON.stringify(d.nodes);
+  d.sheets={'SP-1':{labelPositions:{[numberKey]:[450,180]}}};
+  const number=createDrawing(d).primitives.find(p=>p.type==='text'&&p.label?.key===numberKey);
+  assert.ok(number?.type==='text');assert.match(number.text,/^\d+$/);assert.deepEqual(number.label?.at,[450,180]);
+  assert.equal(JSON.stringify(d.nodes),before);
+  assert.deepEqual(parseIsoJson(JSON.stringify(d)).nodes.find(n=>n.id===valve.id)?.calloutOrder,'tag-first');
+  valve.calloutOrder='item-tag-first';
+  const reordered=createDrawing(d).primitives.find(p=>p.type==='text'&&p.label?.key===`item:${valve.id}`);
+  assert.ok(reordered?.type==='text');assert.equal(reordered.text,'\nHV-TEST\nOPERATOR UP');
+  assert.equal(parseIsoJson(JSON.stringify(d)).nodes.find(n=>n.id===valve.id)?.calloutOrder,'item-tag-first');
+});
+
+test('explicit line numbers repeat on selected pipes with independent saved positions',()=>{
+ const doc=newIso(),corner=appendRun(doc,null,[1000,0,0],'CS40',2,'SP-1','LINE-A');
+ appendRun(doc,corner.id,[0,0,1000],'CS40',2,'SP-1','LINE-A');
+ const count=(d:IsoDocument)=>createDrawing(d).primitives.filter(p=>p.type==='text'&&p.text==='LINE-A');
+ assert.equal(count(doc).length,1);
+ doc.runs.forEach(r=>{r.showLineNumber=true});
+ const labels=count(doc);assert.equal(labels.length,2);
+ const keys=labels.map(p=>p.type==='text'?p.label!.key:'');assert.equal(new Set(keys).size,2);
+ doc.sheets={'SP-1':{labelPositions:{[keys[0]]:[200,150],[keys[1]]:[450,200]}}};
+ const reopened=count(parseIsoJson(JSON.stringify(doc)));
+ assert.deepEqual(reopened.map(p=>p.type==='text'?p.label!.at:[]),[[200,150],[450,200]]);
+ doc.runs[1].showLineNumber=false;assert.equal(count(doc).length,1);
+});
+
+test('a held leader bend routes the continuation without moving its lettering or fabrication points',()=>{
+  const doc=newIso(),end=appendRun(doc,null,[1000,0,0],'CS40',2,'SP-1','L');
+  end.continuation={text:'CONTINUED ON\nISO-TEST-B',coordinates:false};
+  const key=`continuation:${end.id}`,bend:Point=[500,220];
+  doc.sheets={'SP-1':{labelPositions:{[key]:[300,180],[`leader:${key}`]:bend}}};
+  const before=clone(doc),drawing=createDrawing(doc);
+  assert.ok(drawing.primitives.some(p=>p.type==='line'&&p.layer==='LEADER'&&[p.a,p.b].some(q=>Math.hypot(q[0]-bend[0],q[1]-bend[1])<1e-6)));
+  assert.deepEqual(doc.nodes,before.nodes);
+  assert.deepEqual(createDrawing(parseIsoJson(JSON.stringify(doc))).primitives,drawing.primitives);
 });

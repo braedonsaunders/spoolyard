@@ -119,6 +119,8 @@ import {
   reduceAtJoint,
   routeError,
   setLineFlow,
+  setDimensionAxis,
+  setDimensionReverse,
   sized,
   sizeChoices,
   snapAlongLeg,
@@ -383,6 +385,8 @@ export function IsometricEditor({
     lengthInput = useRef<HTMLInputElement>(null);
   // A left-button press waits for movement before it pans, so the same press can still click.
   const drag = useRef<{ x: number; y: number; pan: Point; scale: number; pending: boolean; moved: boolean } | null>(null);
+  const labelDrag = useRef<{ key: string; spool: string; point: Point; at: Point; destination: Point; dimension?: {axis:Point;offset:number} } | null>(null);
+  const [labelPreview, setLabelPreview] = useState<Point | null>(null);
   const [spacePan, setSpacePan] = useState(false);
   const viewState = useRef({ zoom: 1, pan: [0, 0] as Point, width: 1100, sheet: 1100 });
   const lengthCancel = useRef(false);
@@ -1616,6 +1620,22 @@ export function IsometricEditor({
                     const owner = target.closest("[data-owner]")?.getAttribute("data-owner");
                     const node = target.closest("[data-node]")?.getAttribute("data-node") ?? doc.nodes.find(n => n.id === owner)?.id;
                     const p = point(e);
+                    const label = target.closest('[data-label]');
+                    if (e.button === 0 && e.altKey && !spacePan && surface === 'paper' && view === 'iso' && label && p) {
+                      const labelKey = label.getAttribute('data-label')!, sheet = label.getAttribute('data-label-spool') ?? '';
+                      const dimension = e.shiftKey && label.hasAttribute('data-dimension-offset') ? {
+                        axis:[Number(label.getAttribute('data-dimension-x')),Number(label.getAttribute('data-dimension-y'))] as Point,
+                        offset:Number(label.getAttribute('data-dimension-offset')),
+                      } : undefined;
+                      if (e.shiftKey && !dimension && !/^(continuation|elevation|callout|item|joint|stub|size|tie):/.test(labelKey)) return;
+                      const key = e.shiftKey && !dimension ? `leader:${labelKey}` : labelKey;
+                      if (!sheet && new Set(doc.runs.map(r => r.spool)).size > 1) return;
+                      const at: Point = e.shiftKey && !dimension && doc.sheets?.[sheet]?.labelPositions?.[key] ||
+                        [Number(label.getAttribute('data-label-x')), Number(label.getAttribute('data-label-y'))];
+                      e.preventDefault();
+                      labelDrag.current = { key, spool: sheet, point: p, at, destination: [...at], dimension }; setLabelPreview(at);
+                      return;
+                    }
                     if (e.button === 0 && !spacePan && (tool === "select" || tool === "insert" && !armed) && node && p) {
                       e.preventDefault();
                       e.currentTarget.setPointerCapture(e.pointerId);
@@ -1642,6 +1662,20 @@ export function IsometricEditor({
                     }
                   }}
                   onPointerMove={(e) => {
+                    if (labelDrag.current) {
+                      const p = point(e), state = labelDrag.current;
+                      if (p) {
+                        state.destination = [state.at[0] + p[0] - state.point[0], state.at[1] + p[1] - state.point[1]];
+                        if (state.dimension) {
+                          const u=state.dimension.axis,delta=(p[0]-state.point[0])*u[0]+(p[1]-state.point[1])*u[1];
+                          state.destination=[state.at[0]+u[0]*delta,state.at[1]+u[1]*delta];
+                        }
+                        if (Math.hypot(p[0] - state.point[0], p[1] - state.point[1]) > 0.5 && !e.currentTarget.hasPointerCapture(e.pointerId))
+                          e.currentTarget.setPointerCapture(e.pointerId);
+                        setLabelPreview(state.destination);
+                      }
+                      return;
+                    }
                     if (nodeDrag.current) {
                       const p = point(e),
                         state = nodeDrag.current;
@@ -1708,8 +1742,34 @@ export function IsometricEditor({
                   onPointerLeave={() => setInsertHover(null)}
                   onMouseDown={(e) => { if (e.button === 1) e.preventDefault(); }}
                   onContextMenu={(e) => e.preventDefault()}
-                  onPointerCancel={() => { nodeDrag.current = null; drag.current = null; setCursor(null); setInsertHover(null); }}
+                  onPointerCancel={() => { labelDrag.current = null; setLabelPreview(null); nodeDrag.current = null; drag.current = null; setCursor(null); setInsertHover(null); }}
+                  onDoubleClickCapture={e => {
+                    const label = (e.target as Element).closest('[data-label]');
+                    if (!e.altKey || surface !== 'paper' || view !== 'iso' || !label) return;
+                    e.preventDefault(); e.stopPropagation();
+                    const labelKey = label.getAttribute('data-label')!, sheet = label.getAttribute('data-label-spool') ?? '';
+                    if (e.shiftKey && label.hasAttribute('data-dimension-offset')) {
+                      commit(d=>{const info=d.sheets?.[sheet];if(info?.dimensionLayout)delete info.dimensionLayout[labelKey];if(info?.labelPositions)delete info.labelPositions[labelKey];});
+                      return;
+                    }
+                    const key = e.shiftKey ? `leader:${labelKey}` : labelKey;
+                    commit(d => { const held = d.sheets?.[sheet]?.labelPositions; if (held) delete held[key]; });
+                  }}
                   onPointerUp={(e) => {
+                    if (labelDrag.current) {
+                      const state = labelDrag.current; labelDrag.current = null; setLabelPreview(null);
+                      if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+                      if (Math.hypot(state.destination[0] - state.at[0], state.destination[1] - state.at[1]) > 0.5)
+                        commit(d => {
+                          const info = ((d.sheets ??= {})[state.spool] ??= {});
+                          if (state.dimension) {
+                            const u=state.dimension.axis,delta=(state.destination[0]-state.at[0])*u[0]+(state.destination[1]-state.at[1])*u[1];
+                            const layout=((info.dimensionLayout ??= {})[state.key] ??= {});layout.offset=state.dimension.offset+delta;
+                            const held=info.labelPositions?.[state.key];if(held)info.labelPositions![state.key]=[held[0]+u[0]*delta,held[1]+u[1]*delta];
+                          } else (info.labelPositions ??= {})[state.key] = state.destination;
+                        });
+                      return;
+                    }
                     if (nodeDrag.current) {
                       const state = nodeDrag.current;
                       nodeDrag.current = null;
@@ -1765,6 +1825,7 @@ export function IsometricEditor({
                     editing={lengthEdit}
                     onEditLength={openLength}
                   />
+                  {labelPreview && <circle pointerEvents="none" cx={labelPreview[0]} cy={labelPreview[1]} r="5" fill="none" stroke="#008dbc" strokeWidth="1" />}
                   {(armed || tool === "pipe") && insertHover && (() => {
                     const run = doc.runs.find(r => r.id === insertHover.runId);
                     if (!run) return null;
@@ -1952,7 +2013,7 @@ export function IsometricEditor({
                     doc={doc}
                     commit={commit}
                     onError={setError}
-                    spool={filter || spool}
+                    spool={filter || (doc.runs.some(r=>r.spool===spool)?spool:doc.runs[0]?.spool ?? spool)}
                     selectedNodeId={selectedNode?.id}
                     onUnitsChange={(units, previous) => {
                       try {
@@ -2072,7 +2133,77 @@ export function IsometricEditor({
                                 <option value="reverse">Flows {directionName(along.map((v) => -v) as Vec3)}</option>
                               </select>
                             </Field>
+                            {selectedRun.flow && <Field label="Arrow position on this pipe (%)">
+                              <label><input type="checkbox" checked={selectedRun.showFlow!==false}
+                                onChange={e=>commit(d=>{d.runs.find(r=>r.id===selection)!.showFlow=e.target.checked?undefined:false;})}/> Show flow arrow</label>
+                              <input aria-label="Flow arrow position" type="number" min={0} max={100} placeholder="Automatic"
+                                value={selectedRun.flowPosition==null?'':Math.round(selectedRun.flowPosition*10000)/100}
+                                onChange={e=>commit(d=>{d.runs.find(r=>r.id===selection)!.flowPosition=e.target.value===''?undefined:Number(e.target.value)/100;})} />
+                            </Field>}
+                            {along.filter(v=>Math.abs(v)>0.01).length>1 && <details>
+                              <summary>Offset drafting</summary>
+                              <label className="iso-check"><input type="checkbox" checked={selectedRun.offsetDrawing?.showTrueLength!==false}
+                                onChange={e=>commit(d=>{(d.runs.find(r=>r.id===selection)!.offsetDrawing??={}).showTrueLength=e.target.checked;})}/> Dimension the true length</label>
+                              <label className="iso-check"><input type="checkbox" checked={selectedRun.offsetDrawing?.showLegValues!==false}
+                                onChange={e=>commit(d=>{const r=d.runs.find(r=>r.id===selection)!;(r.offsetDrawing ??= {}).showLegValues=e.target.checked;})} /> Show triangle leg values</label>
+                              <label className="iso-check"><input type="checkbox" checked={!!selectedRun.offsetDrawing?.dimensionLegs}
+                                onChange={e=>commit(d=>{const r=d.runs.find(r=>r.id===selection)!;(r.offsetDrawing ??= {}).dimensionLegs=e.target.checked;})} /> Dimension the triangle legs</label>
+                              <label className="iso-check"><input type="checkbox" checked={!!selectedRun.offsetDrawing?.setAndRoll}
+                                onChange={e=>commit(d=>{const r=d.runs.find(r=>r.id===selection)!;(r.offsetDrawing ??= {}).setAndRoll=e.target.checked;})} /> Show set and roll</label>
+                              <label className="iso-check"><input type="checkbox" checked={!!selectedRun.offsetDrawing?.angleArrows}
+                                onChange={e=>commit(d=>{(d.runs.find(r=>r.id===selection)!.offsetDrawing??={}).angleArrows=e.target.checked;})}/> Angular dimension arrows</label>
+                              {(['H','V'] as const).map(plane=><label className="iso-check" key={`outward-${plane}`}><input type="checkbox" checked={!!selectedRun.offsetDrawing?.[plane==='H'?'angleOutwardH':'angleOutwardV']} onChange={e=>commit(d=>{(d.runs.find(r=>r.id===selection)!.offsetDrawing??={})[plane==='H'?'angleOutwardH':'angleOutwardV']=e.target.checked;})}/>{plane==='H'?'Horizontal':'Vertical'} angle arrows outward</label>)}
+                              {(['H','V'] as const).map(plane=><label className="iso-field" key={plane}><span>{plane==='H'?'Horizontal':'Vertical'} angle corner</span><select aria-label={`${plane==='H'?'Horizontal':'Vertical'} angle corner`} value={selectedRun.offsetDrawing?.[plane==='H'?'angleFromH':'angleFromV']??'start'} onChange={e=>commit(d=>{(d.runs.find(r=>r.id===selection)!.offsetDrawing??={})[plane==='H'?'angleFromH':'angleFromV']=e.target.value as 'start'|'end';})}><option value="start">Start</option><option value="end">End</option></select></label>)}
+                              <label className="iso-field"><span>Triangle lettering</span><select aria-label="Offset triangle lettering plane" value={selectedRun.offsetDrawing?.legPlane??'construction'} onChange={e=>commit(d=>{(d.runs.find(r=>r.id===selection)!.offsetDrawing??={}).legPlane=e.target.value as 'construction'|'vertical'})}><option value="construction">Construction plane</option><option value="vertical">Vertical</option></select></label>
+                              <label className="iso-field"><span>Hatch corner</span><select aria-label="Offset hatch corner" value={selectedRun.offsetDrawing?.hatchFrom??'start'} onChange={e=>commit(d=>{(d.runs.find(r=>r.id===selection)!.offsetDrawing??={}).hatchFrom=e.target.value as 'start'|'end'})}><option value="start">Start</option><option value="end">End</option></select></label>
+                              <label className="iso-field"><span>Hatch plane</span><select aria-label="Offset hatch plane" value={selectedRun.offsetDrawing?.hatchPlane??''} onChange={e=>commit(d=>{(d.runs.find(r=>r.id===selection)!.offsetDrawing??={}).hatchPlane=(e.target.value||undefined) as 'H'|'V'|undefined})}><option value="">Both</option><option value="H">Horizontal</option><option value="V">Vertical</option></select></label>
+                              <label className="iso-field"><span>Plan point on paper</span><input aria-label="Offset plan point" key={selectedRun.offsetDrawing?.planPoint?.join(',')} defaultValue={selectedRun.offsetDrawing?.planPoint?.join(', ')??''} placeholder="Automatic" onBlur={e=>{
+                                const p=e.target.value.trim()?e.target.value.split(',').map(Number):undefined;
+                                if(p&&(p.length!==2||p.some(v=>!Number.isFinite(v)||Math.abs(v)>=1e10))){setError('Enter two paper coordinates separated by a comma.');return;}
+                                const held=selectedRun.offsetDrawing?.planPoint;
+                                if(!p&&!held || p&&held&&p.every((v,i)=>v===held[i]))return;
+                                commit(d=>{(d.runs.find(r=>r.id===selection)!.offsetDrawing??={}).planPoint=p as Point|undefined;});
+                              }}/></label>
+                              {([['rightAngleSize','Right angle marker size',5000],['angleRadiusH','Horizontal angle radius',5000],['angleRadiusV','Vertical angle radius',5000],['hatchCount','Hatch lines',200],['hatchSpacing','Hatch spacing',5000],['hatchStart','Hatch start distance',5000],['hatchGap','Hatch gap at pipe',5000]] as const).map(([key,label,max])=><Field key={key} label={label}>
+                                <input aria-label={label} type="number" min={0} max={max} placeholder="Automatic" value={selectedRun.offsetDrawing?.[key] ?? ''}
+                                  onChange={e=>commit(d=>{const r=d.runs.find(r=>r.id===selection)!;(r.offsetDrawing??={})[key]=e.target.value===''?undefined:Number(e.target.value);})}/>
+                              </Field>)}
+                              <Field label="True length spacing">
+                                <input aria-label="Offset true length spacing" type="number" min={-5000} max={5000} placeholder="43.5"
+                                  value={selectedRun.offsetDrawing?.trueLengthOffset ?? ''} onChange={e=>commit(d=>{
+                                    const r=d.runs.find(r=>r.id===selection)!;
+                                    (r.offsetDrawing ??= {}).trueLengthOffset=e.target.value===''?undefined:Number(e.target.value);
+                                  })} />
+                              </Field>
+                            </details>}
                             <p className="iso-help">Set along the line through its fittings and the runs of its tees; each branch is set on its own.</p>
+                            <Field label="Dimension extensions">
+                              <select aria-label="Dimension extension direction" value={selectedRun.dimensionAxis?.join(',') ?? ''}
+                                onChange={e => commit(d => setDimensionAxis(d, selection, e.target.value ? e.target.value.split(',').map(Number) as Vec3 : undefined))}>
+                                <option value="">Automatic</option>
+                                {(['Up','Down','East','West','North','South'] as const).map((name,i) => <option key={name}
+                                  value={([[0,0,1],[0,0,-1],[1,0,0],[-1,0,0],[0,1,0],[0,-1,0]][i]).join(',')}>{name}</option>)}
+                              </select>
+                            </Field>
+                            <label className="iso-field"><span>Nominal size</span><select aria-label="Show pipe nominal size" value={selectedRun.showSize==null?'':String(selectedRun.showSize)} onChange={e=>commit(d=>{d.runs.find(r=>r.id===selection)!.showSize=e.target.value===''?undefined:e.target.value==='true'})}><option value="">Automatic</option><option value="true">Show on this pipe</option><option value="false">Hide size</option></select></label>
+                            <Field label="Line number placement">
+                              <select aria-label="Line number placement" value={selectedRun.showLineNumber==null?'':String(selectedRun.showLineNumber)} onChange={e=>commit(d=>{
+                                const value=e.target.value;
+                                if(value==='true')for(const r of d.runs)if(r.line===selectedRun.line&&r.spool===selectedRun.spool)delete r.showLineNumber;
+                                const r=d.runs.find(r=>r.id===selection)!;r.showLineNumber=value===''?undefined:value==='true';
+                              })}>
+                                <option value="">Automatic</option><option value="true">On this pipe</option><option value="false">Hide on this pipe</option>
+                              </select>
+                            </Field>
+                            <Field label="Line number lettering">
+                              <select aria-label="Line number lettering plane" value={selectedRun.lineNumberPlane ?? ''} onChange={e=>commit(d=>{
+                                for(const r of d.runs)if(r.line===selectedRun.line&&r.spool===selectedRun.spool)r.lineNumberPlane=(e.target.value||undefined) as PipeRun['lineNumberPlane'];
+                              })}>
+                                <option value="">Automatic</option><option value="vertical">Vertical plane</option><option value="plan">Plan plane</option><option value="normal">Normal to pipe</option><option value="alternate">Other isometric plane</option>
+                              </select>
+                            </Field>
+                            <label className="iso-check"><input type="checkbox" aria-label="Flip dimension lettering"
+                              checked={!!selectedRun.dimensionReverse} onChange={e=>commit(d=>setDimensionReverse(d,selection,e.target.checked))} />Flip dimension lettering</label>
                           </>
                         );
                       })()}
@@ -2698,7 +2829,7 @@ export function IsometricEditor({
                     ? "Click to add pipe from the highlighted connection · Esc finishes this run"
                     : "Click an open end to continue from it, a pipe to branch from it, or open sheet to start a run on " + spool
               : surface === "paper"
-                ? "Click the title block to edit · Drag empty space to pan · Scroll to zoom"
+                ? "Alt-drag labels · Alt+Shift-drag leader bends or dimension lines · Alt-double-click resets"
                 : "Infinite model space · Drag empty space to pan · Scroll to zoom"}
         </span>
         <span className={issues.length ? "warning" : doc.runs.length ? "valid" : undefined}>

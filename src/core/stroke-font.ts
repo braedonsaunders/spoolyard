@@ -25,6 +25,8 @@ export interface StrokeTextOptions {
 export const ROMANS_WIDTH_FACTOR = 0.8
 /** Baseline-to-baseline distance of stacked lines, in cap heights. */
 export const LINE_SPACING = 1.9
+/** A 0.48 pt CAD pen on tabloid paper, expressed in the drawing's 850-unit sheet height. */
+export const CAD_STROKE_WIDTH = 0.48 * 850 / 792
 
 /**
  * Hershey Roman Simplex (rowmans.jhf), ASCII 32–126. Each entry starts with the left and right bearing; then

@@ -3,6 +3,7 @@ export { download };
 import { assetUrl } from "./assets";
 import {
   PDFDocument,
+  StandardFonts,
   rgb,
   type Color,
   type PDFFont,
@@ -29,7 +30,7 @@ import {
   TextRenderingMode,
 } from "pdf-lib";
 import fontkit from "@pdf-lib/fontkit";
-import { LINE_SPACING, strokeText } from "../core/stroke-font";
+import { CAD_STROKE_WIDTH, LINE_SPACING, strokeText } from "../core/stroke-font";
 import { type IsoDocument, bom, validateIso, round, csv } from "../core/model";
 import { createDrawing, drawingSvg, weightOf, type Drawing, type Primitive } from "../core/drawing";
 import { sizeText } from "../core/format";
@@ -89,11 +90,14 @@ export async function drawPrimitives(
   font: PDFFont,
   frame: { x: number; y: number; scale: number },
 ): Promise<void> {
+  const calloutFont=d.primitives.some(p=>p.type==='text'&&p.lettering==='sans')?await page.doc.embedFont(StandardFonts.Helvetica):font;
+  const calloutCharacters=new Set(calloutFont.getCharacterSet());
   const embedded = new Map(
     await Promise.all(
       d.primitives.flatMap((p) => (p.type === "image" ? [p.href] : [])).map(async (href) => [href, await embedImage(page.doc, href)] as const),
     ),
   );
+  const hexInk=(hex:string)=>rgb(...[1,3,5].map(i=>parseInt(hex.slice(i,i+2),16)/255) as [number,number,number]);
   const ops: PDFOperator[] = [];
   const path = (points: Array<[number, number]>, closed = false) => {
     points.forEach((q, i) => ops.push(i ? lineTo(q[0], q[1]) : moveTo(q[0], q[1])));
@@ -116,7 +120,7 @@ export async function drawPrimitives(
       ops.push(popGraphicsState());
     } else if (p.type === "text") drawText(p);
     else if (p.type !== "polyline" || p.points.length > 1) {
-      const ink = STROKE_INK[p.layer] ?? INK;
+      const ink = p.color ? hexInk(p.color) : STROKE_INK[p.layer] ?? INK;
       ops.push(pushGraphicsState(), setStrokingColor(ink), setLineWidth(weightOf(p)));
       if (p.type === "line") ops.push(moveTo(p.a[0], p.a[1]), lineTo(p.b[0], p.b[1]), stroke());
       else if (p.type === "polyline") {
@@ -145,13 +149,13 @@ export async function drawPrimitives(
   page.pushOperators(popGraphicsState());
 
   function drawText(p: Extract<Primitive, { type: "text" }>) {
-    const ink = TEXT_INK[p.layer] ?? INK,
+    const ink = p.color ? hexInk(p.color) : TEXT_INK[p.layer] ?? INK,
       shift = p.anchor === "middle" ? 0.5 : p.anchor === "end" ? 1 : 0;
-    if (d.lettering === "cad") {
+    if ((p.lettering ?? d.lettering) === "cad") {
       ops.push(
         pushGraphicsState(),
         setStrokingColor(ink),
-        setLineWidth(Math.max(0.35, p.size * 0.1)),
+        setLineWidth(CAD_STROKE_WIDTH),
         setLineCap(LineCapStyle.Round),
         setLineJoin(LineJoinStyle.Round),
       );
@@ -169,7 +173,8 @@ export async function drawPrimitives(
     ops.push(pushGraphicsState(), concatTransformationMatrix(cos, -sin, slant * cos - sin, -(slant * sin + cos), p.p[0], p.p[1]));
     flush();
     p.text.split(/\r?\n/).forEach((line, row) => {
-      const at = { x: -font.widthOfTextAtSize(line, size) * shift, y: -row * LINE_SPACING * p.size, size, font };
+      const textFont=p.lettering==='sans'&&[...line].every(ch=>calloutCharacters.has(ch.codePointAt(0)!))?calloutFont:font;
+      const at = { x: -textFont.widthOfTextAtSize(line, size) * shift, y: -row * LINE_SPACING * p.size, size, font:textFont };
       // The SVG's white halo (paint-order: stroke) keeps lettering legible over lines; WELD and BOM text is bold there.
       if (p.layer !== "SYMBOL") {
         page.pushOperators(setTextRenderingMode(TextRenderingMode.Outline), setLineWidth(3), setLineJoin(LineJoinStyle.Round), setStrokingColor(WHITE));

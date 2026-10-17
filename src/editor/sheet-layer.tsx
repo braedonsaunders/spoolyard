@@ -1,5 +1,5 @@
 import { weightOf, type Primitive } from "../core/drawing";
-import { LINE_SPACING, measureText, strokeTextPath } from "../core/stroke-font";
+import { CAD_STROKE_WIDTH, LINE_SPACING, measureText, strokeTextPath } from "../core/stroke-font";
 import { cn } from "./cn";
 
 type Text = Extract<Primitive, { type: "text" }>;
@@ -41,6 +41,7 @@ export function SheetLayer({ primitives, lettering, background, selection, editi
   const layerClass = (p: Primitive, base: string, ...extra: Array<string | false>) =>
     cn(base, "iso-layer-" + p.layer.toLowerCase(), ...extra, p.owner === selection && "selected");
   const text = (p: Text, key: number) => {
+    const cad=(p.lettering ?? lettering)==='cad';
     const hidden = editing != null && editing.runId === p.owner && editing.role === p.role;
     const transform = textTransform(p);
     const lines = p.text.split(/\r?\n/);
@@ -52,9 +53,9 @@ export function SheetLayer({ primitives, lettering, background, selection, editi
         data-length={p.role}
         data-text={p.text}
         d={cadPath(p)}
-        strokeWidth={Math.max(0.35, p.size * 0.1)}
+        strokeWidth={CAD_STROKE_WIDTH}
         className={layerClass(p, "iso-cad-text")}
-        style={hidden ? { visibility: "hidden" } : undefined}
+        style={{...(hidden?{visibility:"hidden"}:{}),...(p.color?{stroke:cad?p.color:undefined,fill:cad?"none":p.color}:{})}}
       />
     ) : (
       <text
@@ -66,7 +67,7 @@ export function SheetLayer({ primitives, lettering, background, selection, editi
         textAnchor={p.anchor && p.anchor !== "start" ? p.anchor : undefined}
         transform={transform}
         className={layerClass(p, "iso-text")}
-        style={hidden ? { visibility: "hidden" } : undefined}
+        style={{...(hidden?{visibility:"hidden"}:{}),...(p.color?{stroke:cad?p.color:undefined,fill:cad?"none":p.color}:{})}}
       >
         {lines.length > 1
           ? lines.map((line, i) => (
@@ -78,7 +79,8 @@ export function SheetLayer({ primitives, lettering, background, selection, editi
       </text>
     );
     return (
-      <g key={key}>
+      <g key={key} data-label={p.label?.key} data-label-x={p.label?.at[0]} data-label-y={p.label?.at[1]} data-label-spool={p.label?.spool}
+        data-dimension-x={p.label?.dimension?.axis[0]} data-dimension-y={p.label?.dimension?.axis[1]} data-dimension-offset={p.label?.dimension?.offset}>
         {glyphs}
         {p.role && p.owner && !hidden ? (
           <rect
@@ -108,7 +110,7 @@ export function SheetLayer({ primitives, lettering, background, selection, editi
               x={left - 2}
               y={p.p[1] - p.size - 2}
               width={width + 4}
-              height={p.size + 4}
+              height={p.size + (lines.length - 1) * LINE_SPACING * p.size + 4}
               transform={transform}
               fill="transparent"
             />
@@ -147,6 +149,7 @@ export function SheetLayer({ primitives, lettering, background, selection, editi
                 x2={p.b[0]}
                 y2={p.b[1]}
                 className={layerClass(p, "iso-primitive")}
+                style={p.color?{stroke:p.color}:undefined}
                 strokeWidth={weight}
               />
               {p.layer === "PIPE" && p.owner && (
@@ -162,7 +165,8 @@ export function SheetLayer({ primitives, lettering, background, selection, editi
               data-owner={p.owner}
               points={p.points.map((q) => q.join(",")).join(" ")}
               className={layerClass(p, "iso-primitive", !!p.fill && "iso-fill")}
-              strokeWidth={weight}
+              style={p.color?{stroke:p.color,...(p.fill?{fill:p.color}:{})}:undefined}
+                strokeWidth={weight}
               strokeLinejoin="round"
               fill="none"
             />
@@ -176,7 +180,8 @@ export function SheetLayer({ primitives, lettering, background, selection, editi
             cy={p.p[1]}
             r={p.r}
             className={layerClass(p, "iso-primitive", !!p.fill && "iso-fill")}
-            strokeWidth={weight}
+            style={p.color?{stroke:p.color,...(p.fill?{fill:p.color}:{})}:undefined}
+                strokeWidth={weight}
             fill={background}
           />
         );

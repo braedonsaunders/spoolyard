@@ -2,7 +2,7 @@ import { COMPONENT_TYPE_BY_CODE } from './components'
 import { bolting, ratingClass, standardRow, stubEnd as standardStub } from './standards'
 import { compose, draftLength, schedule, sizeText } from './format'
 import {
-  add, connected, fitting, getNode, getSpec, length, mul, sub,
+  add, connected, fitting, getNode, getSpec, length, mul, sub, takeout,
   type CatalogItem, type EndPrep, type IsoDocument, type Kind, type PipeNode, type PipeRun, type PipeSpec, type Vec3
 } from './model'
 
@@ -351,7 +351,9 @@ export function flangedJoints(doc: IsoDocument, spool = ''): FlangedJoint[] {
       const choice = node.portFlanges?.[run.id], face = faceOf(mate?.code ?? code, runSpec)
       const far = getNode(doc, run.from === node.id ? run.to : run.from).position
       const toward = sub(far, node.position), span = length(toward) || 1
-      const faceDistance = (node.branchEdgeId === run.id ? item?.branchTakeout : item?.takeout) ?? 0
+      const allowance=flangedAllowance(doc,node,run)
+      const measured=takeout(doc,node,run.id),declared=node.branchEdgeId===run.id?node.branchTakeout??item?.branchTakeout:node.takeout??item?.takeout
+      const faceDistance=Math.max(0,Number.isFinite(measured)&&Number.isFinite(allowance)?measured!-allowance:Number.isFinite(declared)?declared!:0)
       const gasket = gasketRow(runSpec, run.nps, face)
       const other = getNode(doc, run.from === node.id ? run.to : run.from), explicit = run.connector && other.kind === 'flange'
       // Two components bolted face to face share one joint; its gasket and bolts are listed with the first of them.

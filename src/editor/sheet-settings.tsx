@@ -1,4 +1,5 @@
-import { useState, type ReactNode } from "react";
+import {createDrawing} from '../core/drawing';
+import { useMemo, useState, type ReactNode } from "react";
 import { Plus, Trash2, Upload } from "lucide-react";
 import { cn } from "./cn";
 import { holdItemNumbers, sheetMaterials } from "../core/material-list";
@@ -471,6 +472,7 @@ export function SheetSettings({
         {text("Drawing number", doc.drawing, (d, v) => (d.drawing = limit(v, HEADER_LIMIT, "The drawing number")), {
           max: HEADER_LIMIT,
         })}
+        <Field label="Paper format"><select aria-label="Paper format" value={doc.sheetFormat??'production'} onChange={e=>commit(d=>{d.sheetFormat=e.target.value as 'classic'|'production'})}><option value="classic">Spoolyard classic</option><option value="production">Production grid</option></select></Field>
         <Field label="Paper size">
           <select value={doc.paper ?? "tabloid"} onChange={(e) => commit((d) => (d.paper = e.target.value as IsoDocument["paper"]))}>
             {PAPERS.map(([value, label]) => (
@@ -589,6 +591,12 @@ export function SheetSettings({
                 {cell("lineNumber", "Line No.")}
                 {cell("revision", "Rev.")}
               </div>
+              <Field label="Material table width on paper (mm)"><TextInput label={`Material table width in mm on paper for ${s}`} value={own.bomWidth==null?'':String(+(own.bomWidth*({letter:215.9,tabloid:279.4,a3:297,a4:210}[doc.paper??'tabloid'])/850).toFixed(2))}
+                placeholder="Automatic" onError={onError} onCommit={value=>{
+                  const mm=({letter:215.9,tabloid:279.4,a3:297,a4:210}[doc.paper??'tabloid'])/850,width=Number(value)/mm;
+                  if(value.trim()&&(!Number.isFinite(width)||width<250||width>1000)){onError(`Enter a table width between ${(250*mm).toFixed(1)} and ${(1000*mm).toFixed(1)} mm.`);return false;}
+                  edit(d=>{const info=((d.sheets??={})[s]??={});if(value.trim())info.bomWidth=width;else delete info.bomWidth;});
+                }} /></Field>
               <label className="iso-check">
                 <input
                   type="checkbox"
@@ -627,11 +635,23 @@ export function SheetSettings({
                               if (!Object.keys(overrides).length) delete cells[row.key];
                             })} />
                         ))}
+                        <TextInput label={`Row height in mm on paper for item ${row.id}`}
+                          value={own.bomRowHeights?.[row.key] == null ? '' : String(+(own.bomRowHeights[row.key] * ({letter:215.9,tabloid:279.4,a3:297,a4:210}[doc.paper ?? 'tabloid']) / 850).toFixed(2))}
+                          placeholder="Automatic" onError={onError} onCommit={value => {
+                            const mm = ({letter:215.9,tabloid:279.4,a3:297,a4:210}[doc.paper ?? 'tabloid']) / 850;
+                            const height = Number(value) / mm;
+                            if (value.trim() && (!Number.isFinite(height) || height < 8 || height > 200)) { onError(`Enter a row height between ${(8*mm).toFixed(1)} and ${(200*mm).toFixed(1)} mm.`); return false; }
+                            edit(d => {
+                              const heights=(d.sheets![s].bomRowHeights ??= {});
+                              if (value.trim()) heights[row.key]=height; else delete heights[row.key];
+                            });
+                          }} />
                       </details>
                     </div>
                   ))}
                 </details>
               )}
+              <LetteringSettings doc={doc} spool={s} commit={commit}/>
               <details>
                 <summary>Drafted dimensions</summary>
                 <p className="iso-help">Choose the measured points and paper offset. Lengths follow the model. A drafted set replaces automatic dimensions on this sheet.</p>
@@ -641,6 +661,12 @@ export function SheetSettings({
                     if (e.target.checked) info.dimensions = []; else delete info.dimensions;
                   })} />Use drafted dimensions
                 </label>
+                {own.dimensions && <Field label="Replace automatic dimensions">
+                  <select aria-label="Drafted dimension scope" value={own.dimensionScope ?? 'sheet'} onChange={e => edit(d => { d.sheets![s].dimensionScope = e.target.value as 'sheet' | 'legs'; })}>
+                    <option value="sheet">Whole sheet</option>
+                    <option value="legs">Measured straights only</option>
+                  </select>
+                </Field>}
                 {own.dimensions?.map((dim, i) => {
                   const ids = new Set(doc.runs.filter(r => r.spool === s).flatMap(r => [r.from, r.to]));
                   const nodes = doc.nodes.filter(n => ids.has(n.id) || n.associatedRunId && doc.runs.some(r => r.id === n.associatedRunId && r.spool === s));
@@ -675,6 +701,9 @@ export function SheetSettings({
                       if (!value.trim() || !Number.isFinite(offset) || Math.abs(offset) > 5000) { onError('Enter a paper offset between -5000 and 5000.'); return false; }
                       change(v => { v.offset = offset; });
                     }} />
+                    <Field label="Length format"><select aria-label={`Dimension ${i+1} length format`} value={dim.format??''} onChange={e=>change(v=>{v.format=(e.target.value||undefined) as 'feet'|'inches'|'feet-short'|undefined})}><option value="">Automatic</option><option value="feet">Feet and inches</option><option value="feet-short">Feet, omit zero inches</option><option value="inches">Inches</option></select></Field>
+                    <label className="iso-check"><input type="checkbox" aria-label={`Flip dimension ${i+1} lettering`}
+                      checked={!!dim.reverseText} onChange={e=>change(v=>{v.reverseText=e.target.checked || undefined;})} />Flip lettering</label>
                     <button onClick={() => edit(d => { d.sheets![s].dimensions!.splice(i, 1); })}>Remove dimension {i + 1}</button>
                   </div>;
                 })}
@@ -864,6 +893,29 @@ export function SheetSettings({
         )}
       </Section>
 
+      <Section title="Sheet callouts" hint={String((doc.sheetNotes??[]).filter(n=>n.spool===spool).length)}>
+        {(doc.sheetNotes??[]).filter(n=>n.spool===spool).map(note=>{
+          const update=(change:(n:NonNullable<IsoDocument['sheetNotes']>[number])=>void)=>edit(d=>{const n=d.sheetNotes?.find(n=>n.id===note.id);if(n)change(n)});
+          return <div className="iso-sheet-card" key={note.id}>
+            <div className="iso-sheet-card-head"><strong>Callout</strong><button aria-label="Remove callout" onClick={()=>edit(d=>{d.sheetNotes=d.sheetNotes?.filter(n=>n.id!==note.id)})}><Trash2 size={13}/></button></div>
+            {text('Callout text',note.text,(d,v)=>{d.sheetNotes!.find(n=>n.id===note.id)!.text=v})}
+            <div className="iso-sheet-grid">{(['X','Y'] as const).map((axis,i)=><Field key={axis} label={`Callout ${axis}`}><input aria-label={`Callout ${axis}`} type="number" value={note.at[i]} onChange={e=>update(n=>{n.at[i]=Number(e.target.value)})}/></Field>)}</div>
+            <Field label="Lettering"><select aria-label="Callout lettering" value={note.lettering??'cad'} onChange={e=>update(n=>{n.lettering=e.target.value as 'cad'|'sans'})}><option value="cad">CAD</option><option value="sans">Sans serif</option></select></Field>
+            <Field label="Text height"><input aria-label="Callout text height" type="number" min={.1} max={200} value={note.size??6.6} onChange={e=>update(n=>{n.size=Number(e.target.value)})}/></Field>
+            <Field label="Callout colour"><input aria-label="Callout colour" type="color" value={note.color??'#111111'} onChange={e=>update(n=>{n.color=e.target.value})}/></Field>
+            <label className="iso-check"><input type="checkbox" checked={!!note.box} onChange={e=>update(n=>{n.box=e.target.checked?{at:[n.at[0]-2,n.at[1]-10],width:120,height:18}:undefined})}/> Box</label>
+            {note.box&&<div className="iso-sheet-grid">{(['width','height'] as const).map(key=><Field key={key} label={`Box ${key}`}><input aria-label={`Callout box ${key}`} type="number" min={.1} value={note.box![key]} onChange={e=>update(n=>{n.box![key]=Number(e.target.value)})}/></Field>)}</div>}
+            <label className="iso-check"><input type="checkbox" checked={!!note.leader} onChange={e=>update(n=>{n.leader=e.target.checked?[[n.at[0]+160,n.at[1]-120],[n.at[0]+130,n.at[1]-4],[n.at[0]+120,n.at[1]-4]]:undefined;n.arrow=e.target.checked})}/> Leader</label>
+            {note.leader&&<Field label="Leader points (x, y)"><TextInput label="Callout leader points" value={note.leader.map(p=>p.join(', ')).join('; ')} onError={onError} onCommit={value=>{
+              const points=value.split(';').map(p=>p.split(',').map(Number));
+              if(points.length<2||points.some(p=>p.length!==2||!p.every(Number.isFinite))){onError('Enter at least two x, y pairs separated by semicolons.');return false}
+              return update(n=>{n.leader=points as [number,number][]})
+            }}/></Field>}
+          </div>
+        })}
+        <button className="iso-primary" onClick={()=>edit(d=>{(d.sheetNotes??=[]).push({id:crypto.randomUUID(),spool,text:'NOTE',at:[300,400]})})}><Plus size={13}/> Add callout</button>
+      </Section>
+
       <Section title="General notes" hint={doc.notes.trim() ? String(doc.notes.split(/\r?\n/).filter((l) => l.trim()).length) : undefined}>
         <textarea
           aria-label="General notes"
@@ -881,8 +933,26 @@ export function SheetSettings({
             } else if (!edit((d) => (d.notes = next))) e.target.value = doc.notes;
           }}
         />
-        <p className="iso-help">One note per line. They print above the title block, numbered automatically.</p>
+        <p className="iso-help">{doc.sheetFormat==='classic'?'One note per line. Long notes continue above the title block.':'One note per line. They print above the title block, numbered automatically.'}</p>
       </Section>
     </div>
   );
+}
+
+/** Lettering remains native text, so the same choice reaches SVG, PDF and DXF. */
+function LetteringSettings({doc,spool,commit}:{doc:IsoDocument;spool:string;commit:(edit:(d:IsoDocument)=>void)=>boolean|void}){
+ const [open,setOpen]=useState(false),[selected,setSelected]=useState('');
+ const labels=useMemo(()=>open?[...new Map(createDrawing(doc,spool).primitives.filter(p=>p.type==='text'&&p.label&&p.layer!=='TAG').map(p=>[p.type==='text'?p.label!.key:'',p])).values()]:[],[open,doc,spool]);
+ const label=labels.find(p=>p.type==='text'&&p.label?.key===selected)??labels[0];
+ const key=label?.type==='text'?label.label?.key:undefined,held=key?doc.sheets?.[spool]?.labelStyles?.[key]:undefined;
+ return <details onToggle={e=>setOpen(e.currentTarget.open)}><summary>Label lettering</summary>
+  {open&&<><p className="iso-help">Adjust the size and plane of a label on this sheet. Blank fields use its automatic lettering.</p>
+   <select aria-label="Label to letter" value={key??''} onChange={e=>setSelected(e.target.value)}>{labels.map(p=>p.type==='text'&&<option key={p.label!.key} value={p.label!.key}>{p.text.trim().replace(/\n/g,' · ').slice(0,90)}</option>)}</select>
+   {key&&label?.type==='text'&&([['size','Letter height',.1,100],['rotation','Label rotation',-360,360],['oblique','Label oblique angle',-85,85]] as const).map(([field,title,min,max])=><Field key={field} label={title}><input aria-label={title} type="number" min={min} max={max} step="any" placeholder={String(field==='size'?label.size:label[field]??0)} value={held?.[field]??''} onChange={e=>{
+    const value=e.target.value===''?undefined:Number(e.target.value);if(value!=null&&(!Number.isFinite(value)||value<min||value>max))return;
+    commit(d=>{const info=((d.sheets??={})[spool]??={}),styles=(info.labelStyles??={}),style=(styles[key]??={});if(value==null)delete style[field];else style[field]=value;if(!Object.keys(style).length)delete styles[key];});
+   }}/></Field>)}
+   {key&&held&&<button onClick={()=>commit(d=>{delete d.sheets?.[spool]?.labelStyles?.[key];})}>Reset label lettering</button>}
+  </>}
+ </details>
 }

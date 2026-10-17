@@ -1,9 +1,10 @@
+import {classicSheet} from './classic-sheet'
 import type { Point, Primitive } from '../drawing'
 import { sheetInfoOf, styleOf, titleBlockOf, type IsoDocument } from '../model'
-import { measureText, strokeText } from '../stroke-font'
+import { CAD_STROKE_WIDTH, measureText, strokeText } from '../stroke-font'
 import { viewProject } from './layout'
 
-export interface SheetRow { id: number; qtyText: string; nd: string; description: string }
+export interface SheetRow { id: number; key?: string; qtyText: string; nd: string; description: string }
 /** Rectangles are [x0, y0, x1, y1] in sheet units. */
 export type SheetRect = [number, number, number, number]
 export interface SheetFrame {
@@ -22,7 +23,7 @@ const REF_W = 2550, REF_H = 1650
 const LEFT = 81.5, RIGHT = 2466.5, TOP = 54, BOTTOM = 1598
 const TB = 1294.5
 const GAP = 15
-const WEIGHT = { border: 2, title: 1.8, table: 0.6, north: 0.6 }
+const WEIGHT = { border: CAD_STROKE_WIDTH, title: CAD_STROKE_WIDTH*3, heavyTitle: CAD_STROKE_WIDTH*4, table: CAD_STROKE_WIDTH, north: CAD_STROKE_WIDTH }
 
 // Title block grid: horizontal [y, x0, x1] and vertical [x, y0, y1] centre lines.
 const TB_H: Array<[number, number, number]> = [
@@ -120,6 +121,7 @@ export function drawSheet(input: {
   view?: 'iso' | 'plan' | 'front' | 'side'
 }): SheetFrame {
   const { doc, spool, width, height, rows, view = 'iso' } = input
+  if(doc.sheetFormat==='classic')return classicSheet(doc,spool,width,height,view,drawSheet({...input,doc:{...doc,sheetFormat:'production'}}))
   const sx = width / REF_W, sy = height / REF_H, st = Math.min(sx, sy)
   // Lettering is measured in reference dots; a dot of line length is `kx` dots of lettering.
   const kx = sx / st
@@ -140,6 +142,10 @@ export function drawSheet(input: {
 
   // Border.
   out.push({ type: 'polyline', points: [[X(LEFT), Y(TOP)], [X(RIGHT), Y(TOP)], [X(RIGHT), Y(BOTTOM)], [X(LEFT), Y(BOTTOM)]], closed: true, layer: 'BORDER', weight: WEIGHT.border })
+  // Heavy horizontal rules end at the outside of the fine vertical frame, with square corners in every exporter.
+  for(const y of [TOP,BOTTOM])out.push({type:'polyline',layer:'BORDER',closed:true,fill:true,weight:.001,
+    points:[[X(LEFT-.5),Y(y-2)],[X(RIGHT+.5),Y(y-2)],[X(RIGHT+.5),Y(y+2)],[X(LEFT-.5),Y(y+2)]]})
+
 
   // North symbol.
   const north = view === 'iso' || view === 'plan'
@@ -204,9 +210,10 @@ export function drawSheet(input: {
   }
   const notesBox: SheetRect = [NOTE_HEADER_X, notesTop, RIGHT, TB]
 
+  const bomWidth = doc.sheets?.[spool]?.bomWidth == null ? BOM_COLUMNS.reduce((a,b)=>a+b,0) : doc.sheets[spool].bomWidth! / sx
   // Bill of materials: blocks from the top-right corner leftwards; the rows that do not fit continue in the next block.
   const layoutBom = (f: number, compact = false, tall = false): BomBlock[] | null => {
-    const blockWidth = BOM_COLUMNS.reduce((a, b) => a + b, 0) * f
+    const blockWidth = bomWidth * f
     // A long list narrows the QTY and ND columns to their contents, as drafted, so descriptions wrap less.
     const fitted = (values: string[], header: string, least: number, most: number) =>
       Math.min(most, Math.max(least, ...[header, ...values].map(v => Math.max(...wrapText(up(v), BOM_CAP, Infinity).map(l => measureText(l, BOM_CAP))) / kx + 14)))
@@ -240,7 +247,7 @@ export function drawSheet(input: {
       const span = (r: SheetRect) => r[0] < x1 && r[2] > x0
       const top = north && span(northBox) ? northBox[3] + GAP : TOP
       const bottom = (notes.length && span(notesBox) ? notesTop : TB) - GAP
-      const widths = [...columns, BOM_COLUMNS.reduce((a, b) => a + b, 0) - columns.reduce((a, b) => a + b, 0)].map(w => w * f)
+      const widths = [...columns, bomWidth - columns.reduce((a, b) => a + b, 0)].map(w => w * f)
       widths[3] -= blockWidth - (x1 - x0)
       const block: BomBlock = { x0, x1, top, widths, rows: [] }
       let y = top + 2 * BOM_ROW * f
@@ -250,7 +257,9 @@ export function drawSheet(input: {
           cell(String(row.id), widths[0] - 6 * f), cell(up(row.qtyText), widths[1] - 6 * f),
           cell(row.nd, widths[2] - 6 * f), cell(row.description, widths[3] - (BOM_INSET + 2) * f)
         ]
-        const h = Math.max(tall ? (BOM_ROW + BOM_PITCH) * f : 0, ...cells.map(c => c.height))
+        const held = row.key ? doc.sheets?.[spool]?.bomRowHeights?.[row.key] : undefined
+        const h = held == null ? Math.max(tall ? (BOM_ROW + BOM_PITCH) * f : 0, ...cells.map(c => c.height))
+          : Math.max(held / sy, ...cells.map(c => c.ink[1] - c.ink[0] + 6 * f))
         if (y + h > bottom) break
         block.rows.push({ row, cells, height: h })
         y += h
@@ -311,8 +320,8 @@ export function drawSheet(input: {
   // Title block.
   const tb = titleBlockOf(doc), info = sheetInfoOf(doc, spool)
   const metric = doc.units === 'mm', dateFormat = up(tb.dateFormat) || 'YY-MM-DD'
-  for (const [y, x0, x1] of TB_H) line('TITLE', x0, y, x1, y, WEIGHT.title)
-  for (const [x, y0, y1] of TB_V) line('TITLE', x, y0, x, y1, WEIGHT.title)
+  for (const [y, x0, x1] of TB_H) line('TITLE', x0, y, x1, y, y===1509?WEIGHT.heavyTitle:WEIGHT.title)
+  for (const [x, y0, y1] of TB_V) line('TITLE', x, y0, x, y1, [1030,1242,1617,2360].includes(x)?WEIGHT.heavyTitle:WEIGHT.title)
   const title = (value: string, x: number, y: number, size: number, anchor: 'start' | 'middle' = 'start', fit?: number) =>
     text('TITLE', value, x, y, size, anchor, fit)
 

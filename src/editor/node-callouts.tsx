@@ -3,6 +3,7 @@ import { useRef, useState } from "react";
 import { drawingReference } from "../core/references";
 import { flangedJoints, isLapJoint, nodeCode, nodeItem } from "../core/joints";
 import { boltSizeText, draftLength } from "../core/format";
+import { sheetMaterials } from "../core/material-list";
 import { connected, formatAllowance, getNode, getSpec, parseIsoJson, type IsoDocument, type FlatSide, type PipeNode } from "../core/model";
 
 const TEMPLATES = ["CONT'D ON\nDWG# ", "CONT'D FROM\nDWG# ", "CONNECT TO ", "CLOSED"];
@@ -55,6 +56,8 @@ export function NodeCallouts({ doc, nodeId, commit, sheetPoint }: { doc: IsoDocu
   return (
     <div className="iso-inspector-section">
       <strong>On the sheet</strong>
+      <Row label="Nominal size"><select aria-label="Fitting size label" value={node.showSize==null?'':String(node.showSize)} onChange={e=>edit(n=>{n.showSize=e.target.value===''?undefined:e.target.value==='true'})}><option value="">Automatic</option><option value="true">Prefer this fitting</option><option value="false">Hide size</option></select></Row>
+      {edges.some(r=>r.nps!==edges[0]?.nps)&&<Row label="Size format"><select aria-label="Nominal size format" value={node.sizeLabelFormat??'standard'} onChange={e=>edit(n=>{n.sizeLabelFormat=e.target.value as 'standard'|'compact'})}><option value="standard">Standard</option><option value="compact">Compact</option></select></Row>}
       {node.kind === "tee" && <Row label="Branch dimension tier">
         <select aria-label="Branch dimension tier" value={node.dimensionChain ?? "both"} onChange={e => edit(n => { n.dimensionChain = e.target.value as "both" | "body" | "mate"; })}>
           <option value="both">Both chains</option>
@@ -100,6 +103,15 @@ export function NodeCallouts({ doc, nodeId, commit, sheetPoint }: { doc: IsoDocu
             <>
               <Text label="Continuation text" multiline value={node.continuation.text}
                 onCommit={(text) => edit((n) => { n.continuation = text.trim() ? { ...n.continuation!, text } : undefined; })} />
+              <details><summary>Continuation route on paper</summary>
+                <Text label="Route points (x, y; x, y)" value={node.continuation.paperPath?.map(p=>p.join(', ')).join('; ')??''} onCommit={value=>{
+                  const points=value.trim()?value.split(';').map(p=>p.split(',').map(Number)):undefined;
+                  if(points&&(points.length<2||points.some(p=>p.length!==2||!p.every(Number.isFinite))))return;
+                  edit(n=>{n.continuation={...n.continuation!,paperPath:points as [number,number][]|undefined}})
+                }}/>
+                <Row label="Note points to"><select aria-label="Continuation note target" value={node.continuation.leaderAt??'end'} onChange={e=>edit(n=>{n.continuation={...n.continuation!,leaderAt:e.target.value as 'node'|'end'}})}><option value="end">Route end</option><option value="node">Model endpoint</option></select></Row>
+                <Row label="Route end"><select aria-label="Continuation route end" value={node.continuation.endMarker??'plain'} onChange={e=>edit(n=>{n.continuation={...n.continuation!,endMarker:e.target.value as 'plain'|'break'|'tube'}})}><option value="plain">Plain</option><option value="break">Break</option><option value="tube">Tube end</option></select></Row>
+              </details>
               <label className="iso-check">
                 <input type="checkbox" checked={node.continuation.coordinates !== false}
                   onChange={(e) => edit((n) => { n.continuation = { ...n.continuation!, coordinates: e.target.checked }; })} />
@@ -133,11 +145,21 @@ export function NodeCallouts({ doc, nodeId, commit, sheetPoint }: { doc: IsoDocu
           {referenceError && <p role="alert" className="iso-help">{referenceError}</p>}
           {(doc.references ?? []).filter(r => r.atNodeId === nodeId).map(r => (
             <div key={r.id}>
-              <p className="iso-help">{r.name} · drawn thin, excluded from material and weld quantities.</p>
+              <p className="iso-help">{r.name} · excluded from material and weld quantities.</p>
               <Row label="Context parts">
                 <select aria-label="Adjacent components shown" value={r.components ?? 1} onChange={e => commit(d => {
                   d.references!.find(x => x.id === r.id)!.components = Number(e.target.value);
-                })}>{[1, 2, 3].map(n => <option key={n} value={n}>{n}</option>)}</select>
+                })}><option value={0}>Pipe only</option>{[1, 2, 3].map(n => <option key={n} value={n}>{n}</option>)}</select>
+              </Row>
+              <Row label="Context weight"><select aria-label="Adjacent pipe weight" value={r.pipeWeight?'pipe':'fine'} onChange={e=>commit(d=>{d.references!.find(x=>x.id===r.id)!.pipeWeight=e.target.value==='pipe'})}><option value="fine">Fine</option><option value="pipe">Pipe</option></select></Row>
+              <label className="iso-check"><input type="checkbox" aria-label="Show adjacent line number" checked={r.runs.some(run=>run.showLineNumber===true)} onChange={e=>commit(d=>{for(const run of d.references!.find(x=>x.id===r.id)!.runs)run.showLineNumber=e.target.checked?true:undefined})}/> Show adjacent line number</label>
+              <Row label="Context end">
+                <select aria-label="Adjacent drawing end" value={r.termination ?? 'break'} onChange={e => commit(d => {
+                  d.references!.find(x=>x.id===r.id)!.termination=e.target.value as 'break'|'plain';
+                })}>
+                  <option value="break">Break symbol</option>
+                  <option value="plain">Plain line</option>
+                </select>
               </Row>
               <Row label="Dimension to">
                 <select aria-label="Adjacent dimension point" value={r.dimensionTo ?? ""} onChange={e => commit(d => {
@@ -153,16 +175,36 @@ export function NodeCallouts({ doc, nodeId, commit, sheetPoint }: { doc: IsoDocu
           ))}
         </>
       )}
-      <label className="iso-check">
-        <input type="checkbox" checked={!!node.elevationCallout} onChange={(e) => edit((n) => { n.elevationCallout = e.target.checked || undefined; })} />
-        Centreline elevation callout (℄ EL)
-      </label>
+      <Row label="Centreline elevation (℄ EL)">
+        <select aria-label="Elevation callout" value={node.elevationCallout == null ? 'auto' : node.elevationCallout ? 'show' : 'hide'} onChange={e => edit(n => { n.elevationCallout = e.target.value === 'auto' ? undefined : e.target.value === 'show'; })}>
+          <option value="auto">Automatic</option><option value="show">Show</option><option value="hide">Hide</option>
+        </select>
+      </Row>
       <Text label="Tie point" value={node.tiePoint?.id} placeholder="e.g. TP-3"
         onCommit={(id) => edit((n) => { n.tiePoint = id.trim() ? { ...n.tiePoint, id: id.trim() } : undefined; })} />
       {node.tiePoint && (
         <Text label="Tie point note" value={node.tiePoint.label} placeholder="e.g. EXIST. FLANGE, FIELD WELD"
           onCommit={(label) => edit((n) => { n.tiePoint = { ...n.tiePoint!, label: label.trim() || undefined }; })} />
       )}
+      {/^ISA/.test(code) && <label className="iso-check">
+        <input type="checkbox" checked={node.calloutPlane==='pipe'} onChange={e=>edit(n=>{n.calloutPlane=e.target.checked?'pipe':undefined;})} />
+        Draw instrument bubble in the pipe plane
+      </label>}
+      {node.kind === 'support' && node.associatedRunId && <label className="iso-check">
+        <input type="checkbox" checked={node.calloutPlane === 'pipe'} onChange={e => edit(n => { n.calloutPlane=e.target.checked?'pipe':undefined; })} />
+        Align support lettering with pipe
+      </label>}
+      {['valve','flange','reducer','cap'].includes(node.kind) && <Row label="Symbol plane">
+        <select aria-label="Fitting symbol plane" value={node.symbolPlane ?? ''}
+          onChange={e=>edit(n=>{n.symbolPlane=(e.target.value||undefined) as PipeNode['symbolPlane'];})}>
+          <option value="">Automatic</option><option value="plan">Plan</option><option value="vertical">Vertical</option><option value="alternate">Other isometric plane</option>
+        </select>
+      </Row>}
+      {/^HOSE/.test(code) && <Text label="Hose route (x, y; x, y)" value={node.hosePath?.map(p=>p.join(', ')).join('; ')??''} onCommit={value=>{
+        const points=value.trim()?value.split(';').map(row=>row.split(',').map(Number)):undefined
+        if(points && (points.length<2||points.length>500||points.some(p=>p.length!==2||p.some(v=>!Number.isFinite(v)))))return
+        edit(n=>{n.hosePath=points as [number,number][]|undefined})
+      }}/>}
       {node.kind === "valve" && (
         <>
           <Row label="Operator">
@@ -173,6 +215,40 @@ export function NodeCallouts({ doc, nodeId, commit, sheetPoint }: { doc: IsoDocu
             </select>
           </Row>
           <Text label="Valve tag" value={node.tag} placeholder="e.g. HV-101" onCommit={(tag) => edit((n) => { n.tag = tag.trim() || undefined; })} />
+          {/^BFLY/.test(code) && <Row label="Butterfly symbol">
+            <select aria-label="Butterfly valve symbol" value={node.valveSymbol ?? ''}
+              onChange={e => edit(n => { n.valveSymbol = (e.target.value || undefined) as PipeNode['valveSymbol']; })}>
+              <option value="">Automatic</option>
+              <option value="disc">Disc and lever</option>
+              <option value="bowtie">Bow-tie</option>
+            </select>
+          </Row>}
+          {/^CHECK/.test(code) && <Row label="Check symbol">
+            <select aria-label="Check valve symbol" value={node.valveSymbol ?? ''}
+              onChange={e => edit(n => { n.valveSymbol = (e.target.value || undefined) as PipeNode['valveSymbol']; })}>
+              <option value="">Automatic</option>
+              <option value="swing">Swing</option>
+              <option value="triangle">Triangle</option>
+            </select>
+          </Row>}
+          <Row label="Operator symbol">
+            <select aria-label="Valve operator symbol" value={node.valveOperator ?? ''}
+              onChange={e => edit(n => { n.valveOperator = (e.target.value || undefined) as PipeNode['valveOperator']; })}>
+              <option value="">Automatic</option>
+              <option value="none">None</option>
+              <option value="lever">Lever</option>
+              <option value="actuator">Actuator</option>
+              <option value="handwheel">Handwheel</option>
+              <option value="box">Box actuator</option>
+            </select>
+          </Row>
+          <Row label="Callout order">
+            <select aria-label="Valve callout order" value={node.calloutOrder ?? 'item-first'} onChange={e => edit(n => { n.calloutOrder = e.target.value as 'item-first' | 'tag-first'; })}>
+              <option value="item-first">Item, operator, tag</option>
+              <option value="item-tag-first">Item, tag, operator</option>
+              <option value="tag-first">Tag, operator, item</option>
+            </select>
+          </Row>
         </>
       )}
       {ECCENTRIC.test(code) && (
@@ -211,6 +287,13 @@ export function NodeCallouts({ doc, nodeId, commit, sheetPoint }: { doc: IsoDocu
         <Text label="Label" value={node.calloutText} placeholder={type?.label.toUpperCase()}
           onCommit={(text) => edit((n) => { n.calloutText = text.trim() || undefined; })} />
       )}
+      {/INS-LIM/.test(code)&&<Row label="Limit lettering"><select aria-label="Insulation limit lettering" value={node.calloutPlane??''} onChange={e=>edit(n=>{n.calloutPlane=(e.target.value||undefined) as PipeNode['calloutPlane']})}><option value="">Along pipe</option><option value="sheet">Upright on sheet</option><option value="pipe">Pipe plane</option></select></Row>}
+      {code==='EQUIP' && <Row label="Equipment outline">
+        <select aria-label="Equipment outline shape" value={node.equipmentShape ?? ''}
+          onChange={e=>edit(n=>{n.equipmentShape=(e.target.value || undefined) as PipeNode['equipmentShape'];})}>
+          <option value="">Generic casing</option><option value="vessel">Vessel on a skid</option><option value="pump">Pump end view</option>
+        </select>
+      </Row>}
       {node.kind === "flange" && edges.length === 1 && type?.endPrep !== "FL" && (() => {
         const supply = { gasket: true, bolts: true, ...node.jointSupply };
         const set = (change: Partial<NonNullable<PipeNode["jointSupply"]>>) => edit((n) => { n.jointSupply = { ...supply, ...change }; });
@@ -279,6 +362,20 @@ export function NodeCallouts({ doc, nodeId, commit, sheetPoint }: { doc: IsoDocu
           {j.bolts ? ` · ${j.bolts.count} ${j.bolts.kind === "lug" ? "lug bolts" : "studs"} ${boltSizeText(j.bolts.diameter, j.bolts.length)}${j.supplied.bolts ? "" : " (by others)"}` : " · no bolts"}
         </p>
       ))}
+      {joints.map((j,i)=> <details key={`items:${j.id}`}>
+        <summary>Joint {joints.length>1?i+1:''} item callout</summary>
+        <p className="iso-help">Reference an existing material item on this sheet. Supply quantities stay as set above.</p>
+        {(['flange','bolts','gasket'] as const).map(part=><Row key={part} label={`${part[0].toUpperCase()+part.slice(1)} item`}>
+          <select aria-label={`Joint ${i+1} ${part} item`} value={doc.sheets?.[j.spool]?.jointItems?.[j.id]?.[part] ?? ''}
+            onChange={e=>commit(d=>{
+              const info=((d.sheets ??= {})[j.spool] ??= {}), held=((info.jointItems ??= {})[j.id] ??= {});
+              if(e.target.value)held[part]=e.target.value;else delete held[part];
+            })}>
+            <option value="">Automatic</option>
+            {sheetMaterials(doc,j.spool).filter(r=>r.category===(part==='bolts'?'bolt':part)).map(r=><option key={r.key} value={r.key}>{r.id} · {r.nd} · {r.description}</option>)}
+          </select>
+        </Row>)}
+      </details>)}
     </div>
   );
 }

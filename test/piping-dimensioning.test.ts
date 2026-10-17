@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { appendRun, applyComponent, attachComponent, clone, getNode, newIso, parseIsoJson, removeComponent, runResult, type IsoDocument, type PipeSpec } from '../src/core/model.ts';
 import { COMPONENT_TYPES } from '../src/core/components.ts';
-import { placeComponentOnPipe } from '../src/core/component-position.ts';
+import { placeComponentOnPipe, setDimensionAxis, setDimensionReverse } from '../src/core/component-position.ts';
 import { createDrawing } from '../src/core/drawing.ts';
 
 const specA = JSON.parse(readFileSync(new URL('../public/library/specs/a.json', import.meta.url), 'utf8')) as PipeSpec;
@@ -238,9 +238,24 @@ test('a rolling offset between parallel runs gives its set and roll as well as i
   const d = doc();
   const a = run(d, null, [1500, 0, 0]);
   const b = run(d, a.id, [500, 300, 400]);
+  const offset=d.runs.at(-1)!;
+  offset.offsetDrawing={setAndRoll:true};
   run(d, b.id, [1500, 0, 0]);
   const texts = dims(d);
   for (const t of ['500', '300', '400', '707', 'SET 500', '53° ROLL']) assert.ok(texts.includes(t), t + ' in ' + texts.join(' '));
+});
+
+test('offset legs can be dimensioned with arrows while their values and pipe cuts remain calculated',()=>{
+  const d=doc(),a=run(d,null,[1500,0,0]),b=run(d,a.id,[500,300,400]);
+  const r=d.runs.at(-1)!;run(d,b.id,[1500,0,0]);
+  const before=d.runs.map(r=>runResult(d,r).cut),values=dims(d).sort();
+  assert.ok(!values.some(t=>/SET|ROLL/.test(t)));
+  r.offsetDrawing={dimensionLegs:true,trueLengthOffset:16};
+  assert.deepEqual(dims(d).sort(),values);
+  assert.deepEqual(d.runs.map(r=>runResult(d,r).cut),before);
+  assert.deepEqual(parseIsoJson(JSON.stringify(d)).runs.find(x=>x.id===r.id)!.offsetDrawing,r.offsetDrawing);
+  r.offsetDrawing.trueLengthOffset=5001;
+  assert.throws(()=>parseIsoJson(JSON.stringify(d)),/offset drafting/);
 });
 
 test('offset angles are given in whole degrees, but a 22 1/2° offset to the half degree', () => {
@@ -304,4 +319,203 @@ test('drafted end-flange faces resolve either stored coordinate convention', () 
   d.sheets['SP-1'].dimensions![0].to.face = 'body';
   assert.deepEqual(dims(d), ['997']);
   assert.deepEqual(end.position, [1000,0,0]);
+});
+
+test('drafted dimensions can replace one straight while other straights remain automatic', () => {
+  const d = doc(), elbow = run(d, null, [1000,0,0]), end = run(d, elbow.id, [0,0,500]);
+  const support = attachComponent(d, d.runs[1].id, 'support', 0.4);
+  support.dimensioned = true;
+  d.sheets = {'SP-1': {dimensionScope:'legs',dimensions:[{
+    from:{nodeId:elbow.id},to:{nodeId:end.id},axis:[1,0,0],offset:70,
+  }]}};
+  assert.deepEqual(dims(d).sort(), ['1000','500']);
+  assert.deepEqual(dims(parseIsoJson(JSON.stringify(d))), dims(d));
+  d.sheets['SP-1'].dimensionScope = 'sheet';
+  assert.deepEqual(dims(d), ['500']);
+});
+
+test('a drafted offset chain retains its measured triangle and angle', () => {
+  const d = doc(), end = run(d, null, [1000,500,0]);
+  d.sheets = {'SP-1': {dimensionScope:'legs',dimensions:[{
+    from:{nodeId:d.runs[0].from},to:{nodeId:end.id},axis:[0,0,1],offset:70,
+  }]}};
+  const texts = dims(d);
+  assert.equal(texts.filter(t => t === '1118').length, 1);
+  assert.ok(texts.includes('1000') && texts.includes('500') && texts.includes('27° H'), texts.join(' '));
+});
+
+test('held extension directions move the calculated chain through a tee without changing its branch or cuts', () => {
+  const d = doc();d.sheetFormat='production';const tee = run(d, null, [1000,0,0]);
+  run(d, tee.id, [1000,0,0]);
+  run(d, tee.id, [0,0,500]);
+  const before = d.runs.map(r => runResult(d,r).cut);
+  setDimensionAxis(d,d.runs[0].id,[0,0,1]);
+  assert.deepEqual(d.runs.map(r=>r.dimensionAxis),[[0,0,1],[0,0,1],undefined]);
+  const fit = createDrawing(d).fit;
+  const longest = () => createDrawing(d,'','iso',fit).primitives.flatMap(p=>p.type==='line'&&p.layer==='DIM'?[p]:[])
+    .sort((a,b)=>Math.hypot(b.b[0]-b.a[0],b.b[1]-b.a[1])-Math.hypot(a.b[0]-a.a[0],a.b[1]-a.a[1]))[0];
+  const upper = longest();
+  setDimensionAxis(d,d.runs[0].id,[0,0,-1]);
+  const lower = longest();
+  assert.ok(upper.type==='line' && lower.type==='line' && lower.a[1]>upper.a[1]+50);
+  assert.deepEqual(d.runs.map(r=>runResult(d,r).cut),before);
+  assert.deepEqual(parseIsoJson(JSON.stringify(d)).runs[0].dimensionAxis,[0,0,-1]);
+  setDimensionAxis(d,d.runs[0].id);
+  assert.ok(d.runs.every(r=>!r.dimensionAxis));
+  Object.assign(d.runs[0],{dimensionAxis:[0,0,0]});
+  assert.throws(()=>parseIsoJson(JSON.stringify(d)),/dimension direction/);
+});
+
+test('a flange pair welded to a fitting dimensions to its face rather than its gasket centre', () => {
+  const d=doc();
+  for(const f of d.specs[0].fittings.filter(f=>f.kind==='gasket')) Object.assign(f,{thickness:4,takeout:2});
+  const elbow=run(d,null,[1000,0,0]), flange=run(d,elbow.id,[0,202,0],true);
+  run(d,flange.id,[0,1000,0]);
+  applyComponent(d,flange,'FLG-FFLJ');
+  const texts=dims(d);
+  assert.ok(texts.includes('200') && texts.includes('1002') && !texts.includes('202'),texts.join(' '));
+  const r=d.runs[1];
+  d.sheets={'SP-1':{dimensions:[{from:{nodeId:elbow.id},to:{nodeId:flange.id,runId:r.id,face:'body'},axis:[0,0,1],offset:50}]}};
+  assert.deepEqual(dims(d),['200']);
+  d.sheets['SP-1'].dimensions![0].to.face='mate';
+  assert.deepEqual(dims(d),['204']);
+});
+
+test('dimension lettering reverses independently of its measured points and pipe cuts', () => {
+  const d=doc();run(d,null,[0,0,1000]);
+  const before=createDrawing(d),cut=runResult(d,d.runs[0]).cut;
+  const label=(drawing:ReturnType<typeof createDrawing>)=>drawing.primitives.find(p=>p.type==='text'&&p.layer==='DIM'&&p.text==='1000') as Extract<(typeof drawing.primitives)[number],{type:'text'}>;
+  setDimensionReverse(d,d.runs[0].id,true);
+  const after=createDrawing(d,'','iso',before.fit);
+  assert.equal(Math.abs(label(before).rotation!-label(after).rotation!),180);
+  assert.deepEqual(after.primitives.filter(p=>p.layer==='PIPE'),before.primitives.filter(p=>p.layer==='PIPE'));
+  assert.equal(runResult(d,d.runs[0]).cut,cut);
+  assert.equal(parseIsoJson(JSON.stringify(d)).runs[0].dimensionReverse,true);
+  setDimensionReverse(d,d.runs[0].id,false);
+  assert.equal(label(createDrawing(d,'','iso',before.fit)).rotation,label(before).rotation);
+  d.sheets={'SP-1':{dimensions:[{from:{nodeId:d.runs[0].from},to:{nodeId:d.runs[0].to},axis:[1,0,0],offset:50,reverseText:true}]}};
+  assert.equal(parseIsoJson(JSON.stringify(d)).sheets!['SP-1'].dimensions![0].reverseText,true);
+  assert.equal(label(createDrawing(d)).rotation,label(after).rotation);
+});
+
+test('held dimension-line spacing exposes a draggable paper axis and survives reopening', () => {
+  const d=doc();run(d,null,[0,0,1000]);
+  const drawing=createDrawing(d),original=drawing.primitives.find(p=>p.type==='text'&&p.label?.dimension) as Extract<(typeof drawing.primitives)[number],{type:'text'}>;
+  assert.ok(original.label?.dimension);
+  const key=original.label!.key,cut=runResult(d,d.runs[0]).cut;
+  d.sheets={'SP-1':{dimensionLayout:{[key]:{axis:[-1,0,0],offset:90,reverseText:true}}}};
+  const changed=createDrawing(d,'','iso',drawing.fit).primitives.find(p=>p.type==='text'&&p.label?.key===key) as typeof original;
+  assert.equal(changed.text,original.text);
+  assert.equal(changed.label!.dimension!.offset,90);
+  assert.ok(changed.label!.dimension!.axis[0]<0);
+  assert.equal(runResult(d,d.runs[0]).cut,cut);
+  assert.deepEqual(parseIsoJson(JSON.stringify(d)).sheets!['SP-1'].dimensionLayout,d.sheets['SP-1'].dimensionLayout);
+  d.sheets['SP-1'].dimensionLayout![key].axis=[0,0,0];
+  assert.throws(()=>parseIsoJson(JSON.stringify(d)),/sheet information/);
+});
+
+
+test('a drafted fitting-face dimension starts at the drawn weld face, independently of pipe compression', () => {
+  const d=doc();d.style={...d.style,layout:'schematic',weldNumbers:false,lettering:'cad'};
+  const elbow=run(d,null,[1000,0,0]);applyComponent(d,elbow,'W-LR90EL',row(d,'W-LR90EL'));
+  const end=run(d,elbow.id,[0,0,1000]),r=d.runs[1];
+  d.sheets={'SP-1':{nodePositions:{[d.runs[0].from]:[150,450],[elbow.id]:[400,450],[end.id]:[400,150]},dimensions:[{
+    from:{nodeId:elbow.id,runId:r.id,face:'body'},to:{nodeId:end.id},axis:[1,0,0],offset:60,
+  }]}};
+  const drawing=createDrawing(d),weld=drawing.primitives.find(p=>p.type==='circle'&&p.layer==='WELD'&&p.owner===elbow.id&&p.p[1]<450);
+  assert.ok(weld&&weld.type==='circle');
+  assert.ok(drawing.primitives.some(p=>p.type==='line'&&p.layer==='DIM'&&Math.abs(p.a[1]-(weld.p[1]-1.5))<.01&&Math.abs(p.a[0]-(weld.p[0]+3*Math.sqrt(3)/2))<.01));
+  const actual=1000-row(d,'W-LR90EL').takeout;
+  assert.deepEqual(dims(d),[String(Math.round(actual))]);
+  assert.deepEqual(dims(parseIsoJson(JSON.stringify(d))),dims(d));
+});
+
+
+test('offset hatch density is editable without changing pipe lengths or material quantities', () => {
+  const d=doc(),a=run(d,null,[1000,0,0]),b=run(d,a.id,[500,500,0]);run(d,b.id,[0,1000,0]);
+  const offset=d.runs[1],before=JSON.stringify(d.nodes.map(n=>n.position));
+  offset.offsetDrawing={hatchCount:12,hatchSpacing:4,hatchStart:8,hatchGap:2};
+  const hatches=createDrawing(d).primitives.filter(p=>p.layer==='HATCH');
+  assert.ok(hatches.length>=10);
+  offset.offsetDrawing.hatchCount=0;
+  assert.equal(createDrawing(d).primitives.filter(p=>p.layer==='HATCH').length,0);
+  assert.equal(JSON.stringify(d.nodes.map(n=>n.position)),before);
+});
+
+
+test('sliding dimension lettering along its line does not add a spurious leader in an oblique plane', () => {
+  const d=doc();run(d,null,[0,0,2000]);
+  const initial=createDrawing(d,'SP-1');d.sheets={'SP-1':{nodePositions:Object.fromEntries(initial.positions)}};
+  const first=createDrawing(d,'SP-1'),label=first.primitives.find(p=>p.type==='text'&&p.label?.dimension) as Extract<(typeof first.primitives)[number],{type:'text'}>;
+  const dimensionLine=first.primitives.find(p=>p.type==='line'&&p.layer==='DIM'&&Math.abs(p.a[0]-p.b[0])<.001&&Math.abs(p.a[1]-p.b[1])>100) as Extract<(typeof first.primitives)[number],{type:'line'}>;
+  assert.ok(dimensionLine);const mid=[(dimensionLine.a[0]+dimensionLine.b[0])/2,(dimensionLine.a[1]+dimensionLine.b[1])/2];
+  const hasLeader=(drawing:typeof first)=>drawing.primitives.some(p=>p.type==='line'&&p.layer==='LEADER'&&Math.abs(p.a[0]-mid[0])<.01);
+  d.sheets!['SP-1'].labelPositions={[label.label!.key]:[label.p[0],label.p[1]+100]};
+  assert.equal(hasLeader(createDrawing(d,'SP-1','iso',first.fit)),false);
+  d.sheets['SP-1'].labelPositions![label.label!.key][0]+=100;
+  const far=createDrawing(d,'SP-1','iso',first.fit);
+  assert.equal(hasLeader(far),true);
+});
+
+
+test('individual dimensions choose feet and inches or inches without overriding their measured length', () => {
+  const d=doc('imperial');run(d,null,[18*25.4,0,0]);
+  const drawing=createDrawing(d),text=drawing.primitives.find(p=>p.type==='text'&&p.label?.dimension) as Extract<(typeof drawing.primitives)[number],{type:'text'}>;
+  assert.equal(text.text,'18"');const key=text.label!.key,cut=runResult(d,d.runs[0]).cut;
+  d.sheets={'SP-1':{dimensionLayout:{[key]:{format:'feet'}}}};
+  const value=()=>createDrawing(d).primitives.find(p=>p.type==='text'&&p.label?.key===key) as typeof text;
+  assert.equal(value().text,`1'-6"`);assert.equal(runResult(d,d.runs[0]).cut,cut);
+  d.sheets['SP-1'].dimensionLayout![key].format='inches';assert.equal(value().text,'18"');
+  assert.equal(parseIsoJson(JSON.stringify(d)).sheets!['SP-1'].dimensionLayout![key].format,'inches');
+  d.runs.forEach(r=>{getNode(d,r.to).position=[12*25.4,0,0]});
+  d.sheets['SP-1'].dimensionLayout![key].format='feet-short';assert.equal(value().text,"1'");
+  d.dimensionMode='cut';assert.equal(value().text,"CUT 1'");d.dimensionMode='overall';
+  (d.sheets['SP-1'].dimensionLayout![key] as any).format='invalid';assert.throws(()=>parseIsoJson(JSON.stringify(d)),/sheet information/);
+});
+
+test('triangle leg lettering can be omitted while its measured angle and travel remain', () => {
+  const d=doc(),a=run(d,null,[1500,0,0]),b=run(d,a.id,[400,300,0]),r=d.runs.at(-1)!;run(d,b.id,[1500,0,0]);
+  const cuts=d.runs.map(r=>runResult(d,r).cut),before=dims(d);
+  assert.ok(before.includes('300')&&before.includes('400'));
+  r.offsetDrawing={showLegValues:false};const after=dims(d);
+  assert.ok(!after.includes('300')&&!after.includes('400'));assert.ok(after.some(t=>t.includes('°')));
+  assert.deepEqual(d.runs.map(r=>runResult(d,r).cut),cuts);
+  assert.equal(parseIsoJson(JSON.stringify(d)).runs.find(q=>q.id===r.id)!.offsetDrawing!.showLegValues,false);
+});
+
+test('rolling construction hatches can choose their plane and corner around a held paper plan point', () => {
+  const d=doc(),a=run(d,null,[1000,0,0]),b=run(d,a.id,[400,300,500]),r=d.runs.at(-1)!;run(d,b.id,[1000,0,0]);
+  const cuts=d.runs.map(r=>runResult(d,r).cut),hatches=()=>createDrawing(d).primitives.filter(p=>p.layer==='HATCH');
+  const both=hatches();r.offsetDrawing={hatchPlane:'H',hatchFrom:'end',planPoint:[320,360]};
+  const held=createDrawing(d),one=hatches();assert.ok(one.length>0&&one.length<both.length);
+  assert.ok(held.primitives.some(p=>p.type==='line'&&p.layer==='DIM'&&[p.a,p.b].some(v=>v[0]===320&&v[1]===360)));
+  assert.deepEqual(d.runs.map(r=>runResult(d,r).cut),cuts);
+  assert.deepEqual(parseIsoJson(JSON.stringify(d)).runs.find(q=>q.id===r.id)!.offsetDrawing,r.offsetDrawing);
+  r.offsetDrawing.hatchFrom='start';assert.notDeepEqual(hatches(),one);
+  r.offsetDrawing.planPoint=[NaN,0];assert.throws(()=>parseIsoJson(JSON.stringify(d)),/offset drafting/);
+});
+
+test('roundoff between equal rolling-offset legs does not flip the construction axes', () => {
+  const d=doc(),a=run(d,null,[1000,0,0]),b=run(d,a.id,[400,400,500]);run(d,b.id,[1000,0,0]);
+  const hatches=()=>createDrawing(d).primitives.filter(p=>p.layer==='HATCH').flatMap(p=>p.type==='line'?[...p.a,...p.b]:[]);
+  const before=hatches();b.position[1]+=1e-10;const after=hatches();assert.equal(after.length,before.length);
+  after.forEach((n,i)=>assert.ok(Math.abs(n-before[i])<.001));
+});
+
+test('offset construction can omit its redundant travel dimension while retaining its measured legs',()=>{
+ const d=doc();run(d,null,[300,400,0]);const r=d.runs[0],cuts=d.runs.map(r=>runResult(d,r).cut);
+ assert.ok(dims(d).includes('500'));r.offsetDrawing={showTrueLength:false};const values=dims(d);
+ assert.ok(!values.includes('500'));assert.ok(values.includes('300')&&values.includes('400')&&values.some(t=>t.includes('°')));
+ assert.deepEqual(d.runs.map(r=>runResult(d,r).cut),cuts);assert.equal(parseIsoJson(JSON.stringify(d)).runs[0].offsetDrawing!.showTrueLength,false);
+});
+
+test('choosing the opposite angular corner measures its complement without changing the construction',()=>{
+ const d=doc();run(d,null,[300,500,0]);const r=d.runs[0],cuts=d.runs.map(r=>runResult(d,r).cut);
+ const first=dims(d).find(t=>t.endsWith('° H'))!;r.offsetDrawing={angleFromH:'end',angleArrows:true,angleRadiusH:48,angleOutwardH:true,rightAngleSize:12};
+ const second=dims(d).find(t=>t.endsWith('° H'))!;
+ assert.equal(parseFloat(first)+parseFloat(second),90);
+ const p=createDrawing(d).primitives;assert.ok(p.some(q=>q.type==='polyline'&&q.layer==='DIM'&&q.fill));
+ assert.deepEqual(d.runs.map(r=>runResult(d,r).cut),cuts);
+ assert.deepEqual(parseIsoJson(JSON.stringify(d)).runs[0].offsetDrawing,r.offsetDrawing);
+ r.offsetDrawing.angleRadiusH=-1;assert.throws(()=>parseIsoJson(JSON.stringify(d)),/offset drafting/);
 });

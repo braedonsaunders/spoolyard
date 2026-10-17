@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { drawSheet, imageAspect, wrapText, type SheetRect, type SheetRow } from '../src/core/iso/sheet.ts';
-import { sheetWidth, type Primitive } from '../src/core/drawing.ts';
-import { appendRun, newIso, type IsoDocument } from '../src/core/model.ts';
-import { measureText } from '../src/core/stroke-font.ts';
+import { createDrawing, sheetWidth, type Primitive } from '../src/core/drawing.ts';
+import { appendRun, newIso, parseIsoJson, type IsoDocument } from '../src/core/model.ts';
+import { CAD_STROKE_WIDTH, measureText } from '../src/core/stroke-font.ts';
 
 const png = (w: number, h: number) => {
   const b = new Uint8Array(33);
@@ -18,6 +18,7 @@ const jpeg = (w: number, h: number) => {
 };
 const document = (paper: IsoDocument['paper'] = 'tabloid') => {
   const d = newIso();
+  d.sheetFormat='production';
   d.paper = paper; d.units = 'imperial'; d.drawing = 'ISO-77';
   appendRun(d, null, [1000, 0, 0], 'CS40', 2, 'S1', '');
   d.notes = 'ALL DIMENSIONS SHALL BE VERIFIED BY THE FABRICATOR BEFORE CUTTING ANY PIPE AND BEFORE ANY WELDING STARTS ON THE SPOOL.\nHYDROTEST AFTER ASSEMBLY.';
@@ -63,7 +64,11 @@ test('every primitive of the frame lies on the sheet for every paper size', () =
     const f = frame(d, rows(40));
     const sheet: SheetRect = [0, 0, sheetWidth(d), 850];
     for (const p of f.primitives) assert.ok(inside(box(p), sheet), `${paper}: ${p.type} ${p.layer} ${'text' in p ? p.text : ''} is on the sheet`);
-    for (const p of f.primitives.filter(q => q.layer === 'BORDER')) assert.ok(p.type === 'polyline' && p.weight === 2);
+    const border=f.primitives.filter(q=>q.layer==='BORDER');
+    assert.equal(border.length,3);
+    assert.ok(border.every(p=>p.type==='polyline'&&p.closed));
+    assert.equal(border.filter(p=>p.type==='polyline'&&p.fill).length,2);
+    assert.ok(border.some(p=>'weight' in p&&p.weight===CAD_STROKE_WIDTH));
   }
 });
 
@@ -156,6 +161,19 @@ test('BOM rows grow with wrapped descriptions and centre ID, QTY and ND', () => 
   assert.deepEqual([...new Set(rowHeights(short.primitives).map(Math.round))], [34]);
 });
 
+test('held BOM row heights preserve mixed issued spacing and grow enough to fit the lettering', () => {
+  const d = document(), data = [ { ...row(1, 'TEE'), key: 'demo-tee' }, { ...row(2, 'PIPE\nCUT TO 4"\nTOTAL OF TWO PIECES'), key: 'demo-pipe' } ];
+  d.sheets = { S1: { bomRowHeights: { 'demo-tee': 18, 'demo-pipe': 8 } } };
+  const before = JSON.stringify(d.runs), p = frame(d, data).primitives;
+  const ys = [...new Set(p.filter((q): q is Extract<Primitive, {type:'line'}> => q.layer==='BOM' && q.type==='line' && q.a[1]===q.b[1]).map(q=>q.a[1]))].sort((a,b)=>a-b);
+  assert.ok(Math.abs(ys[3]-ys[2]-18)<1e-8, 'single-line row keeps its held height');
+  assert.ok(ys[4]-ys[3]>25, 'a small held height cannot clip three lines of text');
+  assert.equal(JSON.stringify(d.runs), before);
+  assert.deepEqual(parseIsoJson(JSON.stringify(d)).sheets!.S1.bomRowHeights, d.sheets.S1.bomRowHeights);
+  d.sheets.S1.bomRowHeights!['demo-tee']=201;
+  assert.throws(()=>parseIsoJson(JSON.stringify(d)), /sheet information/);
+});
+
 test('a long BOM continues in another block instead of clipping', () => {
   const many = rows(45);
   const f = frame(document(), many);
@@ -241,4 +259,42 @@ test('wrapText fits lines and breaks words that are too wide', () => {
   assert.equal(imageAspect(png(300, 100)), 3);
   assert.equal(imageAspect(jpeg(120, 60)), 2);
   assert.equal(imageAspect('data:image/gif;base64,R0lGOD'), undefined);
+});
+
+test('an issued material-table width gives its descriptions more room without moving its right edge', () => {
+  const d=document(),r=rows(4);
+  const bounds=(f:ReturnType<typeof frame>)=>{
+    const xs=f.primitives.flatMap(p=>p.type==='line'&&p.layer==='BOM'?[p.a[0],p.b[0]]:[]);
+    return [Math.min(...xs),Math.max(...xs)];
+  };
+  const original=bounds(frame(d,r)),width=original[1]-original[0]+20;
+  d.sheets={S1:{bomWidth:width}};
+  const changed=bounds(frame(d,r));
+  assert.ok(Math.abs(changed[1]-original[1])<1e-6);
+  assert.ok(Math.abs(changed[1]-changed[0]-width)<1e-6);
+  assert.equal(parseIsoJson(JSON.stringify(d)).sheets!.S1.bomWidth,width);
+  d.sheets.S1.bomWidth=-1;assert.throws(()=>parseIsoJson(JSON.stringify(d)),/sheet information/);
+});
+
+test('classic paper restores the Spoolyard heading and ISO view without dropping the native model or material schedule',()=>{
+ const d=newIso();appendRun(d,null,[1000,0,0],'CS40',2,'S1','L1');
+ const before=JSON.stringify(d.nodes);d.sheetFormat='classic';
+ const drawing=createDrawing(d,'S1'),text=drawing.primitives.flatMap(p=>p.type==='text'?[p.text]:[]);
+ assert.ok(text.includes('SPOOLYARD  /  PIPING ISOMETRIC'));assert.ok(text.includes('ISO VIEW · METRIC'));
+ assert.ok(text.includes('BILL OF MATERIALS'));assert.ok(drawing.primitives.some(p=>p.layer==='PIPE'));
+ assert.ok(!drawing.primitives.some(p=>p.type==='image'));assert.equal(JSON.stringify(d.nodes),before);
+ assert.equal(parseIsoJson(JSON.stringify(d)).sheetFormat,'classic');
+});
+
+test('classic notes wrap before the right footer and long notes remain on the drawing',()=>{
+ const d=newIso();appendRun(d,null,[1000,0,0],'CS40',2,'S1','L1');
+ d.notes=Array(40).fill('VERIFY PIPE BEFORE CUTTING.').join(' ');
+ let drawing=createDrawing(d,'S1');
+ assert.ok(drawing.primitives.some(p=>p.layer==='NOTES'));
+ assert.ok(drawing.primitives.some(p=>p.type==='text'&&p.text==='NOTES: SEE DRAWING ABOVE'));
+ d.notes=Array(7).fill('VERIFY PIPE BEFORE CUTTING.').join(' ');
+ drawing=createDrawing(d,'S1');
+ const notes=drawing.primitives.filter(p=>p.type==='text'&&p.layer==='TITLE'&&p.p[0]===48&&p.p[1]>=726&&p.size===9);
+ assert.ok(notes.length>1);
+ for(const p of notes)if(p.type==='text')assert.ok(p.p[0]+p.text.length*p.size*.62/.72<drawing.width-385);
 });

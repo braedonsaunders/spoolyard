@@ -357,6 +357,31 @@ export function directionName([x, y, z]: Vec3): string {
 }
 /** Whether the flow along a pipe arrives at this end of it. */
 const flowsInto = (run: PipeRun, nodeId: string) => (run.flow === 'forward') === (run.to === nodeId);
+/** Hold or clear the dimension side along a connected straight, including in-line fittings and tee runs. */
+export function setDimensionAxis(doc: IsoDocument, runId: string, axis?: Vec3): void {
+  editDimensionStraight(doc,runId,run=>{if(axis)run.dimensionAxis=[...axis];else delete run.dimensionAxis;});
+}
+/** Reverse the lettering along a dimensioned straight without changing its measurements or extension side. */
+export function setDimensionReverse(doc: IsoDocument, runId: string, reverse: boolean): void {
+  editDimensionStraight(doc,runId,run=>{if(reverse)run.dimensionReverse=true;else delete run.dimensionReverse;});
+}
+function editDimensionStraight(doc: IsoDocument, runId: string, edit: (run: PipeRun)=>void): void {
+  const first = doc.runs.find(r => r.id === runId);
+  if (!first) return;
+  const direction = sub(getNode(doc, first.to).position, getNode(doc, first.from).position), span = length(direction);
+  const pending = [first], seen = new Set<string>();
+  while (pending.length) {
+    const run = pending.pop()!;
+    if (seen.has(run.id)) continue;
+    seen.add(run.id);
+    edit(run);
+    for (const id of [run.from, run.to]) for (const next of connected(doc, id)) {
+      if (next.spool !== first.spool || seen.has(next.id)) continue;
+      const d = sub(getNode(doc, next.to).position, getNode(doc, next.from).position);
+      if (Math.abs(dot(d, direction)) / (length(d) * span || 1) > 0.9999) pending.push(next);
+    }
+  }
+}
 /**
  * Set the flow along a line: this pipe and the pipes it runs on into through joints, elbows, in-line components and
  * the run of a tee, up to an open end. A tee's branch is a line of its own. Clearing it clears the same pipes.

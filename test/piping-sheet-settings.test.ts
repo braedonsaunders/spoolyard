@@ -233,7 +233,7 @@ test('the settings panel renders every section for a multi-sheet drawing', () =>
   }));
   for (const text of ['Sheet', 'Sheets', 'Title block', 'Revisions', 'Logos', 'Plant coordinates', 'General notes',
     'Centreline lengths', 'Not to scale (production)', 'CAD (ROMANS)', 'Weld numbers on sheet', 'Press. (kPa)',
-    'Company logo', 'Client logo', 'Set from selected point', 'numbered automatically'])
+    'Company logo', 'Client logo', 'Set from selected point', 'Long notes continue above the title block.'])
     assert.ok(html.includes(text), text);
   assert.ok(html.includes('placeholder="ISO-7-2"'));
   assert.match(html, /iso-sheet-card current" aria-current="true"><div class="iso-sheet-card-head"><strong>SP-002/);

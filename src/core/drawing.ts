@@ -1,6 +1,6 @@
 import { type IsoDocument, type Vec3 } from './model'
 import { gridSvg, type GridSettings } from './grid'
-import { LINE_SPACING, strokeTextPath } from './stroke-font'
+import { CAD_STROKE_WIDTH, LINE_SPACING, strokeTextPath } from './stroke-font'
 import { renderIso } from './iso/render'
 import { drawSheet as sheetFrame } from './iso/sheet'
 export type Point = [number, number]
@@ -8,7 +8,7 @@ export type Point = [number, number]
  * Sheet primitives in sheet units (the sheet is 850 units tall). `weight` is the stroke width in sheet units;
  * without it each layer has its drafting default (LAYER_WEIGHT).
  */
-export type Primitive =
+export type Primitive = (
   | { type: 'line'; a: Point; b: Point; layer: string; owner?: string; weight?: number }
   | { type: 'polyline'; points: Point[]; closed?: boolean; fill?: boolean; layer: string; owner?: string; weight?: number }
   | { type: 'circle'; p: Point; r: number; fill?: boolean; layer: string; owner?: string; weight?: number }
@@ -17,10 +17,13 @@ export type Primitive =
       /** Baseline point at the anchor. */
       p: Point
       text: string
+      lettering?: 'cad' | 'sans'
       /** Cap height. */
       size: number
       layer: string
       owner?: string
+      /** A paper label's stable placement handle; geometry and fabrication data are unaffected. */
+      label?: { key: string; at: Point; spool: string; dimension?: { axis: Point; offset: number } }
       /** Set on a pipe dimension so the editor can edit that length in place. */
       role?: 'overall' | 'cut'
       /** Degrees counter-clockwise on the page. */
@@ -32,9 +35,10 @@ export type Primitive =
       width?: number
     }
   | { type: 'image'; p: Point; width: number; height: number; href: string; layer: string; owner?: string }
+) & { /** Explicit markup ink, as #RRGGBB. */ color?: string }
 /** Default stroke widths in sheet units. */
 export const LAYER_WEIGHT: Record<string, number> = {
-  BORDER: 2, TITLE: 0.8, BOM: 0.8, NOTES: 0.8, PIPE: 1.7, WELD: 1, SYMBOL: 1.2, DIM: 0.6, LEADER: 0.6, TAG: 0.8, TEXT: 0.8, HATCH: 0.5, GRID: 0.6
+  BORDER: 2, TITLE: 0.8, BOM: 0.8, NOTES: 0.8, PIPE: 1.7, WELD: 1, SYMBOL: CAD_STROKE_WIDTH, DIM: CAD_STROKE_WIDTH, LEADER: CAD_STROKE_WIDTH, TAG: CAD_STROKE_WIDTH, TEXT: CAD_STROKE_WIDTH, HATCH: CAD_STROKE_WIDTH, GRID: 0.6, MARKUP: 850/792
 }
 export const weightOf = (p: Primitive) => ('weight' in p && p.weight) || LAYER_WEIGHT[p.layer] || 0.8
 export interface Drawing {
@@ -106,7 +110,7 @@ export function drawingSvg(
   grid?: { settings: GridSettings; anchor: Vec3; units?: IsoDocument['units'] }
 ): string {
   const shape = (p: Primitive) => {
-    const attrs = `data-owner="${escape(p.owner ?? '')}" class="${p.layer.toLowerCase()}${p.owner === selected ? ' selected' : ''}"`
+    const attrs = `${p.color ? `style="stroke:${escape(p.color)};color:${escape(p.color)}${p.type==='text'?`;fill:${p.lettering==='sans'?escape(p.color):'none'}`:''}" ` : ''}data-owner="${escape(p.owner ?? '')}" class="${p.layer.toLowerCase()}${p.owner === selected ? ' selected' : ''}"`
     if (p.type === 'image')
       return `<image ${attrs} x="${p.p[0]}" y="${p.p[1]}" width="${p.width}" height="${p.height}" href="${escape(p.href)}" preserveAspectRatio="xMidYMid meet"/>`
     const width = weightOf(p)
@@ -118,8 +122,8 @@ export function drawingSvg(
     }
     if (p.type === 'circle')
       return `<circle ${attrs} cx="${p.p[0]}" cy="${p.p[1]}" r="${p.r}" stroke-width="${width}" fill="${p.fill ? 'currentColor' : 'white'}"/>`
-    if (d.lettering === 'cad')
-      return `<path ${attrs} d="${strokeTextPath(p.text, { at: p.p, size: p.size, rotation: p.rotation, oblique: p.oblique, anchor: p.anchor, width: p.width })}" fill="none" stroke-width="${Math.max(0.35, p.size * 0.1)}" stroke-linecap="round" stroke-linejoin="round" data-text="${escape(p.text)}"/>`
+    if ((p.lettering ?? d.lettering) === 'cad')
+      return `<path ${attrs} d="${strokeTextPath(p.text, { at: p.p, size: p.size, rotation: p.rotation, oblique: p.oblique, anchor: p.anchor, width: p.width })}" fill="none" stroke-width="${CAD_STROKE_WIDTH}" stroke-linecap="round" stroke-linejoin="round" data-text="${escape(p.text)}"/>`
     const transform = p.rotation || p.oblique
       ? ` transform="translate(${p.p[0]} ${p.p[1]}) rotate(${-(p.rotation ?? 0)}) skewX(${-(p.oblique ?? 0)}) translate(${-p.p[0]} ${-p.p[1]})"` : ''
     const anchor = p.anchor && p.anchor !== 'start' ? ` text-anchor="${p.anchor}"` : ''
