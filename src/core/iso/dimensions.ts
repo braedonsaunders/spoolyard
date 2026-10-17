@@ -318,7 +318,8 @@ export function drawDimensions(ctx: IsoContext) {
       const mm = distance(a.model, b.model), ext = unit2(ctx.axis(d.axis))
       if (mm < 0.01 || Math.hypot(...ext) < 0.01 || Math.abs(dot2(unit2(sub2(b.page, a.page)), ext)) > 0.999) continue
       replaced.push({ from: a.model, to: b.model, ext })
-      dimension(a, b, snap(mm), ext, d.offset, undefined, undefined, [], false, `drafted-dimension:${i}`, d.reverseText,d.format)
+      const approximate = [d.from,d.to].some(point=>!point.adjacent && ctx.nodes.find(n=>n.id===point.nodeId)?.approximate)
+      dimension(a, b, snap(mm), ext, d.offset, undefined, undefined, [], approximate, `drafted-dimension:${i}`, d.reverseText,d.format)
     }
     if (ctx.doc.sheets?.[ctx.spool]?.dimensionScope !== 'legs') return
   }

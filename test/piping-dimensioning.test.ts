@@ -321,6 +321,16 @@ test('drafted end-flange faces resolve either stored coordinate convention', () 
   assert.deepEqual(end.position, [1000,0,0]);
 });
 
+test('drafted dimensions retain an approximate location through native-file reopening', () => {
+  const d = doc(); run(d,null,[1000,0,0]);
+  const wall=attachComponent(d,d.runs[0].id,'annotation',0.6);
+  Object.assign(wall,{component:'WALL-PEN',approximate:true,dimensioned:true});
+  d.sheets={'SP-1':{dimensions:[{from:{nodeId:d.runs[0].from},to:{nodeId:wall.id},axis:[0,0,1],offset:70}]}};
+  assert.deepEqual(dims(parseIsoJson(JSON.stringify(d))),['600(±)']);
+  wall.approximate=false;
+  assert.deepEqual(dims(d),['600']);
+});
+
 test('drafted dimensions can replace one straight while other straights remain automatic', () => {
   const d = doc(), elbow = run(d, null, [1000,0,0]), end = run(d, elbow.id, [0,0,500]);
   const support = attachComponent(d, d.runs[1].id, 'support', 0.4);
