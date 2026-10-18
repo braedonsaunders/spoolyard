@@ -101,6 +101,11 @@ export function moveComponentAlongPipe(doc: IsoDocument, nodeId: string, distanc
   const position = add(track.from, mul(sub(track.to, track.from), distance / track.length));
   if (node.associatedRunId) {
     const leg = pipeLeg(doc, node.associatedRunId)!, i = Math.max(0, leg.stations.findIndex((s, k) => k > 0 && distance <= s) - 1);
+    // An olet's branch goes with it: everything routed from the outlet moves across by the same distance, so the
+    // branch keeps its length and direction.
+    const branch = branchBeyond(doc, nodeId, leg.runs.map(r => r.id)), shift = sub(position, node.position);
+    for (const n of doc.nodes)
+      if (n.id !== nodeId && (branch.nodes.has(n.id) || (n.associatedRunId && branch.runs.has(n.associatedRunId)))) n.position = add(n.position, shift);
     node.position = position;
     node.associatedRunId = leg.runs[i].id;
     return;
@@ -119,6 +124,22 @@ export function moveComponentAlongPipe(doc: IsoDocument, nodeId: string, distanc
   node.position = position;
 }
 
+/** The pipes and nodes routed from an attached outlet; it may not come back to the header it sits on. */
+function branchBeyond(doc: IsoDocument, nodeId: string, header: string[]): { nodes: Set<string>; runs: Set<string> } {
+  const nodes = new Set<string>([nodeId]), runs = new Set<string>(), queue = [nodeId];
+  const headerNodes = new Set(doc.runs.filter(r => header.includes(r.id)).flatMap(r => [r.from, r.to]));
+  for (let i = 0; i < queue.length; i++)
+    for (const edge of connected(doc, queue[i])) {
+      if (runs.has(edge.id)) continue;
+      runs.add(edge.id);
+      const other = edge.from === queue[i] ? edge.to : edge.from;
+      if (headerNodes.has(other) || header.includes(edge.id))
+        throw new Error('This outlet\'s branch joins back into its header. Move the branch pipes individually.');
+      if (!nodes.has(other)) { nodes.add(other); queue.push(other); }
+    }
+  nodes.delete(nodeId);
+  return { nodes, runs };
+}
 /** Components that can terminate a pipe: flanges, blinds, caps and plugs. */
 export const endCapable = (type: ComponentType) =>
   type.kind !== 'olet' && (type.kind === 'flange' || type.kind === 'cap' || type.ports === 1);
@@ -320,9 +341,13 @@ export function componentFaces(doc: IsoDocument, nodeId: string): [number, numbe
 export function snapNearFace(doc: IsoDocument, nodeId: string): void {
   const faces = componentFaces(doc, nodeId), track = componentTrack(doc, nodeId);
   if (!faces || !track) return;
-  const step = placementStep(doc.units), shift = Math.round(faces[0] / step) * step - faces[0];
-  if (Math.abs(shift) > 1e-9 && track.distance + shift > track.min && track.distance + shift < track.max)
-    moveComponentAlongPipe(doc, nodeId, track.distance + shift);
+  const step = placementStep(doc.units), nearest = Math.round(faces[0] / step) * step - faces[0];
+  if (Math.abs(nearest) <= 1e-9) return;
+  // The nearest step, else the step on the other side; where neither leaves pipe for the fittings, it stays as placed.
+  for (const shift of [nearest, nearest > 0 ? nearest - step : nearest + step]) {
+    if (!(track.distance + shift > track.min && track.distance + shift < track.max)) continue;
+    try { moveComponentAlongPipe(doc, nodeId, track.distance + shift); return } catch { /* try the other side */ }
+  }
 }
 
 /**

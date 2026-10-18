@@ -34,8 +34,8 @@ export function loadSpecIndex(): Promise<LibrarySpecSummary[]> {
 export async function loadLibrarySpec(slug: string, doc?: IsoDocument): Promise<PipeSpec> {
   const response = await fetch(assetUrl("library/specs/" + encodeURIComponent(slug) + ".json"));
   if (!response.ok) throw new Error("The specification could not load.");
-  const raw = (await response.json()) as PipeSpec & { branchCodes?: unknown; unsizedItems?: unknown };
-  delete raw.branchCodes;
+  // The branch table's legend (branchCodes) is kept: it names the connection each chart code stands for.
+  const raw = (await response.json()) as PipeSpec & { unsizedItems?: unknown };
   delete raw.unsizedItems;
   return namespaceSpec(raw, uniqueSpecId(raw.id, doc));
 }
@@ -71,6 +71,21 @@ export async function newIsoWithDefaultSpec(): Promise<IsoDocument> {
 /** Most routing starts at 2″; small-bore-first specifications should not default to ⅛″. */
 export const defaultNps = (spec: PipeSpec) =>
   spec.sizes.find((s) => s.nps === 2)?.nps ?? spec.sizes[0]?.nps ?? 2;
+
+/** Common nominal sizes, offered for a specification that lists none and no pipe of the drawing's to go by. */
+export const COMMON_NPS = [0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8, 10, 12];
+/**
+ * The sizes a pipe can be routed at in a specification: the sizes it lists. One that lists none (a specification
+ * read from a PCF, which carries no size table) offers the sizes its pipes are drawn at, else those of the drawing's
+ * pipes, else the common sizes; `listed` says which, so the editor can explain the sizes are not the specification's.
+ */
+export function routingSizes(doc: Pick<IsoDocument, "runs">, spec: PipeSpec | undefined): { sizes: number[]; listed: boolean } {
+  if (!spec) return { sizes: [], listed: false };
+  if (spec.sizes.length) return { sizes: spec.sizes.map((s) => s.nps), listed: true };
+  const used = (runs: Array<{ nps: number }>) => [...new Set(runs.map((r) => r.nps))].sort((a, b) => a - b);
+  const own = used(doc.runs.filter((r) => r.specId === spec.id)), any = used(doc.runs);
+  return { sizes: own.length ? own : any.length ? any : COMMON_NPS, listed: false };
+}
 
 export interface DrawingTemplate {
   id: string;

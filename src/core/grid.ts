@@ -1,8 +1,9 @@
 import { formatLength, type IsoDocument, type Vec3 } from './model'
 import type { Drawing, Point } from './drawing'
+import { clipSegment } from './iso/lattice'
 
 export type GridPlane = 'xy' | 'xz' | 'yz'
-/** The graph paper stays in drawing coordinates, independent of the selected routing connection. */
+/** The plant origin. Prefer `gridAnchor(doc)`, which honours the drafter's grid origin. */
 export const GRID_ORIGIN: Vec3 = [0, 0, 0]
 export interface GridSettings {
   visible: boolean
@@ -11,6 +12,18 @@ export interface GridSettings {
   plane: GridPlane
   /** Constrain picked pipe to the nearest of the six iso directions (default on). */
   ortho?: boolean
+  /** The drafter's grid origin (a user coordinate system's origin) in model coordinates. */
+  origin?: Vec3
+}
+/**
+ * Where the model-space grid's lines and snap points are anchored, so they stay put while routing: the drafter's own
+ * grid origin when set, else the drawing's first connection (the start of its first pipe), else the plant origin.
+ * Not-to-scale sheets are drafted on the paper's lattice instead (`Drawing.lattice`).
+ */
+export function gridAnchor(doc: Pick<IsoDocument, 'nodes' | 'runs'> & { grid?: Pick<GridSettings, 'origin'> }): Vec3 {
+  if (doc.grid?.origin) return [...doc.grid.origin]
+  const first = doc.runs[0] && doc.nodes.find(n => n.id === doc.runs[0].from)
+  return first ? [...first.position] : [...GRID_ORIGIN]
 }
 export const defaultGrid = (): GridSettings => ({
   visible: true,
@@ -102,32 +115,6 @@ export interface GridLine {
   major: boolean
 }
 
-/** Clip a segment to an axis-aligned box (Liang–Barsky); null when it misses. */
-function clipLine(a: Point, b: Point, box: [number, number, number, number]): [Point, Point] | null {
-  const d: Point = [b[0] - a[0], b[1] - a[1]]
-  let t0 = 0,
-    t1 = 1
-  for (const [p, q] of [
-    [-d[0], a[0] - box[0]],
-    [d[0], box[2] - a[0]],
-    [-d[1], a[1] - box[1]],
-    [d[1], box[3] - a[1]]
-  ]) {
-    if (Math.abs(p) < 1e-12) {
-      if (q < 0) return null
-      continue
-    }
-    const r = q / p
-    if (p < 0) t0 = Math.max(t0, r)
-    else t1 = Math.min(t1, r)
-    if (t0 > t1) return null
-  }
-  return [
-    [a[0] + d[0] * t0, a[1] + d[1] * t0],
-    [a[0] + d[0] * t1, a[1] + d[1] * t1]
-  ]
-}
-
 /**
  * Three families form traditional triangular isometric paper, aligned to the active routing plane and
  * clipped to the drawing's model viewport. Shared by the editor overlay and the PDF/DXF sheets.
@@ -190,7 +177,7 @@ export function gridLines(
         y = lineY + uy * along,
         dx = ux * reach,
         dy = uy * reach
-      const clipped = clipLine([x - dx, y - dy], [x + dx, y + dy], area)
+      const clipped = clipSegment([x - dx, y - dy], [x + dx, y + dy], area)
       if (clipped) lines.push({ a: clipped[0], b: clipped[1], major: i % 5 === 0 })
     }
   }

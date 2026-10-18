@@ -13,24 +13,31 @@ export function pipeAtPoint(
   preferred = '',
   tolerance = 12,
 ): PipeHit | null {
-  const visible = new Set(drawing.primitives.filter(p => p.type === 'line' && p.layer === 'PIPE').map(p => p.owner));
   let closest: PipeHit | null = null;
+  for (const hit of pipesAtPoint(doc, drawing, point, toScreen, tolerance))
+    if (!closest || hit.distance < closest.distance - 0.01 || Math.abs(hit.distance - closest.distance) < 0.01 && hit.runId === preferred) closest = hit;
+  return closest;
+}
+
+/** Every pipe whose centreline passes within `tolerance` screen pixels of the point, nearest first. */
+export function pipesAtPoint(doc: IsoDocument, drawing: Drawing, point: Point, toScreen: (point: Point) => Point, tolerance = 12): PipeHit[] {
+  // Pipes with ink on this sheet: their line, or for one so short its fittings' symbols cover it, its dimension.
+  const owned = new Set(drawing.primitives.map(p => p.owner));
+  const hits: PipeHit[] = [];
   for (const run of doc.runs) {
-    if (run.connector || !visible.has(run.id)) continue;
+    if (run.connector) continue;
     const from = drawing.positions.get(run.from), to = drawing.positions.get(run.to);
-    if (!from || !to) continue;
+    if (!from || !to || !owned.has(run.id)) continue;
     const a = toScreen(from), b = toScreen(to);
     const dx = b[0] - a[0], dy = b[1] - a[1], length2 = dx * dx + dy * dy;
     if (length2 < 1e-8) continue;
     const fraction = Math.max(0, Math.min(1, ((point[0] - a[0]) * dx + (point[1] - a[1]) * dy) / length2));
     const distance = Math.hypot(point[0] - a[0] - fraction * dx, point[1] - a[1] - fraction * dy);
     if (distance > tolerance) continue;
-    if (!closest || distance < closest.distance - 0.01 ||
-      Math.abs(distance - closest.distance) < 0.01 && run.id === preferred) {
-      const near = Math.hypot(point[0] - a[0], point[1] - a[1]) <= tolerance ? 0
-        : Math.hypot(point[0] - b[0], point[1] - b[1]) <= tolerance ? 1 : undefined;
-      closest = { runId: run.id, fraction, distance, ...(near == null ? {} : { end: near }) };
-    }
+    const near = Math.hypot(point[0] - a[0], point[1] - a[1]) <= tolerance ? 0
+      : Math.hypot(point[0] - b[0], point[1] - b[1]) <= tolerance ? 1 : undefined;
+    hits.push({ runId: run.id, fraction, distance, ...(near == null ? {} : { end: near }) });
   }
-  return closest;
+  // Stable: pipes equally near keep the drawing's order.
+  return hits.sort((x, y) => x.distance - y.distance);
 }

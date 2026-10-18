@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { latticeSteps, nearestLatticePoint, paperCell } from '../src/core/iso/lattice';
 import assert from 'node:assert/strict';
 import { createDrawing, type Primitive } from '../src/core/drawing.ts';
 import { appendRun, clone, newIso, parseIsoJson, runResult, type IsoDocument, type PipeNode, type Vec3 } from '../src/core/model.ts';
@@ -27,16 +28,33 @@ test('an explicit hidden elevation overrides an automatic riser callout and surv
 test('paper positions arrange a schematic without changing model geometry, cuts or model-space views', () => {
   const doc = newIso(), end = appendRun(doc, null, [1000, 0, 0], 'CS40', 2, 'SP-1', 'L');
   const before = clone(doc), start = doc.runs[0].from, cut = runResult(doc, doc.runs[0]).cut;
-  doc.sheets = { 'SP-1': { nodePositions: { [start]: [200, 300], [end.id]: [600, 300] } } };
-  const drawing = createDrawing(doc);
-  assert.deepEqual(drawing.positions.get(start), [200, 300]);
-  assert.deepEqual(drawing.positions.get(end.id), [600, 300]);
-  assert.deepEqual(drawing.project([500, 0, 0]), [400, 300]);
+  // Held ends on the paper lattice, along the pipe's own direction, are kept as they are.
+  const cell = paperCell(doc), from = nearestLatticePoint([200, 300], cell), east = latticeSteps(cell)[0];
+  const far: [number, number] = [from[0] + east[0] * 16, from[1] + east[1] * 16];
+  doc.sheets = { 'SP-1': { nodePositions: { [start]: from, [end.id]: far } } };
+  const drawing = createDrawing(doc), near = (p: number[] | undefined, q: number[]) => assert.ok(p && Math.hypot(p[0] - q[0], p[1] - q[1]) < 1e-6, `${p} ≈ ${q}`);
+  near(drawing.positions.get(start), from);
+  near(drawing.positions.get(end.id), far);
+  near(drawing.project([500, 0, 0]), [from[0] + east[0] * 8, from[1] + east[1] * 8]);
   assert.deepEqual(doc.nodes, before.nodes);
   assert.equal(runResult(doc, doc.runs[0]).cut, cut);
   assert.deepEqual(createDrawing(doc, '', 'iso', undefined, {model: true}).positions,
     createDrawing(before, '', 'iso', undefined, {model: true}).positions);
   assert.deepEqual(createDrawing(parseIsoJson(JSON.stringify(doc))).positions, drawing.positions);
+});
+test('a held paper position off the isometric axis is drafted back onto the lattice along its pipe', () => {
+  const doc = newIso(), end = appendRun(doc, null, [1000, 0, 0], 'CS40', 2, 'SP-1', 'L');
+  const tee = appendRun(doc, end.id, [0, 0, 600], 'CS40', 2, 'SP-1', 'L'), start = doc.runs[0].from;
+  const free = createDrawing(doc), unit = (a: number[], b: number[]) => { const l = Math.hypot(b[0] - a[0], b[1] - a[1]); return [(b[0] - a[0]) / l, (b[1] - a[1]) / l]; };
+  const east = unit(free.positions.get(start)!, free.positions.get(end.id)!), up = unit(free.positions.get(end.id)!, free.positions.get(tee.id)!);
+  // Each end is held a little off the true direction, as a sheet registered from a scan is.
+  doc.sheets = { 'SP-1': { nodePositions: { [start]: [100, 400], [end.id]: [100 + east[0] * 300 + 4, 400 + east[1] * 300 + 3], [tee.id]: [100 + east[0] * 300 - 2, 400 + east[1] * 300 + up[1] * 200] } } };
+  const drawing = createDrawing(doc), s = drawing.positions.get(start)!, e = drawing.positions.get(end.id)!, t = drawing.positions.get(tee.id)!;
+  const cross = (u: number[], v: number[]) => u[0] * v[1] - u[1] * v[0], cell = paperCell(doc);
+  assert.ok(Math.abs(cross(unit(s, e), east)) < 1e-9, 'the east pipe runs true');
+  assert.ok(Math.abs(cross(unit(e, t), up)) < 1e-9, 'the riser runs true');
+  for (const p of [s, e, t]) { const q = nearestLatticePoint(p, cell); assert.ok(Math.hypot(p[0] - q[0], p[1] - q[1]) < 1e-6, 'on the lattice'); }
+  assert.ok(Math.abs(Math.hypot(e[0] - s[0], e[1] - s[1]) / cell - Math.round(300 / cell)) < 1e-6, 'its held length, in whole cells');
 });
 const nodesOf = (doc: IsoDocument) => doc.nodes.filter(n => doc.runs.some(r => r.from === n.id || r.to === n.id || r.id === n.associatedRunId));
 const direct = (doc: IsoDocument, from: string, d: Vec3, nps = 1) => {
@@ -66,7 +84,7 @@ test('not to scale, a level pipe at 45° in plan leans off the vertical and its 
   appendRun(doc, low.id, [1200, 0, 0], 'CS40', 3, 'SP-1', 'L-1');
   const d = draw(doc), start = d.positions.get(top.id)!, end = d.positions.get(low.id)!;
   const riser = [d.positions.get(doc.runs[0].from)!, start];
-  assert.ok(angleOffVertical([end[0] - start[0], end[1] - start[1]]) > 14, 'the offset is not drawn as a riser');
+  assert.ok(angleOffVertical([end[0] - start[0], end[1] - start[1]]) >= 10 - 1e-9, 'the offset is not drawn as a riser');
   assert.ok(Math.abs(riser[0][0] - riser[1][0]) < 1e-6, 'the riser stays vertical');
   // The triangle's legs run along the west and south iso axes and meet where the drawn pipe splits along them.
   const west = viewProject([-1, 0, 0], 'iso'), south = viewProject([0, -1, 0], 'iso'), v: Point = [end[0] - start[0], end[1] - start[1]];
@@ -119,7 +137,7 @@ test('not to scale, legs that would cross are drawn apart, and the shape is held
   for (const [id, p] of d.positions) assert.ok(Math.hypot(p[0] - held.positions.get(id)![0], p[1] - held.positions.get(id)![1]) < 1e-6);
 });
 
-test('not to scale, a narrow drawing draws its level pipe longer to fill the open area', () => {
+test('not to scale, a narrow drawing draws its level pipe longer when its style stretches it, and as laid out otherwise', () => {
   // A tall riser of valves beside one long level run.
   const doc = newIso();
   let at = appendRun(doc, null, [3000, 0, 0], 'CS40', 2, 'SP-1', 'L-1');
@@ -127,20 +145,18 @@ test('not to scale, a narrow drawing draws its level pipe longer to fill the ope
     at = appendRun(doc, at.id, [0, 0, -600], 'CS40', 2, 'SP-1', 'L-1');
     if (i < 5) Object.assign(at, { kind: 'valve', component: 'GATE-FL' });
   }
+  assert.equal(draw(doc).fit.stretch ?? 0, 0, 'drawn as laid out by default');
+  doc.style = { ...doc.style!, stretch: 1.2 };
   const d = draw(doc);
-  assert.ok((d.fit.stretch ?? 0) > 0, 'stretched');
+  assert.equal(d.fit.stretch, 1.2);
   const level = (stretch: number) => {
     const l = layoutSheet(doc, doc.runs, nodesOf(doc), 'iso', true, d.fit.base, { stretch });
     const [a, b] = [l.raw.get(doc.runs[0].from)!, l.raw.get(doc.runs[0].to)!];
     return Math.hypot(b[0] - a[0], b[1] - a[1]);
   };
   assert.ok(level(d.fit.stretch!) > level(0) * 1.2);
-  // A wide drawing is left as it is.
-  const flat = newIso();
-  let end = appendRun(flat, null, [3000, 0, 0], 'CS40', 2, 'SP-1', 'L-1');
-  end = appendRun(flat, end.id, [0, -3000, 0], 'CS40', 2, 'SP-1', 'L-1');
-  appendRun(flat, end.id, [3000, 0, 0], 'CS40', 2, 'SP-1', 'L-1');
-  assert.equal(draw(flat).fit.stretch ?? 0, 0);
+  assert.equal(parseIsoJson(JSON.stringify(doc)).style?.stretch, 1.2);
+  assert.throws(() => parseIsoJson(JSON.stringify({ ...doc, style: { ...doc.style, stretch: 5 } })), /drawing style/);
 });
 
 test('where two pipes cross on the sheet the one behind is broken, and leaders break where they cross a pipe', () => {

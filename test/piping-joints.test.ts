@@ -18,7 +18,9 @@ const type = (code: string) => COMPONENT_TYPES.find(t => t.code === code)!;
 
 test('an issued joint callout can reference existing material items without purchasing them twice', () => {
   const doc=straight(), run=doc.runs[0];
-  const a=placeComponentOnPipe(doc,run.id,type('FLG-RFWN'),0), b=placeComponentOnPipe(doc,run.id,type('FLG-RFWN'),1);
+  // The combined joint callout letters the referenced items on one line.
+  doc.style={...(doc.style ?? { layout: 'schematic', weldNumbers: false, lettering: 'cad' }),jointCallout:'combined'};
+  const a=placeComponentOnPipe(doc,run.id,type('FLG-RFWN'),0);placeComponentOnPipe(doc,run.id,type('FLG-RFWN'),1);
   a.jointSupply={bolts:false,gasket:false};
   const before=sheetMaterials(doc,'SP-1'), bolts=before.find(r=>r.category==='bolt')!, gasket=before.find(r=>r.category==='gasket')!;
   const joint=flangedJoints(doc,'SP-1').find(j=>j.nodeId===a.id)!;
@@ -192,14 +194,16 @@ test('the same flange drawn as a node and supplied with a valve is one BOM line'
 });
 
 test('PCF carries a flanged valve with its flanges, gaskets and bolts, and reads back to the same joint', async () => {
-  const { exportPcf, importPcf } = await import('../src/core/pcf.ts');
+  const { exportPcfPackage, importPcf } = await import('../src/core/pcf.ts');
   const doc = straight();
   placeComponentOnPipe(doc, doc.runs[0].id, type('GATE-FL'), 0.5);
-  const pcf = exportPcf(doc);
+  const { pcf, sidecar } = exportPcfPackage(doc);
   assert.equal(pcf.match(/^FLANGE$/gm)?.length, 2);
   assert.equal(pcf.match(/^GASKET$/gm)?.length, 2);
   assert.equal(pcf.match(/^BOLT$/gm)?.length, 2);
-  const restored = importPcf(pcf).doc;
+  // Without its sidecar the PCF's mating flanges, gaskets and bolts are parts of their own; with it, the valve's joints.
+  assert.equal(importPcf(pcf).doc.nodes.filter(n => ['flange', 'gasket', 'bolt'].includes(n.kind)).length, 6);
+  const restored = importPcf(pcf, { sidecar }).doc;
   assert.equal(restored.nodes.length, doc.nodes.length);
   const cuts = (d: typeof doc) => d.runs.map(r => runResult(d, r).cut).sort((a, b) => a - b);
   cuts(restored).forEach((cut, i) => assert.ok(Math.abs(cut - cuts(doc)[i]) < 1e-6));

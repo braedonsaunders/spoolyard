@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { newIso, appendRun, runResult, formatLength, parseLength, validateIso, insertComponent, bom, welds, parseIsoJson, csv } from '../src/core/model.ts';
-import { importPcf, exportPcf } from '../src/core/pcf.ts';
+import { importPcf, exportPcf, exportPcfPackage } from '../src/core/pcf.ts';
 import { createDrawing, drawingSvg } from '../src/core/drawing.ts';
 test('physical centreline measurements subtract fitting takeouts and each root gap',()=>{const d=newIso();const b=appendRun(d,null,[1000,0,0],'CS40',2,'SP-1','L-1');appendRun(d,b.id,[0,1000,0],'CS40',2,'SP-1','L-1');assert.equal(b.kind,'elbow90');assert.equal(runResult(d,d.runs[0]).cut,920.8);assert.equal(runResult(d,d.runs[1]).cut,920.8);assert.equal(welds(d).length,2);assert.deepEqual(validateIso(d),[]);});
 test('rolling offset travel uses all three physical axes',()=>{const d=newIso();appendRun(d,null,[300,400,1200],'CS40',2,'SP','');assert.equal(runResult(d,d.runs[0]).cut,1300);});
@@ -9,12 +9,12 @@ test('inline valves consume their face-to-face and two gaps',()=>{const d=newIso
 test('straight butt joint is one weld and one total root gap',()=>{const d=newIso();const a=appendRun(d,null,[1000,0,0],'CS40',2,'SP','');appendRun(d,a.id,[1000,0,0],'CS40',2,'SP','');assert.equal(a.kind,'weld');assert.equal(welds(d).length,1);assert.equal(d.runs.reduce((s,r)=>s+runResult(d,r).cut,0),1997);});
 test('missing fitting dimensions and negative cuts cannot pass fabrication checks',()=>{const d=newIso();appendRun(d,null,[100,0,0],'CS40',2,'SP','');const n=insertComponent(d,d.runs[0].id,'valve');assert.match(validateIso(d).join(),/has no standard size/);n.takeout=200;assert.match(validateIso(d).join(),/fittings at its ends overlap/);});
 test('metric and fractional imperial input round trip accurately',()=>{assert.equal(parseLength("2' 3 1/2\"",'imperial'),698.5);assert.ok(Math.abs(parseLength('3/8"','imperial')-9.525)<1e-9);assert.equal(parseLength('1000 mm','imperial'),1000);assert.equal(formatLength(698.5,'imperial'), '2′ 3 1/2″');assert.throws(()=>parseLength('2/0"','imperial'));});
-test('BOM does not merge heat lots or specs and missing fitting mass stays explicit',()=>{const d=newIso();const a=appendRun(d,null,[1000,0,0],'CS40',2,'SP','');appendRun(d,a.id,[0,1000,0],'CS40',2,'SP','');d.runs[0].heat='A';d.runs[1].heat='B';assert.equal(bom(d).filter(r=>r.unit==='m').length,2);assert.ok(bom(d).find(r=>r.unit==='ea')!.weightKg!>0);const v=insertComponent(d,d.runs[0].id,'valve');v.takeout=50;assert.equal(bom(d).find(r=>r.description==='valve')?.weightKg,null);});
+test('BOM does not merge heat lots or specs and missing fitting mass stays explicit',()=>{const d=newIso();const a=appendRun(d,null,[1000,0,0],'CS40',2,'SP','');appendRun(d,a.id,[0,1000,0],'CS40',2,'SP','');d.runs[0].heat='A';d.runs[1].heat='B';assert.equal(bom(d).filter(r=>r.unit==='m').length,2);assert.ok(bom(d).find(r=>r.unit==='ea')!.weightKg!>0);const v=insertComponent(d,d.runs[0].id,'valve');v.takeout=50;assert.equal(bom(d).find(r=>r.description==='VALVE')?.weightKg,null);});
 test('untrusted JSON validates references and finite coordinates',()=>{const d=newIso();appendRun(d,null,[1000,0,0],'CS40',2,'SP','');assert.equal(parseIsoJson(JSON.stringify(d)).runs.length,1);d.runs[0].to='missing';assert.throws(()=>parseIsoJson(JSON.stringify(d)),/Missing connection/);});
 test('SVG annotation escapes customer input and layout edits leave cut lengths unchanged',()=>{const d=newIso();const n=appendRun(d,null,[1000,0,0],'CS40',2,'SP','');d.customer='<script>alert(1)</script>';const cut=runResult(d,d.runs[0]).cut;n.labelOffset=[50,30];assert.equal(runResult(d,d.runs[0]).cut,cut);assert.ok(!drawingSvg(createDrawing(d)).includes('<script>'));});
 test('CSV does not execute spreadsheet formula descriptions',()=>{assert.equal(csv([['=cmd','normal']]),'"\'=cmd","normal"');});
 test('PCF endpoint lengths and connectivity preserve an imported elbow',()=>{const pcf=`ISOGEN-FILES x\nUNITS-BORE INCH\nUNITS-CO-ORDS MM\nPIPELINE-REFERENCE L-1\nPIPE\n    END-POINT 0 0 0 2\n    END-POINT 923.8 0 0 2\nELBOW\n    END-POINT 923.8 0 0 2\n    CENTRE-POINT 1000 0 0 2\n    END-POINT 1000 76.2 0 2\nPIPE\n    END-POINT 1000 76.2 0 2\n    END-POINT 1000 1000 0 2\n`;const d=importPcf(pcf).doc;assert.equal(d.runs.length,2);assert.equal(d.nodes.length,3);assert.equal(runResult(d,d.runs[0]).cut,923.8);assert.equal(runResult(d,d.runs[1]).cut,923.8);assert.equal(importPcf(exportPcf(d)).doc.runs.length,2);});
-test('unsupported PCF items are rejected instead of silently missing from BOM',()=>{assert.throws(()=>importPcf('UNITS-BORE INCH\nUNITS-CO-ORDS MM\nUNSUPPORTED-FITTING\n    CO-ORDS 0 0 0 2'),/Unsupported PCF/);});
+test('unrecognised PCF parts are imported as generic components with a warning instead of silently missing from BOM',()=>{const {doc,warnings}=importPcf('UNITS-BORE INCH\nUNITS-CO-ORDS MM\nPIPE\n    END-POINT 0 0 0 2 BW\n    END-POINT 1000 0 0 2 BW\nUNSUPPORTED-FITTING\n    END-POINT 1000 0 0 2 BW\n    END-POINT 1100 0 0 2 BW\nPIPE\n    END-POINT 1100 0 0 2 BW\n    END-POINT 2000 0 0 2 BW\n');assert.equal(doc.nodes.filter(n=>n.kind==='valve').length,1);assert.match(warnings.join(),/UNSUPPORTED-FITTING/);assert.ok(bom(doc).some(r=>r.unit==='ea'));});
 
 test('isometric picking inverts the display projection and snaps on the selected physical plane', async()=>{
   const {pickGridPoint}=await import('../src/core/grid.ts');
@@ -45,7 +45,7 @@ test('grid preferences round-trip and the editor-only grid stays out of exports'
 });
 test('turning snap off retains precise picked coordinates without altering measured lengths',async()=>{
   const {defaultGrid,pickGridPoint}=await import('../src/core/grid.ts');
-  const d=newIso();appendRun(d,null,[1234.56,0,0],'CS40',2,'SP','');const drawing=createDrawing(d);
+  const d=newIso();appendRun(d,null,[1234.56,0,0],'CS40',2,'SP','');const drawing=createDrawing(d,'','iso',undefined,{model:true});
   const point:[number,number,number]=[241.15,-162.9,0];
   const actual=pickGridPoint(drawing,drawing.project(point),[0,0,0],{...defaultGrid(),snap:false});
   actual.forEach((v,i)=>assert.ok(Math.abs(v-point[i])<1e-7));assert.equal(runResult(d,d.runs[0]).cut,1234.56);
@@ -70,7 +70,7 @@ test('PCF with no material specification cannot silently inherit carbon-steel pi
 test('own PCF round trip preserves specs, independent root gaps and line identifiers',()=>{
  const d=newIso();appendRun(d,null,[1000,0,0],'CS40',2,'SP','LINE-A');
  const second=structuredClone(d.specs[0]);second.id='SS40';second.material='Stainless steel';second.rootGap=1;second.fittings=second.fittings.map(f=>({...f,id:'SS-'+f.id}));d.specs.push(second);
- appendRun(d,null,[0,1000,0],'SS40',3,'SP-2','LINE-B');const restored=importPcf(exportPcf(d)).doc;
+ appendRun(d,null,[0,1000,0],'SS40',3,'SP-2','LINE-B');const pkg=exportPcfPackage(d),restored=importPcf(pkg.pcf,{sidecar:pkg.sidecar}).doc;
  assert.equal(restored.specs.find(s=>s.id==='SS40')!.rootGap,1);assert.equal(restored.specs.find(s=>s.id==='SS40')!.material,'Stainless steel');
  assert.deepEqual(restored.runs.map(r=>r.line),['LINE-A','LINE-B']);assert.equal(restored.runs[1].specId,'SS40');
 });
@@ -140,7 +140,7 @@ test('one isometric block is a real length, and feet or inches stay valid in eit
 test('PCF preserves per-pipe gap overrides and endpoint tags and preparations',()=>{
  const d=newIso();const a=appendRun(d,null,[1000,0,0],'CS40',2,'SP','LINE');appendRun(d,a.id,[0,1000,0],'CS40',2,'SP','LINE');
  d.runs[0].rootGap=5;d.runs[0].toTag='FW-1';d.runs[0].toField=true;d.runs[1].fromPrep='SW';
- const restored=importPcf(exportPcf(d)).doc;
+ const pkg=exportPcfPackage(d),restored=importPcf(pkg.pcf,{sidecar:pkg.sidecar}).doc;
  assert.equal(restored.runs[0].rootGap,5);assert.equal(restored.runs[0].toTag,'FW-1');assert.equal(restored.runs[0].toField,true);
  assert.equal(restored.runs[1].fromPrep,'SW');assert.equal(runResult(restored,restored.runs[0]).cut,runResult(d,d.runs[0]).cut);
 });

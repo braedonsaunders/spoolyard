@@ -6,10 +6,10 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { PDFDocument } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
-import { createDrawing, drawingSvg, type Drawing, type Primitive } from '../src/core/drawing.ts';
+import { createDrawing, drawingSvg, LAYER_WEIGHT, type Drawing, type Primitive } from '../src/core/drawing.ts';
 import { appendRun, newIso, parseIsoJson } from '../src/core/model.ts';
-import { isometricDxf, readIsometric } from '../src/core/document.ts';
-import { CAD_STROKE_WIDTH, LINE_SPACING, measureText } from '../src/core/stroke-font.ts';
+import { isometricDxf, readIsometricFile } from '../src/core/document.ts';
+import { cadStrokeWidth, LINE_SPACING, measureText } from '../src/core/stroke-font.ts';
 import { drawPrimitives } from '../src/editor/export.ts';
 import { SheetLayer } from '../src/editor/sheet-layer.tsx';
 
@@ -93,11 +93,11 @@ test('SVG draws every primitive kind', () => {
 test('the editor layer draws every primitive with its owner, length handle and selection', () => {
   const render = (lettering: 'cad' | 'sans', editing: { runId: string; role: 'overall' | 'cut' } | null = null) =>
     renderToStaticMarkup(createElement('svg', null, createElement(SheetLayer, {
-      primitives: primitives(), lettering, background: 'white', selection: 'run-1', editing, onEditLength: () => {},
+      primitives: primitives(), lettering, background: 'white', selection: new Set(['run-1']), editing, onEditLength: () => {},
     })));
   const sans = render('sans'), cad = render('cad');
   for (const svg of [sans, cad]) {
-    assert.match(svg, /<line data-owner="run-1" [^>]*class="iso-primitive iso-layer-pipe selected" stroke-width="1.7"/);
+    assert.match(svg, new RegExp(`<line data-owner="run-1" [^>]*class="iso-primitive iso-layer-pipe selected" stroke-width="${LAYER_WEIGHT.PIPE}"`));
     assert.match(svg, /<line data-owner="run-1" [^>]*stroke="transparent" stroke-width="14"/);
     assert.match(svg, /<line [^>]*class="iso-primitive iso-layer-symbol" stroke-width="5"/);
     assert.match(svg, /<polyline data-owner="valve-1" points="10,50 30,70 50,50" class="iso-primitive iso-layer-symbol"[^>]*fill="none"/);
@@ -114,10 +114,13 @@ test('the editor layer draws every primitive with its owner, length handle and s
   // CAD lettering is stroked, still carries the length handle, and owned text gets a box to click.
   assert.ok(!cad.includes('<text'));
   assert.match(cad, /<path data-owner="run-1" data-length="overall" data-text="2&#x27;-6 1\/2&quot;" d="M[^"]+" stroke-width="[^"]+" class="iso-cad-text iso-layer-dim selected"/);
-  assert.ok(cad.includes(`stroke-width="${CAD_STROKE_WIDTH}" class="iso-cad-text iso-layer-dim selected"`));
+  assert.ok(cad.includes(`stroke-width="${cadStrokeWidth('tabloid')}" class="iso-cad-text iso-layer-dim selected"`));
   assert.match(cad, /<path data-owner="node-9" [^>]*stroke-width="[^"]+"/);
-  assert.ok(cad.includes(`stroke-width="${CAD_STROKE_WIDTH}" class="iso-cad-text iso-layer-text"`));
-  assert.match(cad, new RegExp(`<rect data-owner="node-9" x="18" y="191" width="${measureText(`CONT'D ON\nDWG# ISO-2\n℄ EL +1'-4″`, 7) + 4}" height="${7 + 2 * LINE_SPACING * 7 + 4}" fill="transparent"`));
+  assert.ok(cad.includes(`stroke-width="${cadStrokeWidth('tabloid')}" class="iso-cad-text iso-layer-text"`));
+  const box = /<rect data-owner="node-9" x="18" y="191" width="([\d.]+)" height="([\d.]+)" fill="transparent"/.exec(cad);
+  assert.ok(box, 'owned CAD text carries a pick box');
+  assert.ok(Math.abs(Number(box![1]) - (measureText(`CONT'D ON\nDWG# ISO-2\n℄ EL +1'-4″`, 7) + 4)) < 1e-9);
+  assert.ok(Math.abs(Number(box![2]) - (7 + 2 * LINE_SPACING * 7 + 4)) < 1e-9);
   const editing = render('cad', { runId: 'run-1', role: 'overall' });
   assert.match(editing, /<path data-owner="run-1" data-length="overall" [^>]*style="visibility:hidden"/);
   assert.ok(!editing.includes('class="iso-length-hit"'));
@@ -131,21 +134,30 @@ test('DXF writes polylines, fills, styled text, lineweights and image frames', (
     const dxf = isometricDxf(doc, drawing(lettering));
     const { all, entities: list } = entities(dxf);
     assert.equal(dxf.includes('\nAC1015\n'), true);
-    assert.deepEqual(readIsometric(dxf), doc);
+    // The stored model leaves out raster logos (a DXF cannot carry them) and says so on reopening.
+    const reopened = readIsometricFile(dxf);
+    assert.deepEqual(reopened.doc, { ...doc, titleBlock: { ...doc.titleBlock!, logos: [] } });
+    assert.match(reopened.warnings.join(), /logos are not stored in DXF \(FAB SHOP\)/);
+    const modelSpace = value(all.find(r => r[0][1] === 'BLOCK_RECORD' && value(r, 2) === '*Model_Space')!, 5);
     for (const e of list) {
       assert.match(value(e, 5)!, /^[0-9A-F]+$/);
-      assert.equal(e[2][1], 'AcDbEntity');
-      assert.equal(value(e, 8)!.startsWith('BW-ISO-'), true);
+      assert.equal(value(e, 100), 'AcDbEntity');
+      assert.equal(values(e, 330).at(-1), modelSpace);
+      assert.equal(value(e, 8)!.startsWith('ISO-'), true);
     }
     const style = all.find(r => r[0][1] === 'STYLE' && value(r, 2) === 'ROMANS')!;
     assert.equal(value(style, 3), 'romans.shx');
     assert.equal(value(style, 41), '0.8');
-    assert.ok(all.some(r => r[0][1] === 'LAYER' && value(r, 2) === 'BW-ISO-TITLE'));
+    assert.ok(all.some(r => r[0][1] === 'LAYER' && value(r, 2) === 'ISO-TITLE'));
     const of = (type: string) => list.filter(e => e[0][1] === type);
-    assert.deepEqual(of('LINE').map(e => value(e, 370)), ['53', '18', '158']);
+    // Pens are by layer; only a primitive drawn heavier or lighter than its layer carries its own lineweight.
+    const layerWeight = (name: string) => value(all.find(r => r[0][1] === 'LAYER' && value(r, 2) === name)!, 370);
+    // The default pipe pen is 0.5 mm; drafting linework the thin 0.17 mm CAD pen, nearest the standard 0.18.
+    assert.deepEqual(['ISO-PIPE', 'ISO-DIM', 'ISO-SYMBOL'].map(layerWeight), ['50', '18', '18']);
+    assert.deepEqual(of('LINE').map(e => value(e, 370)), [undefined, undefined, '158']);
     const polylines = of('LWPOLYLINE');
     assert.deepEqual(polylines.map(e => [value(e, 8), value(e, 90), value(e, 70)]), [
-      ['BW-ISO-SYMBOL', '3', '0'], ['BW-ISO-TAG', '4', '1'], ['BW-ISO-LEADER', '4', '1'], ['BW-ISO-TITLE', '4', '1'],
+      ['ISO-SYMBOL', '3', '0'], ['ISO-TAG', '4', '1'], ['ISO-LEADER', '4', '1'], ['ISO-TITLE', '4', '1'],
     ]);
     assert.deepEqual(values(polylines[0], 20), [Y(50), Y(70), Y(50)]);
     const [polygonFill, dot] = of('HATCH');
@@ -166,7 +178,7 @@ test('DXF writes polylines, fills, styled text, lineweights and image frames', (
     }
     const dimension = byValue(`2'-6 1/2"`);
     assert.deepEqual([value(dimension, 10), value(dimension, 20), value(dimension, 40), value(dimension, 72)], [X(20), Y(120), X(10), undefined]);
-    assert.equal(value(dimension, 370), '35');
+    assert.equal(value(dimension, 370), undefined);
     const iso = byValue('45%%d H');
     assert.deepEqual([value(iso, 50), value(iso, 51), value(iso, 72), value(iso, 11), value(iso, 21)], ['30', '30', '1', X(200), Y(120)]);
     const end = byValue('BILL OF MATERIALS');
@@ -177,7 +189,7 @@ test('DXF writes polylines, fills, styled text, lineweights and image frames', (
     const stacked = ["CONT'D ON", 'DWG# ISO-2', `\\U+2104 EL +1'-4"`].map(byValue);
     stacked.forEach((e, row) => assert.ok(Math.abs(Number(value(e, 20)) - (850 - 200 - row * LINE_SPACING * 7) * k) < 1e-5));
     const name = byValue('FAB SHOP');
-    assert.deepEqual([value(name, 8), value(name, 72), value(name, 11)], ['BW-ISO-TITLE', '1', X(460)]);
+    assert.deepEqual([value(name, 8), value(name, 72), value(name, 11)], ['ISO-TITLE', '1', X(460)]);
   }
 });
 
@@ -231,7 +243,7 @@ test('boxed callouts preserve their colour, leader and lettering through save an
   assert.ok(own.some(p=>p.type==='text'&&p.lettering==='sans'));
   assert.match(drawingSvg(d),/style="stroke:#ff0000/);
   assert.match(drawingSvg(d),/<text[^>]+>.*CHECK/);
-  const react=renderToStaticMarkup(createElement(SheetLayer,{primitives:own,lettering:'cad',background:'white',selection:'',editing:null,onEditLength:()=>{}}));
+  const react=renderToStaticMarkup(createElement(SheetLayer,{primitives:own,lettering:'cad',background:'white',selection:new Set<string>(),editing:null,onEditLength:()=>{}}));
   assert.match(react,/<text/);assert.match(react,/stroke:#ff0000/);
   const {entities:list}=entities(isometricDxf(loaded,d));
   assert.equal(list.filter(e=>value(e,420)==='16711680').length,3);

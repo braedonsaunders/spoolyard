@@ -396,10 +396,11 @@ kbd {
   background: #fff;
   border-bottom: 1px solid rgb(var(--ch-border));
 }
-.sy-thumb svg {
+.sy-thumb img {
   display: block;
   width: 100%;
   height: 100%;
+  object-fit: contain;
 }
 .sy-card footer {
   display: flex;
@@ -509,6 +510,11 @@ kbd {
   display: flex;
   gap: 8px;
   margin-top: 8px;
+}
+.sy-crash {
+  max-width: 560px;
+  margin: 18vh auto 0;
+  padding: 0 24px;
 }
 .sy-templates {
   display: grid;

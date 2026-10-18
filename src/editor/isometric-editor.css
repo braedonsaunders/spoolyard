@@ -7,6 +7,12 @@
   container-name: iso;
   --iso-canvas: #f8fafc;
   --iso-ink: #233044;
+  /* Selection, picked-label and command-preview colours, shared by every drawing overlay. */
+  --iso-select: #008dbc;
+  --iso-label-select: #c2410c;
+  --iso-accent: #0b93ae;
+  --iso-preview: #0b9db8;
+  --iso-sheet-ink: #263646;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -54,6 +60,11 @@
 .iso-editor select:focus-visible {
   outline: 2px solid #269bc4;
   outline-offset: 2px;
+}
+/* The drawing takes keyboard focus (menu key, shortcuts); tabbing to it shows where the keys go. */
+.iso-editor .iso-sheet:focus-visible {
+  outline: 2px solid #269bc4;
+  outline-offset: -2px;
 }
 .iso-header {
   display: flex;
@@ -133,9 +144,7 @@
 .iso-export-menu {
   position: relative;
 }
-.iso-export-menu summary {
-  list-style: none;
-  cursor: pointer;
+.iso-export-menu > button {
   display: flex;
   align-items: center;
   gap: 5px;
@@ -154,7 +163,7 @@
   background: rgb(var(--ch-surface));
   padding: 5px;
 }
-.iso-export-menu button {
+.iso-export-menu [role="menuitem"] {
   display: flex;
   width: 100%;
   justify-content: flex-start;
@@ -182,27 +191,28 @@
   border: 0;
 }
 .iso-ribbon-group small {
-  font-size: 8px;
+  font-size: 10px;
   text-align: center;
-  letter-spacing: 0.1em;
-  opacity: 0.4;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.68;
 }
 .iso-ribbon-tools {
   display: flex;
   align-items: center;
   gap: 3px;
 }
-.iso-tool {
+.iso-editor .iso-tool {
   flex-direction: column;
   height: 48px;
-  min-width: 44px !important;
-  padding: 5px !important;
-  font-size: 10px !important;
-  gap: 5px !important;
+  min-width: 44px;
+  padding: 5px;
+  font-size: 10px;
+  gap: 5px;
 }
 .iso-tool.active {
-  background: #1594b515;
-  color: #1594b5;
+  background: color-mix(in srgb, var(--iso-select) 8%, transparent);
+  color: var(--iso-select);
 }
 .iso-ribbon-controls {
   display: flex;
@@ -278,15 +288,19 @@
 .iso-stage.iso-stage-grid {
   background: var(--iso-canvas);
 }
+/* The drawing surface fills the stage; the paper sits in it with a margin set by the view. */
 .iso-sheet {
-  height: calc(100% - 76px);
-  width: calc(100% - 56px);
-  overflow: visible;
-  filter: drop-shadow(0 12px 20px #10203022);
-  transition:
-    width 0.25s,
-    height 0.25s;
+  position: absolute;
+  inset: 0;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
   touch-action: none;
+  outline: none;
+}
+.iso-paper {
+  fill: #fff;
+  filter: drop-shadow(0 12px 20px #10203022);
 }
 .iso-sheet.model-space {
   height: 100%;
@@ -327,7 +341,7 @@
   z-index: 4;
   box-sizing: border-box;
   margin: 0;
-  border: 1.5px solid #087fbe;
+  border: 1.5px solid var(--iso-select);
   border-radius: 3px;
   background: #fff;
   color: #17212c;
@@ -372,22 +386,22 @@
   stroke: #9bb6ca;
 }
 .iso-text.selected {
-  fill: #008dbc;
+  fill: var(--iso-select);
 }
 .iso-primitive.selected {
-  stroke: #008dbc;
+  stroke: var(--iso-select);
   stroke-width: 3px;
 }
 .iso-sheet.placing {
   cursor: copy;
 }
 .iso-insert-preview line {
-  stroke: #0b9db8;
+  stroke: var(--iso-preview);
   stroke-width: 5;
   opacity: 0.55;
 }
 .iso-insert-preview circle {
-  fill: #0b9db8;
+  fill: var(--iso-preview);
   stroke: white;
   stroke-width: 2;
 }
@@ -416,7 +430,7 @@
 }
 .iso-editor .iso-cut-notice {
   position: absolute;
-  top: 52px;
+  bottom: 56px;
   left: 14px;
   z-index: 3;
   padding: 6px 10px;
@@ -436,12 +450,8 @@
 .iso-editor .iso-dimension-review button {
   display: block;
   margin-top: 6px;
-  color: #087fbe;
+  color: var(--iso-select);
   text-align: left;
-}
-.iso-takeout-help {
-  padding: 8px 10px;
-  border-left: 3px solid #c9912d;
 }
 .iso-components {
   display: flex;
@@ -471,30 +481,46 @@
   overflow: auto;
   padding: 0 8px 12px;
 }
+/* The whole disc picks its connection, hovered or not: an unfilled hover ring would let a click fall through to
+   the pipe beneath. */
 .iso-node-hit {
   cursor: pointer;
+  pointer-events: all;
 }
 .iso-node-hit:hover {
-  fill: #0ba6c51a;
-  stroke: #0ba6c5;
+  fill: transparent;
+  stroke: var(--iso-select);
   stroke-width: 1;
+  stroke-dasharray: 2 2;
 }
+/* CAD-style grips on the selection: small hollow squares, the same size on screen at any zoom. */
+.iso-grip {
+  fill: #fff;
+  stroke: var(--iso-select);
+  stroke-width: 1.25;
+}
+.iso-grip.is-end { fill: var(--iso-select); stroke: #fff; stroke-width: 1; }
+.iso-route-anchor circle { fill: none; stroke: var(--iso-select); stroke-width: 1.25; }
+.iso-route-anchor path { fill: none; stroke: var(--iso-select); stroke-width: 1; }
 .iso-anchor {
-  fill: #069fba;
+  fill: var(--iso-select);
   stroke: white;
-  stroke-width: 2;
+  stroke-width: 1.5;
 }
 .iso-route-preview {
-  stroke: #008db5;
+  stroke: var(--iso-select);
   stroke-width: 2;
   stroke-dasharray: 6 4;
 }
 .iso-route-label {
-  fill: #008db5;
-  font-size: 13px;
+  fill: var(--iso-select);
+  paint-order: stroke;
+  stroke: color-mix(in srgb, var(--iso-canvas) 85%, transparent);
+  stroke-width: 3px;
+  font-family: inherit;
 }
-.iso-paper-input {
-  font-family: Arial, sans-serif !important;
+.iso-editor .iso-paper-input {
+  font-family: Arial, sans-serif;
   height: 100%;
   width: 100%;
   background: transparent;
@@ -505,11 +531,11 @@
   outline: none;
 }
 .iso-paper-input:hover {
-  border-color: #1594b540;
-  background: #1594b507;
+  border-color: color-mix(in srgb, var(--iso-select) 25%, transparent);
+  background: color-mix(in srgb, var(--iso-select) 3%, transparent);
 }
 .iso-paper-input:focus {
-  border-color: #1594b5;
+  border-color: var(--iso-select);
   background: #f4fbff;
 }
 .iso-onboarding-title {
@@ -544,7 +570,7 @@
 }
 .iso-segment .active {
   color: #0a8baa;
-  background: #1594b512;
+  background: color-mix(in srgb, var(--iso-select) 7%, transparent);
 }
 .iso-view-controls > select {
   height: 29px;
@@ -585,7 +611,7 @@
 }
 .iso-bottom-controls .active {
   color: #0a8baa;
-  background: #1594b512;
+  background: color-mix(in srgb, var(--iso-select) 7%, transparent);
 }
 .iso-bottom-controls input {
   width: 45px;
@@ -620,45 +646,10 @@
   gap: 12px;
   background: rgb(var(--ch-surface));
 }
-.iso-inspector-heading {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  padding-bottom: 10px;
-  border-bottom: 1px solid rgb(var(--ch-border));
-  font-size: 11px;
-}
 .iso-help {
   font-size: 10px;
   line-height: 1.65;
   opacity: 0.45;
-}
-.iso-property-summary {
-  display: flex;
-  gap: 8px;
-  padding: 9px;
-  border: 1px solid rgb(var(--ch-border));
-  border-radius: 6px;
-}
-.iso-property-summary span {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  font-size: 9px;
-  flex: 1;
-}
-.iso-property-summary strong {
-  font-size: 12px;
-}
-.iso-connection {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  border-top: 1px solid rgb(var(--ch-border));
-  padding-top: 12px;
-}
-.iso-connection > strong {
-  font-size: 10px;
 }
 .iso-check {
   display: flex;
@@ -666,42 +657,10 @@
   gap: 7px;
   font-size: 11px;
 }
-.iso-primary {
-  background: #0b93ae !important;
-  color: #fff !important;
-  font-size: 11px !important;
-}
-.iso-offset summary {
-  cursor: pointer;
+.iso-editor button.iso-primary {
+  background: var(--iso-accent);
+  color: #fff;
   font-size: 11px;
-  padding: 8px 0;
-}
-.iso-offset form {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.iso-validation {
-  margin-top: auto;
-  border-radius: 7px;
-  padding: 10px;
-  border: 1px solid #e6b54330;
-  background: #e6b54307;
-  font-size: 10px;
-  line-height: 1.5;
-}
-.iso-validation.valid {
-  color: #198562;
-  border-color: #19856222;
-  background: #19856207;
-}
-.iso-validation.empty {
-  border-color: rgb(var(--ch-border));
-  background: transparent;
-  opacity: 0.7;
-}
-.iso-validation p {
-  margin-top: 6px;
 }
 .iso-status {
   height: 25px;
@@ -771,7 +730,7 @@
   border-bottom: 1px solid rgb(var(--ch-border));
 }
 .iso-schedules tbody tr:hover {
-  background: #1594b508;
+  background: color-mix(in srgb, var(--iso-select) 3%, transparent);
 }
 .iso-schedules input,
 .iso-schedules select {
@@ -938,45 +897,6 @@
 .iso-glyph text {
   fill: currentColor;
   font-weight: 600;
-}
-
-/* ─── Inspector: component insertion ─── */
-.iso-inspector-section {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  border-top: 1px solid rgb(var(--ch-border));
-  padding-top: 12px;
-}
-.iso-inspector-section > strong {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  opacity: 0.6;
-}
-.iso-node-title {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px;
-  border: 1px solid rgb(var(--ch-border));
-  border-radius: 8px;
-  background: color-mix(in srgb, #1c9bbd 5%, transparent);
-}
-.iso-node-title span {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  font-weight: 600;
-  min-width: 0;
-}
-.iso-node-title small {
-  font-weight: 400;
-  opacity: 0.55;
-  font-size: 10px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .iso-palette {
   display: flex;
@@ -1206,6 +1126,11 @@
   font-weight: 400;
   opacity: 0.5;
 }
+.iso-specs-detail .iso-specs-note {
+  margin: -8px 0 12px;
+  font-size: 11px;
+  opacity: 0.65;
+}
 .iso-specs-detail h3 {
   font-size: 12px;
   font-weight: 600;
@@ -1262,18 +1187,18 @@
   min-width: 120px;
 }
 .iso-specs-detail tr.missing td:nth-last-child(n + 3) input::placeholder {
-  color: #c2410c;
+  color: var(--iso-label-select);
   opacity: 1;
 }
 .iso-specs-detail tbody tr:hover {
-  background: #1594b508;
+  background: color-mix(in srgb, var(--iso-select) 3%, transparent);
 }
 .iso-row-actions {
   white-space: nowrap;
 }
-.iso-specs-addrow {
+.iso-editor .iso-specs-addrow {
   margin-top: 10px;
-  border: 1px dashed rgb(var(--ch-border)) !important;
+  border: 1px dashed rgb(var(--ch-border));
 }
 .iso-specs-inline {
   display: flex;
@@ -1364,7 +1289,7 @@
 .iso-library-card em {
   font-style: normal;
   font-size: 9.5px;
-  color: #0b93ae;
+  color: var(--iso-accent);
 }
 .iso-library-insert {
   margin-top: 2px;
@@ -1379,6 +1304,54 @@
   opacity: 0.45;
 }
 
+/* A laptop-width window keeps every ribbon group in view: narrower fields and gaps, then direction icons only
+   (each keeps its name as its label and tooltip). */
+@container iso (max-width: 1520px) {
+  .iso-ribbon {
+    gap: 8px;
+  }
+  .iso-ribbon-group {
+    padding-right: 8px;
+  }
+  .iso-ribbon-controls .iso-field:first-child select {
+    width: 124px;
+  }
+  .iso-ribbon-controls .iso-field input {
+    width: 80px;
+  }
+  .iso-ribbon-controls select[aria-label="Active spool"],
+  .iso-ribbon-controls input[aria-label="Active spool"] {
+    width: 84px;
+  }
+  .iso-editor .iso-axis-buttons button {
+    min-width: 50px;
+    padding: 4px 5px;
+  }
+}
+@container iso (max-width: 1380px) {
+  .iso-editor .iso-axis-buttons button {
+    min-width: 30px;
+    font-size: 0;
+    gap: 0;
+  }
+  .iso-editor .iso-tool {
+    min-width: 40px;
+    padding: 5px 3px;
+  }
+  .iso-ribbon {
+    gap: 6px;
+  }
+  .iso-ribbon-group {
+    padding-right: 6px;
+  }
+  .iso-ribbon-controls {
+    gap: 5px;
+  }
+  .iso-ribbon-controls .iso-field:first-child select {
+    width: 112px;
+  }
+}
+
 /* Compact ribbon when the editor shares the page with a file tree. */
 @container iso (max-width: 1180px) {
   .iso-ribbon {
@@ -1391,16 +1364,16 @@
   .iso-ribbon-group small {
     display: none;
   }
-  .iso-tool {
+  .iso-editor .iso-tool {
     height: 40px;
-    min-width: 36px !important;
+    min-width: 36px;
   }
   .iso-tool span {
     display: none;
   }
-  .iso-axis-buttons button {
-    font-size: 0 !important;
-    gap: 0 !important;
+  .iso-editor .iso-axis-buttons button {
+    font-size: 0;
+    gap: 0;
   }
   .iso-inspector {
     width: 240px;
@@ -1421,11 +1394,11 @@
 }
 .iso-sheet:not(.model-space) .iso-primitive.selected,
 .iso-sheet:not(.model-space) .iso-cad-text.selected {
-  stroke: #008dbc;
+  stroke: var(--iso-select);
 }
 .iso-sheet:not(.model-space) .iso-text.selected,
 .iso-sheet:not(.model-space) .iso-fill.selected {
-  fill: #008dbc;
+  fill: var(--iso-select);
 }
 .iso-title-hotspot {
   cursor: pointer;
@@ -1512,7 +1485,7 @@
 .iso-sheet-settings input:not([type]):focus,
 .iso-sheet-settings textarea:focus,
 .iso-sheet-settings .iso-field select:focus {
-  border-color: #0b93ae;
+  border-color: var(--iso-accent);
 }
 .iso-sheet-settings input::placeholder,
 .iso-sheet-settings textarea::placeholder {
@@ -1539,8 +1512,8 @@
   border-radius: 6px;
 }
 .iso-sheet-card.current {
-  border-color: #0b93ae66;
-  background: color-mix(in srgb, #0b93ae 5%, transparent);
+  border-color: color-mix(in srgb, var(--iso-accent) 40%, transparent);
+  background: color-mix(in srgb, var(--iso-accent) 5%, transparent);
 }
 .iso-sheet-card-head {
   display: flex;
@@ -1560,7 +1533,7 @@
   opacity: 0.5;
 }
 .iso-sheet-card.current .iso-sheet-card-head small {
-  color: #0b93ae;
+  color: var(--iso-accent);
   opacity: 1;
 }
 .iso-sheet-card-head .iso-sheet-remove {
@@ -1654,4 +1627,207 @@
   margin-left: 6px;
   font-weight: 400;
   opacity: 0.7;
+}
+
+/* Selection first: comfortable primary fields, with complete secondary controls in disclosures. */
+.iso-inspector {
+  width: 320px;
+  min-width: 280px;
+  padding: 0;
+  gap: 0;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.iso-property-section-body { display: flex; flex-direction: column; gap: 12px; padding: 0 12px 14px; }
+.iso-inspector .iso-field { min-width: 0; gap: 6px; }
+.iso-inspector .iso-field > span { font-size: 11px; line-height: 1.4; }
+.iso-inspector .iso-field input, .iso-inspector .iso-field select, .iso-inspector .iso-field textarea { min-height: 34px; font-size: 12px; }
+.iso-inspector .iso-help { font-size: 11px; line-height: 1.5; opacity: .7; }
+.iso-inspector .iso-check { align-items: flex-start; font-size: 11px; line-height: 1.5; }
+.iso-inspector .iso-check input { margin-top: 2px; flex-shrink: 0; }
+.iso-property-section-body > details { border-top: 1px solid rgb(var(--ch-border)); padding-top: 10px; }
+.iso-property-section-body > details[open] > summary { margin-bottom: 12px; }
+.iso-inspector details > summary { cursor: pointer; }
+.iso-edit-menu {
+  position: fixed;
+  z-index: 10000;
+  width: 248px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100dvh - 16px);
+  overflow-y: auto;
+  border: 1px solid rgb(var(--ch-border));
+  border-radius: 10px;
+  padding: 6px;
+  color: rgb(var(--ch-fg));
+  background: rgb(var(--ch-surface));
+  box-shadow: 0 10px 32px #0003;
+}
+.iso-edit-menu-title { padding: 7px 9px 9px; font-size: 11px; font-weight: 600; opacity: .65; }
+.iso-editor .iso-edit-menu button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 12px;
+  border-radius: 5px;
+  padding: 9px;
+  text-align: left;
+  font-size: 12px;
+}
+.iso-editor .iso-edit-menu button:hover, .iso-editor .iso-edit-menu button:focus-visible { background: color-mix(in srgb, var(--iso-select) 10%, transparent); outline: 2px solid var(--iso-select); outline-offset: -2px; }
+.iso-edit-menu button:disabled { opacity: .35; }
+.iso-edit-menu .danger { color: #cd3648; }
+.iso-editor .iso-edit-menu button:not(.danger) + button.danger { margin-top: 5px; box-shadow: 0 -1px 0 color-mix(in srgb, currentColor 14%, transparent); border-top-left-radius: 0; border-top-right-radius: 0; }
+.iso-editor .iso-edit-menu button.danger:hover, .iso-editor .iso-edit-menu button.danger:focus-visible { background: color-mix(in srgb, #cd3648 10%, transparent); outline-color: #cd3648; }
+.iso-edit-menu kbd { font: inherit; font-size: 10px; opacity: .6; white-space: nowrap; }
+@container iso (max-width: 1180px) {
+  .iso-inspector { width: 290px; min-width: 260px; }
+}
+@media (max-width: 720px) {
+  .iso-inspector { width: 250px; min-width: 220px; }
+}
+.iso-inspector .iso-field > span { text-transform: none; }
+.iso-editor .iso-properties-toggle { margin-left: auto; padding: 6px 9px; border: 1px solid rgb(var(--ch-border)); background: rgb(var(--ch-surface)); font-size: 11px; }
+.iso-inspector.is-hidden { display: none; }
+.iso-inspector-resize { width: 5px; flex-shrink: 0; cursor: col-resize; touch-action: none; background: rgb(var(--ch-border)); opacity: .3; }
+.iso-inspector-resize:hover, .iso-inspector-resize:focus-visible { background: var(--iso-select); opacity: 1; outline: 0; }
+.iso-sheet:not(.model-space) .iso-text.iso-layer-bom { font-weight: 400; }
+.iso-sheet:not(.model-space) .iso-grid-line { stroke: #e1ebf3; stroke-width: .45; }
+.iso-sheet:not(.model-space) .iso-grid-line.major { stroke: #c9dce9; stroke-width: .65; }
+/* Paper labels picked and moved on their own with the Select tool; editor chrome only, never exported. */
+.iso-label-hit { fill: transparent; stroke: none; pointer-events: all; cursor: move; }
+.iso-label-overlay:not(.active) .iso-label-hit { pointer-events: none; }
+.iso-sheet.labels-editable [data-label] { cursor: move; }
+.iso-label-hover { fill: color-mix(in srgb, var(--iso-label-select) 4%, transparent); stroke: var(--iso-label-select); stroke-width: .6; stroke-dasharray: 2.5 1.8; vector-effect: non-scaling-stroke; }
+.iso-label-outline { fill: color-mix(in srgb, var(--iso-label-select) 6%, transparent); stroke: var(--iso-label-select); stroke-width: 1.2; stroke-dasharray: 4 2; vector-effect: non-scaling-stroke; }
+.iso-label-parent { fill: none; stroke: var(--iso-label-select); stroke-width: .7; stroke-dasharray: 1.5 2.5; opacity: .6; vector-effect: non-scaling-stroke; }
+.iso-label-grip { fill: var(--iso-label-select); stroke: #fff; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.iso-label-bend { fill: #fff; stroke: var(--iso-label-select); stroke-width: 1.4; cursor: crosshair; pointer-events: all; vector-effect: non-scaling-stroke; }
+.iso-label-bend.held { fill: var(--iso-label-select); stroke: #fff; }
+.iso-label-overlap { fill: none; stroke: #d92d20; stroke-width: .8; stroke-dasharray: 1.5 1.5; opacity: .75; vector-effect: non-scaling-stroke; }
+.iso-label-rubber { fill: none; stroke: var(--iso-label-select); stroke-width: .9; stroke-dasharray: 3 2; vector-effect: non-scaling-stroke; }
+.iso-sheet .iso-label-ghost :is(.iso-primitive, .iso-cad-text) { stroke: var(--iso-label-select); }
+.iso-sheet .iso-label-ghost :is(.iso-text, .iso-fill) { fill: var(--iso-label-select); }
+.iso-label-ghost { opacity: .85; }
+.iso-sheet .iso-primitive.label-selected, .iso-sheet .iso-cad-text.label-selected { stroke: var(--iso-label-select); }
+.iso-sheet .iso-text.label-selected, .iso-sheet .iso-fill.label-selected { fill: var(--iso-label-select); }
+.iso-label-displaced { fill: none; stroke: #8a6d3b; stroke-width: .6; stroke-dasharray: 1 2.2; opacity: .55; vector-effect: non-scaling-stroke; }
+
+/* Sheet ink as the editor draws it. Filled shapes take their stroke colour; CAD lettering strokes in the colour the
+   sans lettering fills with. */
+.iso-fill { fill: var(--iso-sheet-ink); }
+.iso-fill.iso-layer-dim { fill: #8ea4b4; }
+.iso-fill.iso-layer-weld { fill: #0c6880; }
+.iso-fill.iso-layer-bom { fill: #607180; }
+.model-space .iso-fill { fill: var(--iso-ink); }
+.dark .model-space .iso-fill.iso-layer-bom { fill: #9bb6ca; }
+.iso-cad-text { fill: none; stroke: var(--iso-sheet-ink); stroke-linecap: round; stroke-linejoin: round; }
+.iso-cad-text.iso-layer-dim { stroke: #31404c; }
+.iso-cad-text.iso-layer-text { stroke: #6d7a86; }
+.iso-cad-text.iso-layer-weld { stroke: #0c6880; }
+.iso-cad-text.iso-layer-bom { stroke: #1c2b38; }
+.model-space .iso-cad-text { stroke: var(--iso-ink); }
+.dark .model-space .iso-cad-text.iso-layer-weld { stroke: #63c9e5; }
+.iso-fill.selected { fill: var(--iso-select); }
+.iso-cad-text.selected { stroke: var(--iso-select); }
+.iso-primitive.label-selected, .iso-cad-text.label-selected { stroke: var(--iso-label-select); }
+.iso-text.label-selected, .iso-fill.label-selected { fill: var(--iso-label-select); }
+
+/* ─── Specification manager: inspector-kit inputs ─── */
+.iso-specs { --insp-muted: color-mix(in srgb, rgb(var(--ch-fg)) 58%, transparent); }
+/* The kit wraps unit inputs in a span; it is a control, not the field's caption. */
+/* In a stacked field the input keeps its own height (a neighbour's hint must not stretch it), so the unit stays inside. */
+.iso-field > .insp-input-unit { flex: 0 0 auto; font-size: inherit; opacity: 1; text-transform: none; }
+.iso-specs .insp-input-unit:has(.insp-unit) input { padding-right: 40px; }
+.iso-specs-detail td .insp-input-unit:has(.insp-unit) input { min-width: 92px; }
+.iso-specs-detail td .insp-unit { font-size: 10px; }
+.iso-specs-error { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 4px; }
+.iso-specs-library .iso-specs-error p { opacity: 1; padding: 0; color: #b9493a; }
+/* The Design group reuses the inspector's section and rows inside the page, not as a side panel. */
+.iso-editor .insp.iso-specs-design {
+  width: auto;
+  min-width: 0;
+  max-width: 620px;
+  margin-top: 22px;
+  overflow: visible;
+  scrollbar-gutter: auto;
+  border: 1px solid rgb(var(--ch-border));
+  border-radius: 8px;
+}
+.iso-specs-design .insp-section:last-child { border-bottom: 0; }
+.iso-field-hint { font-size: 10px; line-height: 1.4; opacity: 0.55; }
+
+/* Editing overlays: selection boxes, snaps, previews and grips, all drawn at screen size. */
+.iso-grid-mask { fill: #fff; }
+.iso-select-box { fill: color-mix(in srgb, var(--iso-select) 8%, transparent); stroke: var(--iso-select); stroke-width: 1; }
+.iso-select-box.is-crossing { fill: color-mix(in srgb, #2e9d4f 8%, transparent); stroke: #2e9d4f; stroke-dasharray: 5 3; }
+.iso-select-box.is-zoom { fill: none; stroke: var(--iso-ink); stroke-dasharray: 3 3; }
+.iso-snap-marker :is(path, circle) { fill: none; stroke: #e0a100; stroke-width: 2; }
+.iso-drag-preview line, .iso-measure line { stroke: var(--iso-select); stroke-width: 1.25; stroke-dasharray: 6 4; }
+.iso-route-preview { stroke: var(--iso-select); stroke-width: 2; stroke-dasharray: 6 4; }
+.iso-grip.is-vertex { fill: var(--iso-select); stroke: #fff; stroke-width: 1; cursor: move; }
+.iso-grip.is-add { fill: #fff; stroke: var(--iso-select); stroke-width: 1; stroke-dasharray: 2 1; cursor: copy; }
+.iso-path-line, .iso-path-rubber { fill: none; stroke: var(--iso-select); stroke-width: 1; stroke-dasharray: 3 3; }
+.iso-path-rubber { stroke-width: 1.5; }
+.iso-onboarding { opacity: .9; }
+
+/* The command line, under the drawing. */
+.iso-command-bar { display: flex; flex-direction: column; gap: 3px; padding: 5px 12px 6px; border-top: 1px solid rgb(var(--ch-border)); background: rgb(var(--ch-surface)); font-size: 11.5px; }
+.iso-command-prompt { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 20px; color: color-mix(in srgb, rgb(var(--ch-fg)) 82%, transparent); }
+.iso-command-prompt > span:first-of-type { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+.iso-editor .iso-command-option { min-width: 0; padding: 1px 7px; border: 1px solid rgb(var(--ch-border)); border-radius: 4px; font-size: 11px; }
+.iso-command-option kbd, .iso-shortcuts kbd, .iso-edit-menu kbd { font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; opacity: .7; }
+.iso-command-message { margin-left: auto; color: var(--iso-select); }
+.iso-command-message.is-error { color: #b9493a; }
+.iso-command-input { height: 26px; padding: 0 8px; border: 1px solid rgb(var(--ch-border)); border-radius: 5px; background: rgb(var(--ch-bg, var(--ch-surface))); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: inherit; }
+.iso-command-input:focus { outline: 2px solid var(--iso-select); outline-offset: -1px; }
+
+/* The status bar: counts, cursor, drafting aids and checks. */
+.iso-editor .iso-status { font-size: 11px; opacity: 1; color: color-mix(in srgb, rgb(var(--ch-fg)) 75%, transparent); height: 30px; min-height: 30px; }
+.iso-cursor-readout { flex: 1; justify-content: center; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; white-space: nowrap; overflow: hidden; }
+.iso-drafting { gap: 3px; }
+.iso-editor .iso-aid { min-width: 0; height: 22px; padding: 0 7px; gap: 4px; border-radius: 4px; font-size: 10.5px; font-weight: 600; letter-spacing: .03em; color: color-mix(in srgb, rgb(var(--ch-fg)) 55%, transparent); }
+.iso-editor .iso-aid.active { color: var(--iso-select); background: color-mix(in srgb, var(--iso-select) 12%, transparent); }
+.iso-drafting select { height: 22px; font-size: 10.5px; border: 1px solid rgb(var(--ch-border)); border-radius: 4px; background: transparent; color: inherit; }
+.iso-drafting-block { gap: 4px; }
+.iso-drafting-block input { width: 70px; height: 22px; padding: 0 5px; font-size: 10.5px; border: 1px solid rgb(var(--ch-border)); border-radius: 4px; background: transparent; color: inherit; }
+.iso-drafting-more { position: relative; }
+.iso-drafting-panel { position: absolute; bottom: 30px; right: 0; z-index: 20; width: 300px; padding: 12px; border: 1px solid rgb(var(--ch-border)); border-radius: 8px; background: rgb(var(--ch-surface)); box-shadow: 0 12px 28px #10203033; display: flex; flex-direction: column; gap: 4px; }
+.iso-save-status.unsaved { color: #a86b00; }
+
+/* Dialogs: confirmations, import warnings and the shortcut reference. */
+.iso-dialog { position: fixed; inset: 0; margin: auto; height: fit-content; max-width: min(560px, 92vw); padding: 0; border: 1px solid rgb(var(--ch-border)); border-radius: 10px; background: rgb(var(--ch-surface)); color: rgb(var(--ch-fg)); box-shadow: 0 24px 60px #10203044; font-size: 12.5px; }
+.iso-dialog::backdrop { background: #0b141f66; }
+.iso-dialog > header { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px 6px; font-size: 14px; }
+.iso-dialog-body { padding: 4px 18px 12px; line-height: 1.5; max-height: 60vh; overflow: auto; }
+.iso-dialog-list { margin: 6px 0; padding-left: 18px; }
+.iso-dialog > footer { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 18px 14px; }
+.iso-dialog > footer button { padding: 6px 14px; border: 1px solid rgb(var(--ch-border)); border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
+.iso-dialog > footer .iso-primary { border-color: transparent; background: var(--iso-accent); color: #fff; }
+.iso-dialog > footer .is-danger { border-color: transparent; background: #c8364a; color: #fff; }
+.iso-dialog > footer .iso-dialog-alt { margin-right: auto; }
+.iso-shortcuts { width: min(760px, 94vw); max-width: none; }
+.iso-shortcuts-body { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 4px 24px; padding: 4px 18px 18px; max-height: 70vh; overflow: auto; }
+.iso-shortcuts h3 { margin: 12px 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; opacity: .65; }
+.iso-shortcuts dl { margin: 0; }
+.iso-shortcuts dl > div { display: grid; grid-template-columns: 150px 1fr; gap: 10px; padding: 3px 0; }
+.iso-shortcuts dt kbd { opacity: 1; padding: 1px 5px; border: 1px solid rgb(var(--ch-border)); border-radius: 4px; }
+.iso-shortcuts dd { margin: 0; }
+
+/* Inspector extras. */
+.insp-badge { display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: 999px; background: #a86b0018; color: #a86b00; font-size: 11px; font-weight: 600; }
+
+/* Dark theme: the accent and status colours chosen for light chrome are lifted so active tools, tabs and the check
+   status read at small sizes on the dark surfaces (WCAG AA). The paper stays white, so drawing colours are untouched. */
+.dark .iso-ribbon-tabs > button.active,
+.dark .iso-tool.active,
+.dark .iso-segment .active,
+.dark .iso-editor .iso-aid.active {
+  color: #5cc8ea;
+}
+.dark .iso-editor .valid {
+  color: #45cf98;
+}
+.dark .iso-editor .error {
+  color: #f08a80;
 }

@@ -2,8 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { appendRun, applyComponent, attachComponent, getNode, newIso, parseIsoJson, type IsoDocument } from '../src/core/model.ts';
 import { createDrawing, type Primitive } from '../src/core/drawing.ts';
-import { CAD_STROKE_WIDTH, measureText, strokeText } from '../src/core/stroke-font.ts';
+import { cadStrokeWidth, measureText, strokeText } from '../src/core/stroke-font.ts';
 import { discValve, insulationWords, operatorDirection } from '../src/core/iso/symbols.ts';
+import { draftingSizes, nodeBore } from '../src/core/iso/context.ts';
+import { discGeometry, flangedGeometry, reducerGeometry } from '../src/core/iso/valve-conventions.ts';
 
 type Text = Extract<Primitive, { type: 'text' }>;
 type Poly = Extract<Primitive, { type: 'polyline' }>;
@@ -73,10 +75,10 @@ test('equipment outlines and labels honor held paper positions without moving pl
   equipment.equipmentShape = 'pump';
   equipment.tag = 'P-DEMO';
   const plant = [...equipment.position];
-  doc.sheets = { S1: { nodePositions: { [equipment.id]: [500, 400] }, labelPositions: { [`equipment:${equipment.id}`]: [500, 450] } } };
+  doc.sheets = { S1: { nodePositions: { [equipment.id]: [500, 400] }, labelPositions: { [`equipment:${equipment.id}`]: [500, 360] } } };
   const first = owned(draw(doc), equipment.id);
   const label = texts(first).find(t => t.text === 'P-DEMO')!;
-  assert.deepEqual(label.label?.at, [500, 450]);
+  assert.deepEqual(label.label?.at, [500, 360]);
   assert.ok(first.some(p => p.type === 'line' && Math.abs(p.a[0] - 500) < 26 && Math.abs(p.a[1] - 400) < 26));
   equipment.equipmentShape = 'vessel';
   assert.notDeepEqual(owned(draw(doc), equipment.id).filter(p => p.type === 'line'), first.filter(p => p.type === 'line'));
@@ -84,15 +86,20 @@ test('equipment outlines and labels honor held paper positions without moving pl
   assert.equal(parseIsoJson(JSON.stringify(doc)).nodes.find(n => n.id === equipment.id)!.equipmentShape, 'vessel');
 });
 
-test('a butterfly symbol can follow an issued drafting convention independently of its actuator description', () => {
+test('a butterfly symbol is the drafter\'s choice, never read from its description; older drawings are migrated once', () => {
   const doc = sheet(), { mid } = straight(doc);
   applyComponent(doc, mid, 'BFLY-LUG');
   mid.description = 'ACTUATED BUTTERFLY VALVE';
-  assert.equal(discValve(doc, mid), false);
+  assert.equal(discValve(doc, mid), true);
+  const legacy = JSON.parse(JSON.stringify(doc)); delete legacy.draftingRules;
+  const migrated = parseIsoJson(JSON.stringify(legacy)).nodes.find(n => n.id === mid.id)!;
+  assert.deepEqual([migrated.valveSymbol, migrated.valveOperator], ['bowtie', 'actuator']);
+  delete mid.description;
   const before = JSON.stringify(doc.runs);
   mid.valveSymbol = 'disc';
   assert.equal(discValve(doc, mid), true);
-  assert.ok(symbols(owned(draw(doc), mid.id)).some(p => p.closed && p.fill && p.points.length === 20));
+  // Its disc stands open between the faces, an outline on the pipe's centreline.
+  assert.ok(symbols(owned(draw(doc), mid.id)).some(p => p.closed && !p.fill && p.points.length === 24));
   assert.equal(parseIsoJson(JSON.stringify(doc)).nodes.find(n => n.id === mid.id)!.valveSymbol, 'disc');
   mid.valveSymbol = 'bowtie';
   assert.equal(discValve(doc, mid), false);
@@ -138,7 +145,7 @@ test('socket welds show their socket, screwed joints a tick, and nipples, coupli
   const a=centre(box.points[0],box.points[3]),b=centre(box.points[1],box.points[2]);
   assert.ok(union.some(q=>q.type==='line'&&Math.hypot(q.a[0]-a[0],q.a[1]-a[1])<1e-6&&Math.hypot(q.b[0]-b[0],q.b[1]-b[1])<1e-6),'the union centre stroke runs along the pipe between its end faces');
   // A tick across each pipe where it screws into the union.
-  assert.equal(union.filter(q => q.type === 'line' && q.weight === CAD_STROKE_WIDTH).length, 2);
+  assert.equal(union.filter(q => q.type === 'line' && q.weight === cadStrokeWidth('tabloid')).length, 2);
 });
 
 test('sockolets are a body on the header; U-bolts a cross and rod; flow arrows and AR filled; open ends get no break', () => {
@@ -148,7 +155,7 @@ test('sockolets are a body on the header; U-bolts a cross and rod; flow arrows a
   appendRun(doc, olet.id, [0, 0, inch(6)], 'CS40', 0.75, 'S1', 'L1', 'SW');
   const ubolt = attachComponent(doc, doc.runs[1].id, 'support', 0.3); ubolt.component = 'U-BOLT';
   const arrow = attachComponent(doc, doc.runs[1].id, 'annotation', 0.7); arrow.component = 'AR';
-  end.continuation = { text: 'OPEN END' };
+  end.continuation = { text: 'OPEN END', termination: 'open' };
   const p = draw(doc);
   assert.ok(polys(owned(p, olet.id)).some(q => q.closed && q.points.length === 6));
   assert.equal(owned(p, ubolt.id).filter(q => q.type === 'line').length, 3);
@@ -167,7 +174,7 @@ test('insulation is lettered on its cylinder, its limit reads INSUL. and NONE, a
   assert.deepEqual(texts(owned(p, ins.id)).map(t => t.text), ['1.5"']);
   assert.equal(owned(p, ins.id).some(q => q.layer === 'LEADER'), false);
   assert.ok(polys(owned(p,ins.id)).some(q=>q.points.length===17));
-  const lettering=texts(owned(p,ins.id))[0];assert.ok(lettering.size<4);
+  const lettering=texts(owned(p,ins.id))[0];assert.ok(lettering.size<draftingSizes(doc).text);
   doc.sheets={S1:{labelPositions:{[`insulation:${ins.id}`]:[300,200]}}};
   assert.deepEqual(texts(owned(draw(doc),ins.id))[0].label?.at,[300,200]);
   assert.deepEqual(texts(owned(p, limit.id)).map(t => t.text), ['INSUL.', 'NONE']);
@@ -251,7 +258,7 @@ test('size labels follow a size change along a straight and stand with the item 
   const drawing=createDrawing(doc,'S1'),at=drawing.positions.get(red.id)!,end=drawing.positions.get(doc.runs[1].to)!,u=[end[0]-at[0],end[1]-at[1]],length=Math.hypot(...u);
   const outline=symbols(owned(drawing.primitives,red.id)).find(p=>p.closed&&p.points.length===4)!;
   const stations=outline.points.map(p=>((p[0]-at[0])*u[0]+(p[1]-at[1])*u[1])/length);
-  assert.ok(Math.abs((stations[1]+stations[2])/2-16.6)<.001&&Math.abs((stations[0]+stations[3])/2+16.6)<.001);
+  const half=reducerGeometry(doc,red).halfLength;assert.ok(Math.abs((stations[1]+stations[2])/2-half)<.001&&Math.abs((stations[0]+stations[3])/2+half)<.001);
   const all = texts(drawing.primitives).map(t => t.text);
   assert.ok(all.includes('3" NS') && all.includes('2" NS'));
   assert.ok(all.some(t => t.trim()==='3"X2" NS'), 'the reducer size stands below its separately movable number');
@@ -288,7 +295,10 @@ test('weld numbers sit in balloons on leaders to their welds', () => {
 test('flanged joints carry the gasket hache mark, and the next spool is drawn thin beyond a shared point', () => {
   const doc = sheet(), { mid, end } = straight(doc);
   applyComponent(doc, mid, 'FLG-RFWN');
-  const hache = owned(draw(doc), mid.id).filter(q => q.type === 'line' && q.weight === 0.5);
+  // The hache mark is three short lines across the pipe.
+  const sheet0 = createDrawing(doc, 'S1');
+  // Across a level pipe means upright on the page.
+  const hache = owned(sheet0.primitives, mid.id).filter(q => q.type === 'line' && q.layer === 'SYMBOL' && Math.abs(q.b[0] - q.a[0]) < 1e-6);
   assert.equal(hache.length, 3);
   // The line runs on into spool S2 through a gate valve; S1 draws it thin, untagged, with no break.
   const valve = appendRun(doc, end.id, [inch(24), 0, 0], 'CS40', 2, 'S2', 'L1');
@@ -296,7 +306,7 @@ test('flanged joints carry the gasket hache mark, and the next spool is drawn th
   applyComponent(doc, end, 'FLG-RFWN'); end.continuation = { text: "CONT'D ON\nDWG# X-2" };
   applyComponent(doc, valve, 'GATE-FL');
   const p = draw(doc), ghost = owned(p, valve.id);
-  assert.ok(ghost.length > 0 && ghost.every(q => q.type !== 'text' && (q.type === 'line' || q.type === 'polyline' || q.type === 'circle') && (q.weight ?? 1) <= 0.6));
+  assert.ok(ghost.length > 0 && ghost.every(q => q.type !== 'text' && (q.type === 'line' || q.type === 'polyline' || q.type === 'circle') && (q.weight ?? 1) <= draftingSizes(doc).thin + 1e-9));
   assert.equal(owned(p, end.id).some(q => q.type === 'polyline' && q.points.length === 13), false, 'no S-break where the next spool is drawn');
 });
 
@@ -321,11 +331,12 @@ test('schematic fitting welds retain their block size when a long pipe is compre
     applyComponent(doc,elbow,'W-LR90EL');
     const start=getNode(doc,doc.runs[0].from);
     doc.sheets={S1:{nodePositions:{[start.id]:[200,500],[elbow.id]:[500,400],[end.id]:[500,100]}}};
-    const d=createDrawing(doc,'S1');
+    const d=createDrawing(doc,'S1'),at=d.positions.get(elbow.id)!;
     const circles=owned(d.primitives,elbow.id).filter((p):p is Extract<Primitive,{type:'circle'}>=>p.type==='circle'&&p.layer==='WELD');
     assert.equal(circles.length,2);
-    assert.ok(circles.every(p=>Math.abs(Math.hypot(p.p[0]-500,p.p[1]-400)-nps*7.5)<0.01));
-    assert.ok(circles.every(p=>p.r===(nps===3?2.1:1.55)));
+    const size=draftingSizes(doc),block=nodeBore(doc,elbow)*1.14*size.text;
+    assert.ok(circles.every(p=>Math.abs(Math.hypot(p.p[0]-at[0],p.p[1]-at[1])-block)<0.01));
+    assert.ok(circles.every(p=>p.r===size.weld), 'one shop weld dot size for every bore');
   }
 });
 
@@ -380,11 +391,11 @@ test('line-number lettering can use the plan plane without changing the measured
 
 
 test('a connector into an instrument is thin fitting linework while purchased pipe stays heavy', () => {
-  const d=sheet(),{mid,end}=straight(d,'THD',1);d.runs[1].connector=true;
+  const d=sheet(),{mid}=straight(d,'THD',1);d.runs[1].connector=true;
   applyComponent(d,mid,'BALL-SC');
   const pi=attachComponent(d,d.runs[1].id,'annotation',1);Object.assign(pi,{component:'ISA-BUBBLE',tag:'PI'});
   const marks=draw(d).filter(p=>p.owner===d.runs[1].id);
-  assert.ok(marks.some(p=>p.type==='line'&&p.layer==='SYMBOL'&&p.weight===CAD_STROKE_WIDTH));
+  assert.ok(marks.some(p=>p.type==='line'&&p.layer==='SYMBOL'&&p.weight===cadStrokeWidth('tabloid')));
   assert.ok(!marks.some(p=>p.layer==='PIPE'));
   d.runs[1].connector=false;
   assert.ok(draw(d).some(p=>p.owner===d.runs[1].id&&p.layer==='PIPE'));
@@ -392,7 +403,7 @@ test('a connector into an instrument is thin fitting linework while purchased pi
 
 
 test('an issued instrument bubble may lie in the pipe plane while its tag stays upright', () => {
-  const d=sheet(),{end}=straight(d,'THD',1),pi=attachComponent(d,d.runs[1].id,'annotation',1);
+  const d=sheet();straight(d,'THD',1);const pi=attachComponent(d,d.runs[1].id,'annotation',1);
   Object.assign(pi,{component:'ISA-BUBBLE',tag:'PI',calloutPlane:'pipe'});
   d.sheets={S1:{labelPositions:{[`bubble:${pi.id}`]:[200,300]}}};
   const p=owned(draw(d),pi.id),ring=polys(p).find(p=>p.closed&&p.points.length===36)!;
@@ -411,7 +422,7 @@ test('sloping pipe tags are wider rectangles with lettering normal to their pipe
   assert.equal(Math.round(label.oblique??0),0);
   const edges=box.points.map((p,i)=>[box.points[(i+1)%4][0]-p[0],box.points[(i+1)%4][1]-p[1]]);
   assert.ok(Math.abs(edges[0][0]*edges[1][0]+edges[0][1]*edges[1][1])<1e-6);
-  const lengths=edges.map(p=>Math.hypot(...p));assert.ok(Math.max(...lengths)>11&&Math.min(...lengths)<9);
+  const lengths=edges.map(p=>Math.hypot(...p)),T=draftingSizes(d).text;assert.ok(Math.max(...lengths)>1.5*T&&Math.min(...lengths)<1.3*T);
 });
 
 
@@ -429,12 +440,14 @@ test('the drafter can choose the pipe carrying a line identifier without changin
 
 
 test('disc body planes keep their isometric projection on diagonal level pipes', () => {
-  for (const [nps, direction, halfSpan] of [[3, [1,-1,0], 27.0062492768], [2, [1,1,0], 10.3944696834]] as const) {
+  // A level diagonal is drawn foreshortened or stretched by its isometric projection, the body planes with it.
+  for (const [nps, direction, axial] of [[3, [1,-1,0], Math.sqrt(1.5)], [2, [1,1,0], Math.SQRT1_2]] as const) {
     const doc=sheet(); doc.style={...doc.style!,layout:'schematic'};
     const step=direction.map(v=>v*inch(24)) as [number,number,number];
     const mid=appendRun(doc,null,step,'CS40',nps,'S1','L1');
     appendRun(doc,mid.id,step,'CS40',nps,'S1','L1');
     applyComponent(doc,mid,'BFLY-LUG'); mid.valveSymbol='disc'; mid.valveOperator='none';
+    const halfSpan=discGeometry(doc,mid).body*axial;
     const before=JSON.stringify(doc.runs), drawing=createDrawing(doc,'S1'), centre=drawing.positions.get(mid.id)!;
     const end=drawing.positions.get(doc.runs[1].to)!, dx=end[0]-centre[0],dy=end[1]-centre[1],length=Math.hypot(dx,dy);
     const stations=drawing.primitives.filter(p=>p.type==='line'&&p.owner===mid.id&&p.layer==='SYMBOL')
@@ -462,7 +475,7 @@ test('an inline instrument bubble keeps its drafting diameter for a long equipme
   const doc=sheet(),{mid}=straight(doc);applyComponent(doc,mid,'FLOWMETER-FL');mid.tag='FLOW-DEMO-1234';
   const ring=polys(owned(draw(doc),mid.id)).find(p=>p.layer==='TAG'&&p.closed&&p.points.length===36)!;
   assert.ok(ring);
-  assert.ok(Math.abs(Math.max(...ring.points.map(p=>p[0]))-Math.min(...ring.points.map(p=>p[0]))-37.6)<.001);
+  assert.ok(Math.abs(Math.max(...ring.points.map(p=>p[0]))-Math.min(...ring.points.map(p=>p[0]))-5.7*draftingSizes(doc).text)<.001);
   assert.ok(texts(owned(draw(doc),mid.id)).some(p=>p.text===mid.tag));
   const drawing=createDrawing(doc,'S1'),at=drawing.positions.get(mid.id)!,arrow=polys(owned(drawing.primitives,mid.id)).find(p=>p.layer==='LEADER'&&p.fill)!;
   assert.ok(Math.hypot(arrow.points[0][0]-at[0],arrow.points[0][1]-at[1])>5,'the leader meets the casing edge');
@@ -492,7 +505,8 @@ test('a flanged hose shows its corrugations and only the mating plate supplied o
   const valveDoc=sheet(),{mid:valve}=straight(valveDoc,'BW',3);applyComponent(valveDoc,valve,'BFLY-LUG');valve.valveSymbol='bowtie';
   const d=createDrawing(valveDoc,'S1'),at=d.positions.get(valve.id)!,end=d.positions.get(valveDoc.runs[1].to)!,u=[end[0]-at[0],end[1]-at[1]],len=Math.hypot(...u);
   const centres=symbols(owned(d.primitives,valve.id)).filter(p=>p.closed&&p.points.length===4).map(p=>{const c=p.points.reduce((a,b)=>[a[0]+b[0]/4,a[1]+b[1]/4],[0,0]);return ((c[0]-at[0])*u[0]+(c[1]-at[1])*u[1])/len});
-  assert.ok(centres.some(x=>Math.abs(Math.abs(x)-32.45)<.001));
+  const T=draftingSizes(valveDoc).text,plate=flangedGeometry(valveDoc,valve).plate-(nodeBore(valveDoc,valve)-1)*0.083*T/2;
+  assert.ok(centres.some(x=>Math.abs(Math.abs(x)-plate)<.001));
 });
 
 
@@ -538,7 +552,7 @@ test('a threaded nipple stops at its elbow threads and leaves heavy fitting bodi
   assert.equal(body.length,2);
   for(const p of body)if(p.type==='line'){
     assert.deepEqual(p.a,at);assert.ok(Math.hypot(p.b[0]-p.a[0],p.b[1]-p.a[1])>5);
-    assert.equal(p.weight,CAD_STROKE_WIDTH*3);
+    assert.equal(p.weight,draftingSizes(doc).pipe);
   }
   assert.equal(JSON.stringify(doc.runs),before);
 });

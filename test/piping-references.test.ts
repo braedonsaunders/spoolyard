@@ -61,8 +61,7 @@ test('reference symbols use the adjacent specification without changing the host
   const valve = getNode(source, source.runs[0].to);
   applyComponent(source, valve, 'BFLY-LUG');
   host.references = [drawingReference(host, end.id, source)];
-  const reference = host.references[0];
-  assert.ok(createDrawing(host, 'S1').primitives.some(p => p.type === 'polyline' && p.closed && p.points.length === 20 && p.owner?.endsWith(valve.id)));
+  assert.ok(createDrawing(host, 'S1').primitives.some(p => p.type === 'polyline' && p.closed && p.points.length === 24 && p.owner?.endsWith(valve.id)));
 });
 
 test('a limited reference continues beyond its last component and ends with drafting breaks', () => {

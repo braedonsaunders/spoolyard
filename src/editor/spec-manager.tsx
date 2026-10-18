@@ -1,23 +1,56 @@
 
 import { useEffect, useMemo, useState } from "react";
-import { BookOpen, ChevronDown, Copy, Download, FilePlus2, Loader2, Plus, Search, Trash2, Upload } from "lucide-react";
+import { BookOpen, ChevronDown, Copy, Download, FilePlus2, Loader2, Plus, RotateCcw, Search, Trash2, Upload } from "lucide-react";
 import { cn } from "./cn";
-import { clone, getSpec, lengthInputValue, parseLength, type CatalogItem, type IsoDocument, type PipeSpec } from "../core/model";
+import { clone, DEFAULT_SOCKET_GAP, getSpec, lengthInputValue, type CatalogItem, type IsoDocument, type PipeSpec } from "../core/model";
+import { designValue, type SpecDesign, type SpecDesignField } from "../core/spec-design";
+import { dnOf, npsOfDn, sizeFor, sizeHeader } from "../core/format";
 import { COMPONENT_CATEGORIES, COMPONENT_TYPES, type ComponentType } from "../core/components";
 import { loadLibrarySpec, loadSpecIndex, namespaceSpec, uniqueSpecId, type LibrarySpecSummary } from "./library";
 import { download } from "./download";
 import { ComponentGlyph } from "./component-glyph";
+import { LengthInput, NumberInput, Row, Section, TextInput } from "./inspector/kit";
 
 type Commit = (edit: (d: IsoDocument) => void) => void;
+type Units = IsoDocument["units"];
+
+/** Specifications store metric values (mm, kg, per metre); these show and accept them in the drawing's units. */
+const KG_PER_LB = 0.45359237,
+  M_PER_FT = 0.3048;
+interface Measure {
+  unit: string;
+  decimals: number;
+  show: (metric: number | undefined) => number | undefined;
+  store: (shown: number) => number;
+}
+/** `factor` converts one displayed unit to the stored metric value. */
+const measure = (unit: string, factor: number, decimals: number): Measure => ({
+  unit,
+  decimals,
+  show: (metric) => (metric == null ? undefined : metric / factor),
+  store: (shown) => shown * factor,
+});
+const massOf = (units: Units) => (units === "imperial" ? measure("lb", KG_PER_LB, 3) : measure("kg", 1, 3));
+const linearMassOf = (units: Units) =>
+  units === "imperial" ? measure("lb/ft", KG_PER_LB / M_PER_FT, 3) : measure("kg/m", 1, 3);
+const densityOf = (units: Units) =>
+  units === "imperial" ? measure("lb/ft³", KG_PER_LB / M_PER_FT ** 3, 2) : measure("kg/m³", 1, 1);
+/** A rate per length of pipe (cost, labour hours): per foot is per metre × 0.3048. */
+const perLengthOf = (units: Units, unit: string, decimals: number) =>
+  units === "imperial" ? measure(`${unit}/ft`, 1 / M_PER_FT, decimals) : measure(`${unit}/m`, 1, decimals);
+
 const typeByCode = new Map(COMPONENT_TYPES.map((t) => [t.code, t]));
 const GENERAL = "__general__",
   PIPE = "PIPE";
 
+/** Component types that share a name with another (two swage catalogues, C-SWAGE and C-SWG) are told apart by code. */
+const SHARED_LABELS = new Set(COMPONENT_TYPES.map((t) => t.label).filter((label, i, all) => all.indexOf(label) !== i));
+const typeLabel = (code: string, type = typeByCode.get(code)) =>
+  !type ? code : SHARED_LABELS.has(type.label) ? `${type.label} (${type.code})` : type.label;
 /** The component type behind a catalogue row; rows from older drawings fall back to their geometric kind. */
 export function rowComponent(f: CatalogItem): ComponentType | undefined {
   return (f.component && typeByCode.get(f.component)) || COMPONENT_TYPES.find((t) => t.kind === f.kind);
 }
-const num = (v: string) => (v.trim() === "" ? undefined : Number(v));
 const blankSpec = (doc: IsoDocument): PipeSpec => ({
   id: uniqueSpecId("SPEC", doc),
   name: "New specification",
@@ -52,16 +85,21 @@ export function SpecManager({
   const [component, setComponent] = useState(GENERAL);
   const [query, setQuery] = useState("");
   const [library, setLibrary] = useState<LibrarySpecSummary[] | null>(null);
+  const [libraryError, setLibraryError] = useState(""),
+    [libraryAttempt, setLibraryAttempt] = useState(0);
   const [adding, setAdding] = useState(false),
     [loading, setLoading] = useState("");
   const [picker, setPicker] = useState(false);
   const spec = doc.specs.find((s) => s.id === specId) ?? doc.specs[0];
   useEffect(() => {
-    if (!library)
-      loadSpecIndex()
-        .then(setLibrary)
-        .catch((e) => onError(e.message));
-  }, [library, onError]);
+    let live = true;
+    loadSpecIndex()
+      .then((index) => live && setLibrary(index))
+      .catch((e) => live && setLibraryError(e instanceof Error ? e.message : String(e)));
+    return () => {
+      live = false;
+    };
+  }, [libraryAttempt]);
 
   const groups = useMemo(() => {
     const byCode = new Map<string, CatalogItem[]>();
@@ -76,7 +114,7 @@ export function SpecManager({
         .map(([code, rows]) => ({ type: typeByCode.get(code), code, rows }))
         .filter(({ type }) => (type?.category ?? "specialty") === category.id)
         .filter(({ type, code }) => !q || (type?.label ?? code).toLowerCase().includes(q) || code.toLowerCase().includes(q))
-        .sort((a, b) => (a.type?.label ?? a.code).localeCompare(b.type?.label ?? b.code)),
+        .sort((a, b) => typeLabel(a.code, a.type).localeCompare(typeLabel(b.code, b.type))),
     })).filter((g) => g.items.length);
   }, [spec, query]);
 
@@ -85,6 +123,40 @@ export function SpecManager({
   const rows = spec.fittings.filter((f) => (rowComponent(f)?.code ?? f.kind) === component);
   const type = typeByCode.get(component);
   const inUse = (id: string) => doc.runs.some((r) => r.specId === id);
+  const units = doc.units,
+    size = sizeHeader(doc);
+  const mass = massOf(units),
+    linearMass = linearMassOf(units),
+    perLength = units === "imperial" ? "foot" : "metre";
+  // Accessible names must tell rows apart; rows of one size are numbered.
+  const rowSizes = rows.map((f) => sizeFor(doc, f.nps, f.smallerNps));
+  const rowName = (i: number) =>
+    rowSizes.filter((s) => s === rowSizes[i]).length > 1 ? `${rowSizes[i]} row ${i + 1}` : rowSizes[i];
+  // Sizes are kept as NPS; a drawing in DN notation shows and takes them as DN (DN65, not 2.5). The notation is the
+  // drawing's choice (Project profile), not its units: a metric drawing may well size its pipe in NPS.
+  const sizeTitle = size === "DN"
+    ? "Nominal diameter (DN), this drawing's size notation. Change it under Drawing setup › Project profile › Sizes written as."
+    : "Nominal pipe size in inches (NPS), this drawing's size notation. For DN, choose it under Drawing setup › Project profile › Sizes written as.";
+  const sizeNote = (
+    <p className="iso-specs-note" title={sizeTitle}>
+      Sizes in {size === "DN" ? "DN" : "NPS (inches)"}, as this drawing writes them
+      {units === "mm" && size !== "DN" ? " · for DN, choose it under Drawing setup › Project profile › Sizes written as" : ""}.
+    </p>
+  );
+  const shownSize = (nps: number | undefined) => (nps == null || size !== "DN" ? nps : dnOf(nps) ?? nps);
+  /** What was typed in a size column as NPS; null (after saying why) when a DN has no standard NPS. */
+  const readSize = (v: number | undefined): number | undefined | null => {
+    if (v == null || size !== "DN") return v;
+    const nps = npsOfDn(v);
+    if (nps == null) onError(`DN${v} is not a standard nominal size. Enter a DN such as 15, 50 or 100.`);
+    return nps ?? null;
+  };
+  /** Sizes must be positive; returning false puts the field back. */
+  const positiveSize = (v: number | undefined) => {
+    if (v != null && v > 0) return true;
+    if (v != null) onError("Enter a size greater than zero.");
+    return false;
+  };
 
   const addLibrary = async (slug: string) => {
     setLoading(slug);
@@ -186,7 +258,19 @@ export function SpecManager({
         ))}
         <div className="iso-specs-library">
           <span>Standard library</span>
-          {!library ? (
+          {libraryError ? (
+            <div className="iso-specs-error" role="alert">
+              <p>{libraryError}</p>
+              <button
+                onClick={() => {
+                  setLibraryError("");
+                  setLibraryAttempt((n) => n + 1);
+                }}
+              >
+                <RotateCcw size={13} /> Retry
+              </button>
+            </div>
+          ) : !library ? (
             <p>
               <Loader2 size={12} className="animate-spin" /> Loading…
             </p>
@@ -238,7 +322,7 @@ export function SpecManager({
             {items.map(({ code, type, rows }) => (
               <button key={code} className={cn(component === code && "active")} onClick={() => setComponent(code)}>
                 <ComponentGlyph code={code} />
-                {type?.label ?? code}
+                {typeLabel(code, type)}
                 <small>{rows.length}</small>
               </button>
             ))}
@@ -256,7 +340,7 @@ export function SpecManager({
                   {COMPONENT_TYPES.filter((t) => t.category === c.id).map((t) => (
                     <button key={t.code} onClick={() => addRow(t.code)}>
                       <ComponentGlyph code={t.code} />
-                      {t.label}
+                      {typeLabel(t.code, t)}
                     </button>
                   ))}
                 </div>
@@ -266,7 +350,7 @@ export function SpecManager({
         </div>
       </nav>
 
-      <section className="iso-specs-detail">
+      <section className="iso-specs-detail" key={spec.id}>
         {component === GENERAL ? (
           <>
             <h2>{spec.name.startsWith(spec.id + " ") ? spec.name : `${spec.id} · ${spec.name}`}</h2>
@@ -274,85 +358,105 @@ export function SpecManager({
               {(["name", "material", "service", "rating", "schedule", "revision"] as const).map((k) => (
                 <label key={k} className="iso-field">
                   <span>{k}</span>
-                  <input
-                    aria-label={"Specification " + k}
+                  <TextInput
+                    aria={"Specification " + k}
                     value={spec[k] ?? ""}
-                    onChange={(e) =>
+                    trim
+                    onCommit={(v) => {
+                      if (k === "name" && !v) {
+                        onError("Enter a specification name.");
+                        return false;
+                      }
                       edit((s) => {
-                        s[k] = e.target.value;
+                        s[k] = v;
+                      });
+                    }}
+                  />
+                </label>
+              ))}
+              <label className="iso-field">
+                <span>Butt-weld root gap</span>
+                <LengthInput
+                  aria="Butt-weld root gap"
+                  mm={spec.rootGap}
+                  units={units}
+                  precision="fine"
+                  onError={onError}
+                  onCommit={(v) =>
+                    v != null &&
+                    edit((s) => {
+                      s.rootGap = v;
+                    })
+                  }
+                />
+              </label>
+              {(
+                [
+                  [
+                    "socketGap",
+                    "Socket-weld gap",
+                    lengthInputValue(DEFAULT_SOCKET_GAP, units, "fine"),
+                    'Empty allows 1/16" (1.6 mm) at each socket, with a fabrication warning.',
+                  ],
+                  ["minPipeLength", "Shortest pipe piece", lengthInputValue(50, units), "Empty uses 50 mm."],
+                  [
+                    "minWeldSpacing",
+                    "Least weld spacing",
+                    "1 D, at least 50 mm",
+                    "Empty warns of welds closer than one pipe diameter, and never less than 50 mm.",
+                  ],
+                ] as const
+              ).map(([k, label, placeholder, hint]) => (
+                <label key={k} className="iso-field">
+                  <span>{label}</span>
+                  <LengthInput
+                    aria={label}
+                    mm={spec[k]}
+                    units={units}
+                    precision={k === "socketGap" ? "fine" : "drafting"}
+                    allowEmpty
+                    placeholder={placeholder}
+                    onError={onError}
+                    onCommit={(v) =>
+                      edit((s) => {
+                        // Unset is not zero: the core applies the standard allowance and review flags it.
+                        if (v == null) delete s[k];
+                        else s[k] = v;
                       })
                     }
                   />
+                  <small className="iso-field-hint">{hint}</small>
                 </label>
               ))}
               {(
                 [
-                  ["rootGap", "Butt-weld root gap", "Enter a root gap of zero or more.", 0],
-                  ["socketGap", "Socket-weld gap", "Enter a socket-weld gap of zero or more.", 0],
-                  ["minPipeLength", "Shortest pipe piece", "Enter a shortest piece of zero or more.", 50],
-                  ["minWeldSpacing", "Least weld spacing", "Enter a weld spacing of zero or more.", 50],
+                  ["density", "Density", `Density (${densityOf(units).unit})`, densityOf(units)],
+                  ["pipeCostM", "Pipe cost", `Pipe cost per ${perLength}`, perLengthOf(units, "", 2)],
+                  ["pipeLaborHoursM", "Pipe labour", `Pipe labour hours per ${perLength}`, perLengthOf(units, "h", 4)],
+                  ["weldHoursPerDiameterInch", "Weld hours per diameter-inch", "Weld hours per diameter-inch", measure("h", 1, 4)],
                 ] as const
-              ).map(([k, label, invalid, fallback]) => {
-                const current = spec[k] ?? fallback;
-                return (
-                  <label key={k} className="iso-field">
-                    <span>{label}</span>
-                    <input
-                      aria-label={label}
-                      title={'Feet and inches or millimetres, for example 1/16", 1.6 mm.'}
-                      key={spec.id + ":" + current + ":" + doc.units}
-                      defaultValue={lengthInputValue(current, doc.units)}
-                      onBlur={(e) => {
-                        const raw = e.target.value.trim();
-                        if (!raw) {
-                          e.target.value = lengthInputValue(current, doc.units);
-                          return;
-                        }
-                        try {
-                          const value = parseLength(raw, doc.units);
-                          if (!(value >= 0)) throw new Error(invalid);
-                          if (Math.abs(value - current) > 0.001)
-                            edit((s) => {
-                              s[k] = value;
-                            });
-                        } catch (err) {
-                          e.target.value = lengthInputValue(current, doc.units);
-                          const error = err instanceof Error ? err : new Error(String(err));
-                          edit(() => {
-                            throw error;
-                          });
-                        }
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") e.currentTarget.blur();
-                      }}
-                    />
-                  </label>
-                );
-              })}
-              {(
-                [
-                  ["density", "Density (kg/m³)"],
-                  ["pipeCostM", "Pipe cost per metre"],
-                  ["pipeLaborHoursM", "Pipe labour h/m"],
-                  ["weldHoursPerDiameterInch", "Weld hours per diameter-inch"],
-                ] as const
-              ).map(([k, label]) => (
+              ).map(([k, label, aria, m]) => (
                 <label key={k} className="iso-field">
                   <span>{label}</span>
-                  <input
-                    type="number"
-                    min="0"
-                    value={spec[k]}
-                    onChange={(e) =>
+                  <NumberInput
+                    aria={aria}
+                    value={m.show(spec[k])}
+                    decimals={m.decimals}
+                    suffix={m.unit}
+                    min={0}
+                    required
+                    onError={onError}
+                    onCommit={(v) =>
+                      v != null &&
                       edit((s) => {
-                        s[k] = Number(e.target.value);
+                        s[k] = m.store(v);
                       })
                     }
                   />
                 </label>
               ))}
             </div>
+            <DesignSection spec={spec} units={units} edit={edit} onError={onError} />
             <h3>Parameters</h3>
             <table>
               <thead>
@@ -367,12 +471,12 @@ export function SpecManager({
                   <tr key={key}>
                     <td>{key.replace(/^.*\./, "")}</td>
                     <td>
-                      <input
-                        aria-label={key}
+                      <TextInput
+                        aria={`Value of ${key}`}
                         value={value}
-                        onChange={(e) =>
+                        onCommit={(v) =>
                           edit((s) => {
-                            s.parameters = { ...s.parameters, [key]: e.target.value };
+                            s.parameters = { ...s.parameters, [key]: v };
                           })
                         }
                       />
@@ -432,64 +536,115 @@ export function SpecManager({
         ) : component === PIPE ? (
           <>
             <h2>Pipe · {spec.id}</h2>
+            {sizeNote}
             <table>
               <thead>
                 <tr>
-                  {["NPS", "Schedule", "OD mm", "Wall mm", "kg/m", "Description", "Material", "Shop/field", ""].map(
+                  {[size, "Schedule", "OD", "Wall", "Weight / length", "Description", "Material", "Shop / field", ""].map(
                     (h) => (
-                      <th key={h}>{h}</th>
+                      <th key={h} title={h === size ? sizeTitle : undefined}>{h}</th>
                     ),
                   )}
                 </tr>
               </thead>
               <tbody>
-                {spec.sizes.map((z, i) => (
-                  <tr key={z.nps + "-" + i}>
-                    <td>
-                      <NumberCell
-                        value={z.nps}
-                        label="NPS"
-                        onChange={(v) =>
-                          v &&
-                          !spec.sizes.some((o, j) => j !== i && o.nps === v) &&
-                          edit((s) => {
-                            s.sizes[i].nps = v;
-                          })
-                        }
-                      />
-                    </td>
-                    <td>
-                      <TextCell value={z.schedule} label="Schedule" onChange={(v) => edit((s) => void (s.sizes[i].schedule = v))} />
-                    </td>
-                    {(["od", "wall", "kgM"] as const).map((k) => (
-                      <td key={k}>
-                        <NumberCell
-                          value={z[k]}
-                          label={k}
-                          onChange={(v) => v && edit((s) => void (s.sizes[i][k] = v))}
+                {spec.sizes.map((z, i) => {
+                  const name = sizeFor(doc, z.nps);
+                  return (
+                    <tr key={z.nps + "-" + i}>
+                      <td>
+                        <NumberInput
+                          aria={`${size} for ${name}`}
+                          value={shownSize(z.nps)}
+                          required
+                          onError={onError}
+                          onCommit={(typed) => {
+                            const v = readSize(typed);
+                            if (v === null || !positiveSize(v)) return false;
+                            if (spec.sizes.some((o, j) => j !== i && o.nps === v)) {
+                              onError(`${sizeFor(doc, v!)} is already in this specification.`);
+                              return false;
+                            }
+                            edit((s) => {
+                              s.sizes[i].nps = v!;
+                            });
+                          }}
                         />
                       </td>
-                    ))}
-                    <td>
-                      <TextCell value={z.description} label="Description" onChange={(v) => edit((s) => void (s.sizes[i].description = v))} />
-                    </td>
-                    <td>
-                      <TextCell value={z.material} label="Material" onChange={(v) => edit((s) => void (s.sizes[i].material = v))} />
-                    </td>
-                    <td>
-                      <ShopField value={z.shopField} onChange={(v) => edit((s) => void (s.sizes[i].shopField = v))} />
-                    </td>
-                    <td>
-                      <button
-                        aria-label="Remove size"
-                        disabled={spec.sizes.length < 2 || doc.runs.some((r) => r.specId === spec.id && r.nps === z.nps)}
-                        onClick={() => edit((s) => void s.sizes.splice(i, 1))}
-                      >
-                        <Trash2 size={12} />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                      <td>
+                        <TextInput
+                          aria={`Schedule for ${name}`}
+                          value={z.schedule}
+                          trim
+                          onCommit={(v) => edit((s) => void (s.sizes[i].schedule = v))}
+                        />
+                      </td>
+                      {(
+                        [
+                          ["od", "OD"],
+                          ["wall", "Wall"],
+                        ] as const
+                      ).map(([k, label]) => (
+                        <td key={k}>
+                          <LengthInput
+                            aria={`${label} for ${name}`}
+                            mm={z[k]}
+                            units={units}
+                            precision="fine"
+                            positive
+                            onError={onError}
+                            onCommit={(v) => v != null && edit((s) => void (s.sizes[i][k] = v))}
+                          />
+                        </td>
+                      ))}
+                      <td>
+                        <NumberInput
+                          aria={`Weight per length for ${name}`}
+                          value={linearMass.show(z.kgM)}
+                          decimals={linearMass.decimals}
+                          suffix={linearMass.unit}
+                          min={0}
+                          required
+                          onError={onError}
+                          onCommit={(v) => v != null && edit((s) => void (s.sizes[i].kgM = linearMass.store(v)))}
+                        />
+                      </td>
+                      <td>
+                        <TextInput
+                          aria={`Description for ${name}`}
+                          value={z.description}
+                          trim
+                          onCommit={(v) => edit((s) => void (s.sizes[i].description = v))}
+                        />
+                      </td>
+                      <td>
+                        <TextInput
+                          aria={`Material for ${name}`}
+                          value={z.material}
+                          trim
+                          onCommit={(v) => edit((s) => void (s.sizes[i].material = v))}
+                        />
+                      </td>
+                      <td>
+                        <ShopField
+                          aria={`Shop / field for ${name}`}
+                          value={z.shopField}
+                          onChange={(v) => edit((s) => void (s.sizes[i].shopField = v))}
+                        />
+                      </td>
+                      <td>
+                        <button
+                          aria-label={`Remove ${name}`}
+                          title="Remove size"
+                          disabled={spec.sizes.length < 2 || doc.runs.some((r) => r.specId === spec.id && r.nps === z.nps)}
+                          onClick={() => edit((s) => void s.sizes.splice(i, 1))}
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
             <button
@@ -510,81 +665,93 @@ export function SpecManager({
           <>
             <h2>
               <ComponentGlyph code={component} size={22} />
-              {type?.label ?? component} · {spec.id}
+              {typeLabel(component, type)} · {spec.id}
               <small>{type?.description}</small>
             </h2>
+            {sizeNote}
             <table>
               <thead>
                 <tr>
                   {[
-                    "NPS",
-                    ...(type?.reducing ? ["× NPS"] : []),
+                    size,
+                    ...(type?.reducing ? [`× ${size}`] : []),
                     "Rating",
-                    "Sch",
-                    "S/F",
-                    "Code",
+                    "Schedule",
+                    "Shop / field",
+                    "Part code",
                     "Description",
                     "Material",
                     "Manufacturer",
-                    "Takeout mm",
-                    ...(type?.kind === "tee" || type?.reducing ? ["Branch mm"] : []),
-                    "Weight kg",
+                    "Takeout",
+                    ...(type?.kind === "tee" || type?.reducing ? ["Branch takeout"] : []),
+                    "Weight",
                     "Unit cost",
                     "",
                   ].map((h) => (
-                    <th key={h}>{h}</th>
+                    <th key={h} title={h === size || h === `× ${size}` ? sizeTitle : undefined}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {rows.map((f) => {
+                {rows.map((f, i) => {
                   const set = (change: (row: CatalogItem) => void) =>
                     edit((s) => change(s.fittings.find((x) => x.id === f.id)!));
+                  const name = rowName(i);
+                  const text = (label: string, value: string | undefined, assign: (r: CatalogItem, v: string) => void) => (
+                    <TextInput aria={`${label} for ${name}`} value={value} trim onCommit={(v) => set((r) => assign(r, v))} />
+                  );
                   return (
                     <tr key={f.id} className={cn(f.takeoutMissing && "missing")}>
                       <td>
-                        <NumberCell value={f.nps} label="NPS" onChange={(v) => v && set((r) => void (r.nps = v))} />
+                        <NumberInput
+                          aria={`${size} for ${name}`}
+                          value={shownSize(f.nps)}
+                          required
+                          onError={onError}
+                          onCommit={(typed) => {
+                            const v = readSize(typed);
+                            if (v === null || !positiveSize(v)) return false;
+                            set((r) => void (r.nps = v!));
+                          }}
+                        />
                       </td>
                       {type?.reducing && (
                         <td>
-                          <NumberCell
-                            value={f.smallerNps}
-                            label="Smaller NPS"
-                            onChange={(v) => set((r) => void (r.smallerNps = v))}
+                          <NumberInput
+                            aria={`Smaller ${size} for ${name}`}
+                            value={shownSize(f.smallerNps)}
+                            onError={onError}
+                            onCommit={(typed) => {
+                              const v = readSize(typed);
+                              if (v === null || (v != null && !positiveSize(v))) return false;
+                              set((r) => void (r.smallerNps = v));
+                            }}
                           />
                         </td>
                       )}
+                      <td>{text("Rating", f.rating, (r, v) => void (r.rating = v))}</td>
+                      <td>{text("Schedule", f.schedule, (r, v) => void (r.schedule = v))}</td>
                       <td>
-                        <TextCell value={f.rating} label="Rating" onChange={(v) => set((r) => void (r.rating = v))} />
-                      </td>
-                      <td>
-                        <TextCell value={f.schedule} label="Schedule" onChange={(v) => set((r) => void (r.schedule = v))} />
-                      </td>
-                      <td>
-                        <ShopField value={f.shopField} onChange={(v) => set((r) => void (r.shopField = v))} />
-                      </td>
-                      <td>
-                        <TextCell value={f.partCode} label="Part code" onChange={(v) => set((r) => void (r.partCode = v))} />
-                      </td>
-                      <td className="wide">
-                        <TextCell value={f.description} label="Description" onChange={(v) => set((r) => void (r.description = v))} />
-                      </td>
-                      <td className="mid">
-                        <TextCell value={f.material} label="Material" onChange={(v) => set((r) => void (r.material = v))} />
-                      </td>
-                      <td className="mid">
-                        <TextCell
-                          value={f.manufacturer}
-                          label="Manufacturer"
-                          onChange={(v) => set((r) => void (r.manufacturer = v))}
+                        <ShopField
+                          aria={`Shop / field for ${name}`}
+                          value={f.shopField}
+                          onChange={(v) => set((r) => void (r.shopField = v))}
                         />
                       </td>
+                      <td>{text("Part code", f.partCode, (r, v) => void (r.partCode = v))}</td>
+                      <td className="wide">{text("Description", f.description, (r, v) => void (r.description = v))}</td>
+                      <td className="mid">{text("Material", f.material, (r, v) => void (r.material = v))}</td>
+                      <td className="mid">{text("Manufacturer", f.manufacturer, (r, v) => void (r.manufacturer = v))}</td>
                       <td>
-                        <NumberCell
-                          value={f.takeoutMissing ? undefined : f.takeout}
-                          label="Takeout"
+                        <LengthInput
+                          aria={`Takeout for ${name}`}
+                          mm={f.takeoutMissing ? undefined : f.takeout}
+                          units={units}
+                          precision="fine"
+                          allowEmpty
                           placeholder="—"
-                          onChange={(v) =>
+                          onError={onError}
+                          onCommit={(v) =>
                             set((r) => {
                               r.takeout = v ?? 0;
                               r.takeoutMissing = v == null || undefined;
@@ -594,27 +761,47 @@ export function SpecManager({
                       </td>
                       {(type?.kind === "tee" || type?.reducing) && (
                         <td>
-                          <NumberCell
-                            value={f.branchTakeout}
-                            label="Branch takeout"
-                            onChange={(v) => set((r) => void (r.branchTakeout = v))}
+                          <LengthInput
+                            aria={`Branch takeout for ${name}`}
+                            mm={f.branchTakeout}
+                            units={units}
+                            precision="fine"
+                            allowEmpty
+                            placeholder="—"
+                            onError={onError}
+                            onCommit={(v) => set((r) => void (r.branchTakeout = v))}
                           />
                         </td>
                       )}
                       <td>
-                        <NumberCell value={f.weightKg} label="Weight" onChange={(v) => set((r) => void (r.weightKg = v))} />
+                        <NumberInput
+                          aria={`Weight for ${name}`}
+                          value={mass.show(f.weightKg)}
+                          decimals={mass.decimals}
+                          suffix={mass.unit}
+                          min={0}
+                          onError={onError}
+                          onCommit={(v) => set((r) => void (r.weightKg = v == null ? undefined : mass.store(v)))}
+                        />
                       </td>
                       <td>
-                        <NumberCell value={f.unitCost} label="Unit cost" onChange={(v) => set((r) => void (r.unitCost = v))} />
+                        <NumberInput
+                          aria={`Unit cost for ${name}`}
+                          value={f.unitCost}
+                          decimals={2}
+                          min={0}
+                          onError={onError}
+                          onCommit={(v) => set((r) => void (r.unitCost = v))}
+                        />
                       </td>
                       <td className="iso-row-actions">
                         <button
-                          aria-label="Duplicate row"
+                          aria-label={`Duplicate ${name}`}
                           title="Duplicate row"
                           onClick={() =>
                             edit((s) => {
-                              const i = s.fittings.findIndex((x) => x.id === f.id);
-                              s.fittings.splice(i + 1, 0, {
+                              const at = s.fittings.findIndex((x) => x.id === f.id);
+                              s.fittings.splice(at + 1, 0, {
                                 ...clone(f),
                                 id: s.id + ":" + (f.component ?? f.kind) + "-" + crypto.randomUUID().slice(0, 8),
                               });
@@ -624,7 +811,7 @@ export function SpecManager({
                           <Copy size={12} />
                         </button>
                         <button
-                          aria-label="Remove row"
+                          aria-label={`Remove ${name}`}
                           title={doc.nodes.some((n) => n.catalogId === f.id) ? "Used in this drawing" : "Remove row"}
                           disabled={doc.nodes.some((n) => n.catalogId === f.id)}
                           onClick={() => edit((s) => void (s.fittings = s.fittings.filter((x) => x.id !== f.id)))}
@@ -650,51 +837,138 @@ export function SpecManager({
   );
 }
 
-/** Inputs commit on blur so a typed value is one undo step and partial numbers never validate. */
-function TextCell({ value, label, onChange }: { value?: string; label: string; onChange: (v: string) => void }) {
+function ShopField({ value, onChange, aria }: { value?: "S" | "F"; onChange: (v: "S" | "F") => void; aria: string }) {
   return (
-    <input
-      key={value ?? ""}
-      aria-label={label}
-      defaultValue={value ?? ""}
-      onBlur={(e) => e.target.value !== (value ?? "") && onChange(e.target.value)}
-      onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
-    />
-  );
-}
-function NumberCell({
-  value,
-  label,
-  placeholder,
-  onChange,
-}: {
-  value?: number;
-  label: string;
-  placeholder?: string;
-  onChange: (v: number | undefined) => void;
-}) {
-  return (
-    <input
-      key={String(value ?? "")}
-      type="number"
-      min="0"
-      step="any"
-      aria-label={label}
-      placeholder={placeholder}
-      defaultValue={value ?? ""}
-      onBlur={(e) => {
-        const v = num(e.target.value);
-        if (v !== value && (v == null || (Number.isFinite(v) && v >= 0))) onChange(v);
-      }}
-      onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
-    />
-  );
-}
-function ShopField({ value, onChange }: { value?: "S" | "F"; onChange: (v: "S" | "F") => void }) {
-  return (
-    <select aria-label="Shop or field" value={value ?? "S"} onChange={(e) => onChange(e.target.value as "S" | "F")}>
+    <select aria-label={aria} value={value ?? "S"} onChange={(e) => onChange(e.target.value as "S" | "F")}>
       <option value="S">Shop</option>
       <option value="F">Field</option>
     </select>
+  );
+}
+
+const NOT_SET = "Not set (assumed by the standards)";
+type ChoiceField = Exclude<SpecDesignField, "gasketThickness" | "nippleLength" | "stubEndSchedule" | "oletSchedule">;
+/** Mating flanges only: blinds, orifice sets and stub ends are not what a flanged port is bolted to. */
+const MATING_FLANGES = COMPONENT_TYPES.filter((t) => t.kind === "flange" && t.code.startsWith("FLG-") && !t.code.endsWith("BL"));
+const classes = (values: number[]) => values.map((v): [string, string] => [String(v), `Class ${v}`]);
+const DESIGN_CHOICES: Array<{ field: ChoiceField; label: string; numeric?: boolean; options: Array<[string, string]> }> = [
+  { field: "flangeClass", label: "Flange class", numeric: true, options: classes([150, 300, 600, 900, 1500, 2500]) },
+  { field: "flangeFace", label: "Flange face", options: [["RF", "Raised face (RF)"], ["FF", "Flat face (FF)"]] },
+  { field: "forgedClass", label: "Forged fitting class", numeric: true, options: classes([2000, 3000, 6000, 9000]) },
+  { field: "boltType", label: "Bolting", options: [["stud", "Stud bolts"], ["machine", "Machine bolts"]] },
+  { field: "ballValvePattern", label: "Ball valve pattern (B16.10)", options: [["long", "Long pattern"], ["short", "Short pattern"]] },
+  {
+    field: "plugValvePattern",
+    label: "Plug valve pattern",
+    options: [["short", "Short pattern"], ["regular", "Regular pattern"], ["venturi", "Venturi pattern"]],
+  },
+  { field: "butterflyBody", label: "Butterfly body", options: [["wafer", "Wafer"], ["lug", "Lug"], ["double-flanged", "Double-flanged"]] },
+  { field: "butterflyCategory", label: "Butterfly category (API 609)", options: [["A", "A, concentric"], ["B", "B, offset seat"]] },
+  { field: "defaultFlange", label: "Default mating flange", options: MATING_FLANGES.map((t) => [t.code, t.label]) },
+];
+const DESIGN_LENGTHS: Array<{ field: "gasketThickness" | "nippleLength"; label: string; below: number }> = [
+  { field: "gasketThickness", label: "Gasket thickness", below: 50 },
+  { field: "nippleLength", label: "Nipple length", below: 10000 },
+];
+const DESIGN_SCHEDULES: Array<{ field: "stubEndSchedule" | "oletSchedule"; label: string }> = [
+  { field: "stubEndSchedule", label: "Stub-end wall" },
+  { field: "oletSchedule", label: "Olet weight" },
+];
+
+/**
+ * The specification's typed design parameters. An unset field shows what is in effect instead: a legacy free-form
+ * parameter that maps to it, or the standards' assumption.
+ */
+function DesignSection({ spec, units, edit, onError }: {
+  spec: PipeSpec; units: Units; edit: (change: (s: PipeSpec) => void) => void; onError: (message: string) => void;
+}) {
+  const set = <K extends SpecDesignField>(field: K, value: SpecDesign[K] | undefined) =>
+    edit((s) => {
+      const next: SpecDesign = { ...s.design };
+      if (value == null || value === "") delete next[field];
+      else next[field] = value;
+      if (Object.keys(next).length) s.design = next;
+      else delete s.design;
+    });
+  /** The value in effect when the typed field is unset, and where it comes from. */
+  const inherited = <K extends SpecDesignField>(field: K): { value?: NonNullable<SpecDesign[K]>; hint?: string } => {
+    if (spec.design?.[field] != null) return {};
+    const found = designValue(spec, field);
+    return { value: found.value, hint: found.source && `From ${found.source}` };
+  };
+  const count = Object.values(spec.design ?? {}).filter((v) => v != null && v !== "").length;
+  return (
+    <div className="insp iso-specs-design">
+      <Section id="spec-design" title="Design" summary={count ? `${count} set` : "Not set"} defaultOpen>
+        {DESIGN_CHOICES.map(({ field, label, numeric, options }) => {
+          const own = spec.design?.[field], legacy = inherited(field);
+          const shown = (v: unknown) => options.find(([o]) => o === String(v))?.[1] ?? String(v);
+          return (
+            <Row key={field} label={label} hint={legacy.hint} modified={own != null} onReset={() => set(field, undefined)}>
+              <select
+                aria-label={label}
+                value={own == null ? "" : String(own)}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  set(field, (v === "" ? undefined : numeric ? Number(v) : v) as SpecDesign[typeof field]);
+                }}
+              >
+                <option value="">{legacy.value != null ? `From parameter: ${shown(legacy.value)}` : NOT_SET}</option>
+                {options.map(([value, text]) => (
+                  <option key={value} value={value}>
+                    {text}
+                  </option>
+                ))}
+              </select>
+            </Row>
+          );
+        })}
+        {DESIGN_LENGTHS.map(({ field, label, below }) => {
+          const legacy = inherited(field);
+          return (
+            <Row key={field} label={label} hint={legacy.hint} modified={spec.design?.[field] != null} onReset={() => set(field, undefined)}>
+              <LengthInput
+                aria={label}
+                mm={spec.design?.[field]}
+                units={units}
+                precision={field === "gasketThickness" ? "fine" : "drafting"}
+                allowEmpty
+                positive
+                placeholder={legacy.value != null ? lengthInputValue(legacy.value, units, field === "gasketThickness" ? "fine" : "drafting") : NOT_SET}
+                onError={onError}
+                onCommit={(v) => {
+                  if (v != null && v >= below) {
+                    onError(`Enter a ${label.toLowerCase()} less than ${lengthInputValue(below, units)}.`);
+                    return false;
+                  }
+                  set(field, v);
+                }}
+              />
+            </Row>
+          );
+        })}
+        {DESIGN_SCHEDULES.map(({ field, label }) => {
+          const own = spec.design?.[field], legacy = inherited(field);
+          return (
+            <Row key={field} label={label} hint={legacy.hint} modified={own != null} onReset={() => set(field, undefined)}>
+              <TextInput
+                aria={label}
+                value={own}
+                trim
+                maxLength={20}
+                placeholder={legacy.value ?? NOT_SET}
+                onError={onError}
+                onCommit={(v) => {
+                  const next = v.toUpperCase();
+                  // "xs" for "XS" changes nothing; put the field back rather than record an empty step.
+                  if (next === (own ?? "")) return false;
+                  set(field, next || undefined);
+                }}
+              />
+            </Row>
+          );
+        })}
+      </Section>
+    </div>
   );
 }

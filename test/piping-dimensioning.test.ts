@@ -5,6 +5,7 @@ import { appendRun, applyComponent, attachComponent, clone, getNode, newIso, par
 import { COMPONENT_TYPES } from '../src/core/components.ts';
 import { placeComponentOnPipe, setDimensionAxis, setDimensionReverse } from '../src/core/component-position.ts';
 import { createDrawing } from '../src/core/drawing.ts';
+import { draftingSizes } from '../src/core/iso/context.ts';
 
 const specA = JSON.parse(readFileSync(new URL('../public/library/specs/a.json', import.meta.url), 'utf8')) as PipeSpec;
 const doc = (units: IsoDocument['units'] = 'mm') => {
@@ -367,7 +368,8 @@ test('held extension directions move the calculated chain through a tee without 
   const upper = longest();
   setDimensionAxis(d,d.runs[0].id,[0,0,-1]);
   const lower = longest();
-  assert.ok(upper.type==='line' && lower.type==='line' && lower.a[1]>upper.a[1]+50);
+  // Dimension lines break round their lettering, so compare where the longest pieces run.
+  assert.ok(upper.type==='line' && lower.type==='line' && (lower.a[1]+lower.b[1])/2>(upper.a[1]+upper.b[1])/2+50);
   assert.deepEqual(d.runs.map(r=>runResult(d,r).cut),before);
   assert.deepEqual(parseIsoJson(JSON.stringify(d)).runs[0].dimensionAxis,[0,0,-1]);
   setDimensionAxis(d,d.runs[0].id);
@@ -434,7 +436,8 @@ test('a drafted fitting-face dimension starts at the drawn weld face, independen
   }]}};
   const drawing=createDrawing(d),weld=drawing.primitives.find(p=>p.type==='circle'&&p.layer==='WELD'&&p.owner===elbow.id&&p.p[1]<450);
   assert.ok(weld&&weld.type==='circle');
-  assert.ok(drawing.primitives.some(p=>p.type==='line'&&p.layer==='DIM'&&Math.abs(p.a[1]-(weld.p[1]-1.5))<.01&&Math.abs(p.a[0]-(weld.p[0]+3*Math.sqrt(3)/2))<.01));
+  const gap=draftingSizes(d).extGap;
+  assert.ok(drawing.primitives.some(p=>p.type==='line'&&p.layer==='DIM'&&Math.abs(p.a[1]-(weld.p[1]-gap/2))<.01&&Math.abs(p.a[0]-(weld.p[0]+gap*Math.sqrt(3)/2))<.01));
   const actual=1000-row(d,'W-LR90EL').takeout;
   assert.deepEqual(dims(d),[String(Math.round(actual))]);
   assert.deepEqual(dims(parseIsoJson(JSON.stringify(d))),dims(d));

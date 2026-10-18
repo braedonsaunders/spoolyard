@@ -1,7 +1,7 @@
 {
   "name": "spoolyard",
   "productName": "Spoolyard",
-  "version": "0.5.4",
+  "version": "0.6.0",
   "description": "Open-source piping isometrics and spool fabrication drawings \u2014 in the browser, on the desktop, or inside BidWright.",
   "author": "Braedon Saunders",
   "license": "AGPL-3.0-only",
@@ -35,8 +35,8 @@
     "@types/react-dom": "^19.1.0",
     "@types/three": "^0.183.0",
     "@vitejs/plugin-react": "^5.0.0",
-    "electron": "33.4.11",
-    "electron-builder": "^25.1.8",
+    "electron": "44.9.0",
+    "electron-builder": "^26.17.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.2",
     "vite": "^7.0.0"
@@ -52,7 +52,8 @@
     "files": [
       "dist/**",
       "desktop/**",
-      "package.json"
+      "package.json",
+      "!node_modules/**"
     ],
     "fileAssociations": [
       {

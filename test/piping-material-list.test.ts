@@ -100,6 +100,8 @@ test('break joints list only what this drawing supplies, and lug mates take lug 
   ({ doc, end } = build());
   end.jointSupply = { gasket: true, bolts: true, mate: 'lug' };
   const bolts = sheetMaterials(doc, 'S-1').find(r => r.category === 'bolt')!;
+  // A lug mate of unknown length is sized as the class's API 609 lug butterfly body, like a drawn lug valve: the pair
+  // method less 1/2 in, 2(0.75 + 0.12 + 0.625) + 0.12 + 0.06 - 0.5 = 2.67" -> 2 3/4", the length issued sets buy.
   assert.equal(bolts.nd, `5/8"X2 3/4"`);
   assert.match(bolts.description, /LUG BOLT/);
   assert.equal(bolts.qtyText, '4');
@@ -158,11 +160,11 @@ test('uncut pieces list by length, pipes can carry their own text, and held item
   const elbow = appendRun(doc, null, [inch(246), 0, 0], 'S1', 2, 'S-1', '10');
   const end = appendRun(doc, elbow.id, [0, inch(20), 0], 'S1', 2, 'S-1', '10');
   const pipes = () => sheetMaterials(doc, 'S-1').filter(r => r.category === 'pipe').map(r => [r.qtyText, r.description.replace(/^PIPE, WELDED, .* BE/, 'PIPE')]);
-  // A full random length is used as it comes: 246 - 3 (elbow) = 243 in, no cut.
-  assert.deepEqual(pipes(), [[`20'-3"`, 'PIPE'], [`1'-5"`, 'PIPE - CUT TO 1\'-5"']]);
+  // A long piece is still cut: 246 - 3 (elbow) = 243 in. Being longer than a 20 ft random length, it is flagged.
+  assert.deepEqual(pipes(), [[`20'-3"`, 'PIPE - CUT TO 20\'-3"'], [`1'-5"`, 'PIPE - CUT TO 1\'-5"']]);
   // The second piece runs on through the drawing break as one length, in its own wording.
   doc.runs[1].uncut = true; doc.runs[1].description = 'pipe, erw, pe';
-  assert.deepEqual(pipes(), [[`20'-3"`, 'PIPE'], [`1'-5"`, 'PIPE, ERW, PE']]);
+  assert.deepEqual(pipes(), [[`20'-3"`, 'PIPE - CUT TO 20\'-3"'], [`1'-5"`, 'PIPE, ERW, PE']]);
   // Hold the item numbers, then add a cap: it takes the next number instead of renumbering the elbow.
   holdItemNumbers(doc, 'S-1');
   const before = sheetMaterials(doc, 'S-1').map(r => r.description);

@@ -1,11 +1,15 @@
-import {createDrawing} from '../core/drawing';
-import { useMemo, useState, type ReactNode } from "react";
+import type { Drawing } from "../core/drawing";
+import { PAPERS } from "./paper";
+import { SCALES } from "./choices";
+import { OverridesSection } from "./overrides-settings";
+import { DEFAULT_PIPE_WEIGHT_MM, DEFAULT_TEXT_HEIGHT_MM } from "../core/iso/context";
+import { Actions, Group, LengthInput, Note, NumberInput, PairHead, Row, Section as KitSection, TextInput as KitTextInput, Toggle } from "./inspector/kit";
+import { Fragment, useState, type ReactNode } from "react";
 import { Plus, Trash2, Upload } from "lucide-react";
 import { cn } from "./cn";
-import { holdItemNumbers, sheetMaterials } from "../core/material-list";
+import { MaterialTableSection, SheetFormatSettings, TemplateFieldRows, setTemplateField } from "./sheet-template-settings";
 import {
   clone,
-  lengthInputValue,
   parseLength,
   plantCoordinate,
   sheetInfoOf,
@@ -15,14 +19,13 @@ import {
   type DrawingStyle,
   type IsoDocument,
   type SheetInfo,
-  type SheetDimension,
   type TitleBlock,
   type TitleBlockRevision,
   type Vec3,
 } from "../core/model";
 
 export type Logo = TitleBlock["logos"][number];
-type TitleText = Exclude<keyof TitleBlock, "referenceDrawings" | "conditions" | "revisions" | "logos">;
+type TitleText = Exclude<keyof TitleBlock, "referenceDrawings" | "conditions" | "revisions" | "logos" | "custom">;
 type Condition = keyof TitleBlock["conditions"];
 
 /** Limits enforced by the document validator. */
@@ -276,12 +279,6 @@ export function setOrigin(d: IsoDocument, origin: Vec3) {
 /** The model origin that puts a model point at the given plant coordinates. */
 export const originFromPoint = (plant: Vec3, position: Vec3): Vec3 => sub(plant, position);
 
-const PAPERS: Array<[NonNullable<IsoDocument["paper"]>, string]> = [
-  ["tabloid", "Tabloid · 17 × 11 in"],
-  ["letter", "Letter · 11 × 8.5 in"],
-  ["a3", "A3 · 420 × 297 mm"],
-  ["a4", "A4 · 297 × 210 mm"],
-];
 const DIMENSION_MODES: Array<[IsoDocument["dimensionMode"], string]> = [
   ["overall", "Centreline lengths"],
   ["cut", "Cut lengths"],
@@ -317,26 +314,14 @@ const REVISION_PEOPLE: Array<[keyof TitleBlockRevision, string]> = [
   ["projectLeader", "Project leader"],
   ["approvedBy", "Approved by"],
 ];
-const AXES = ["East (E)", "North (N)", "Elevation (EL)"];
+const AXES = ["East (E)", "North (N)", "Elevation (EL)"] as const;
 
+/** Drawing setup reads like the rest of the properties panel: the same rows and sections. */
 function Field({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <label className="iso-field">
-      <span>{label}</span>
-      {children}
-    </label>
-  );
+  return <Row label={label}>{children}</Row>;
 }
 function Section({ title, hint, open, children }: { title: string; hint?: string; open?: boolean; children: ReactNode }) {
-  return (
-    <details className="iso-sheet-section" open={open}>
-      <summary>
-        {title}
-        {hint && <small>{hint}</small>}
-      </summary>
-      <div className="iso-sheet-section-body">{children}</div>
-    </details>
-  );
+  return <KitSection id={"sheet." + title} title={title} summary={hint} defaultOpen={open}>{children}</KitSection>;
 }
 type OnCommit = (value: string) => boolean | void;
 /** Commits on blur or Enter, so a typed value is one undo step; Escape restores it. */
@@ -388,8 +373,14 @@ export function SheetSettings({
   spool,
   selectedNodeId,
   onUnitsChange,
+  drawing,
+  onSelectNote,
 }: {
   doc: IsoDocument;
+  /** The sheet as the editor draws it, for placing new callouts. */
+  drawing?: Drawing;
+  /** Selects a sheet callout on the sheet, where it is edited. */
+  onSelectNote?: (id: string) => void;
   /** Applies an edit through the editor's undo/save flow; returns false if the edit threw. */
   commit: (edit: (d: IsoDocument) => void) => boolean | void;
   onError: (message: string) => void;
@@ -433,37 +424,6 @@ export function SheetSettings({
       setBusy(null);
     }
   };
-  const axis = (i: number) => {
-    const shown = lengthInputValue(origin[i], doc.units);
-    return (
-      <Field label={AXES[i]} key={i}>
-        <input
-          aria-label={"Plant " + AXES[i]}
-          key={shown + ":" + doc.units}
-          defaultValue={shown}
-          title={'Feet and inches or millimetres, e.g. 55\'-2 5/8" or -1200 mm. Minus is West, South or below datum.'}
-          onBlur={(e) => {
-            if (e.target.value.trim() === shown) return;
-            try {
-              const next = [...origin] as Vec3;
-              next[i] = parsePlant([e.target.value], doc.units)[0];
-              if (Math.abs(next[i] - origin[i]) < 1e-6 || !edit((d) => setOrigin(d, next))) e.target.value = shown;
-            } catch (err) {
-              e.target.value = shown;
-              onError(err instanceof Error ? err.message : String(err));
-            }
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") e.currentTarget.blur();
-            if (e.key === "Escape") {
-              e.currentTarget.value = shown;
-              e.currentTarget.blur();
-            }
-          }}
-        />
-      </Field>
-    );
-  };
 
   return (
     <div className="iso-sheet-settings">
@@ -472,370 +432,167 @@ export function SheetSettings({
         {text("Drawing number", doc.drawing, (d, v) => (d.drawing = limit(v, HEADER_LIMIT, "The drawing number")), {
           max: HEADER_LIMIT,
         })}
-        <Field label="Paper format"><select aria-label="Paper format" value={doc.sheetFormat??'production'} onChange={e=>commit(d=>{d.sheetFormat=e.target.value as 'classic'|'production'})}><option value="classic">Spoolyard classic</option><option value="production">Production grid</option></select></Field>
+        <SheetFormatSettings doc={doc} commit={commit} />
         <Field label="Paper size">
-          <select value={doc.paper ?? "tabloid"} onChange={(e) => commit((d) => (d.paper = e.target.value as IsoDocument["paper"]))}>
-            {PAPERS.map(([value, label]) => (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            ))}
+          <select aria-label="Paper size" value={doc.paper ?? "tabloid"} onChange={(e) => commit((d) => (d.paper = e.target.value as IsoDocument["paper"]))}>
+            {PAPERS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
           </select>
         </Field>
         <Field label="Units">
-          <select
-            value={doc.units}
+          <select aria-label="Units" value={doc.units}
             onChange={(e) => {
-              const units = e.target.value as IsoDocument["units"],
-                previous = doc.units;
+              const units = e.target.value as IsoDocument["units"], previous = doc.units;
               if (edit((d) => (d.units = units))) onUnitsChange?.(units, previous);
-            }}
-          >
+            }}>
             <option value="mm">Millimetres</option>
-            <option value="imperial">Feet / inches</option>
+            <option value="imperial">Feet and inches</option>
           </select>
         </Field>
-        <Field label="North rotation (degrees)">
-          <input
-            aria-label="North rotation"
-            inputMode="decimal"
-            key={doc.north}
-            defaultValue={String(doc.north)}
-            onBlur={(e) => {
-              const raw = e.target.value.trim();
-              if (raw === String(doc.north)) return;
-              const value = Number(raw.replace(/°$/, ""));
-              if (!raw || !Number.isFinite(value) || Math.abs(value) > 1e6) {
-                e.target.value = String(doc.north);
-                onError("Enter the north rotation in degrees, e.g. 90.");
-              } else if (!edit((d) => (d.north = value))) e.target.value = String(doc.north);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") e.currentTarget.blur();
-            }}
-          />
+        <Field label="North rotation">
+          <NumberInput aria="North rotation" value={doc.north} suffix="°" min={-360} max={360} required onError={onError} onCommit={(v) => v != null && edit((d) => (d.north = v))} />
         </Field>
         <Field label="Dimensions">
-          <select
-            value={doc.dimensionMode}
-            onChange={(e) => commit((d) => (d.dimensionMode = e.target.value as IsoDocument["dimensionMode"]))}
-          >
-            {DIMENSION_MODES.map(([value, label]) => (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            ))}
+          <select aria-label="Dimensions" value={doc.dimensionMode} onChange={(e) => commit((d) => (d.dimensionMode = e.target.value as IsoDocument["dimensionMode"]))}>
+            {DIMENSION_MODES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
           </select>
         </Field>
-        <Field label="Layout">
-          <select value={style.layout} onChange={(e) => setStyle({ layout: e.target.value as DrawingStyle["layout"] })}>
-            <option value="schematic">Not to scale (production)</option>
-            <option value="scale">To scale (grid)</option>
+        <Field label="Scale">
+          <select aria-label="Scale" value={style.layout} title={SCALES.find((x) => x.value === style.layout)?.title} onChange={(e) => setStyle({ layout: e.target.value as DrawingStyle["layout"] })}>
+            {SCALES.map((x) => <option key={x.value} value={x.value} title={x.title}>{x.label}</option>)}
           </select>
         </Field>
         <Field label="Lettering">
-          <select value={style.lettering} onChange={(e) => setStyle({ lettering: e.target.value as DrawingStyle["lettering"] })}>
+          <select aria-label="Lettering" value={style.lettering} onChange={(e) => setStyle({ lettering: e.target.value as DrawingStyle["lettering"] })}>
             <option value="cad">CAD (ROMANS)</option>
             <option value="sans">Sans</option>
           </select>
         </Field>
-        <label className="iso-check">
-          <input type="checkbox" checked={style.weldNumbers} onChange={(e) => setStyle({ weldNumbers: e.target.checked })} />
-          Weld numbers on sheet
-        </label>
-        <label className="iso-check">
-          <input type="checkbox" checked={!!style.elevations} onChange={(e) => setStyle({ elevations: e.target.checked })} />
-          Centreline elevations at every change of level
-        </label>
-        <label className="iso-check">
-          <input type="checkbox" checked={!!style.componentFaces} onChange={(e) => setStyle({ componentFaces: e.target.checked })} />
-          Dimension component body faces in a second chain
-        </label>
-        <label className="iso-check">
-          <input type="checkbox" checked={style.scaleNote !== false} onChange={(e) => setStyle({ scaleNote: e.target.checked })} />
-          Print SCALE: NTS on not-to-scale sheets
-        </label>
-        <label className="iso-check">
-          <input type="checkbox" checked={!!style.stackSizeLabels} onChange={e => setStyle({ stackSizeLabels: e.target.checked })} />
-          Stack line size under the stub-end item tag
-        </label>
-        <Field label="Dimension rounding">
-          <select aria-label="Dimension rounding" value={style.dimensionRounding ?? "chain"} onChange={e => setStyle({ dimensionRounding: e.target.value as "chain" | "individual" })}>
-            <option value="chain">Close rounded dimension chains</option>
-            <option value="individual">Round each dimension (legacy issued drawings)</option>
-          </select>
-        </Field>
         <Field label="North symbol">
-          <select aria-label="North symbol" value={style.northMark ?? "arrow"} onChange={e => setStyle({ northMark: e.target.value as "arrow" | "ticks" })}>
+          <select aria-label="North symbol" value={style.northMark ?? "arrow"} onChange={(e) => setStyle({ northMark: e.target.value as "arrow" | "ticks" })}>
             <option value="arrow">Plant north arrow</option>
             <option value="ticks">Ellipse with compass ticks</option>
           </select>
         </Field>
+        <Field label="Lettering height">
+          <NumberInput aria="Lettering height on paper" value={style.textHeight} placeholder={String(DEFAULT_TEXT_HEIGHT_MM)} suffix="mm" min={1} max={10} onError={onError}
+            onCommit={(v) => setStyle({ textHeight: v })} />
+        </Field>
+        <Field label="Pipe line weight">
+          <NumberInput aria="Pipe line weight on paper" value={style.pipeWeight} placeholder={String(DEFAULT_PIPE_WEIGHT_MM)} suffix="mm" min={0.13} max={2} onError={onError}
+            onCommit={(v) => setStyle({ pipeWeight: v })} />
+        </Field>
+        <Field label="Flanged joint callouts">
+          <select aria-label="Flanged joint callouts" value={style.jointCallout ?? "items"} onChange={(e) => setStyle({ jointCallout: e.target.value === "items" ? undefined : "combined" })}>
+            <option value="items">A balloon for each item</option>
+            <option value="combined">One combined callout (F, B, G)</option>
+          </select>
+        </Field>
+        <Field label="Field-fit welds lettered">
+          <select aria-label="Field-fit weld mark" value={style.fieldFitMark ?? "FFW"} onChange={(e) => setStyle({ fieldFitMark: e.target.value === "FFW" ? undefined : "FW" })}>
+            <option value="FFW">FFW, with the makeup</option>
+            <option value="FW">FW, as a field weld</option>
+          </select>
+        </Field>
+        <Field label="Material list">
+          <select aria-label="Material list placement" value={style.materialList ?? "auto"}
+            title="Automatic: on the drawing sheet, unless it leaves a not-to-scale drawing too little room to be drawn at full size; then on a sheet of its own after the drawing"
+            onChange={(e) => setStyle({ materialList: e.target.value === "auto" ? undefined : e.target.value as "onSheet" | "separate" })}>
+            <option value="auto">Automatic</option>
+            <option value="onSheet">On the drawing sheet</option>
+            <option value="separate">On a sheet of its own</option>
+          </select>
+        </Field>
+        <Toggle label="Weld numbers on the sheet" checked={style.weldNumbers} onChange={(on) => setStyle({ weldNumbers: on })} />
+        <Toggle label="Centreline elevations at every change of level" checked={!!style.elevations} onChange={(on) => setStyle({ elevations: on })} />
+        <Toggle label="Dimension component body faces in a second chain" checked={!!style.componentFaces} onChange={(on) => setStyle({ componentFaces: on })} />
+        <Toggle label="Print SCALE: NTS on not-to-scale sheets" checked={style.scaleNote !== false} onChange={(on) => setStyle({ scaleNote: on })} />
+        <Toggle label="Stack the line size under the stub-end item tag" checked={!!style.stackSizeLabels} onChange={(on) => setStyle({ stackSizeLabels: on })} />
       </Section>
 
       <Section title="Sheets" hint={String(spools.length)} open>
-        {!spools.length && <p className="iso-help">Each spool is one sheet. Sheets appear here once a spool has pipe.</p>}
+        <Note keywords="sheet spool drawing number">{spools.length ? "Each spool is one issued sheet, and a second when its material list has a sheet of its own. Leave a field empty to print the value shown in grey." : "Each spool is one sheet. Sheets appear here once a spool has pipe."}</Note>
         {spools.map((s) => {
           const own = doc.sheets?.[s] ?? {},
             auto = defaultSheetInfo(doc, s);
           const cell = (key: 'drawingNumber' | 'lineNumber' | 'revision', label: string) =>
             text(label, own[key] ?? "", (d, v) => setSheetInfo(d, s, key, v), { placeholder: auto[key], max: SHEET_LIMIT });
           return (
-            <div key={s} className={cn("iso-sheet-card", s === spool && "current")} aria-current={s === spool || undefined}>
-              <div className="iso-sheet-card-head">
-                <strong>{s || "Unassigned"}</strong>
-                {s === spool && <small>Shown</small>}
-              </div>
+            <Group key={s} title={`${s || "Unassigned"}${s === spool ? " · shown" : ""}`}>
               {cell("drawingNumber", "Drawing No.")}
-              <div className="iso-sheet-grid narrow-end">
-                {cell("lineNumber", "Line No.")}
-                {cell("revision", "Rev.")}
-              </div>
-              <Field label="Material table width on paper (mm)"><TextInput label={`Material table width in mm on paper for ${s}`} value={own.bomWidth==null?'':String(+(own.bomWidth*({letter:215.9,tabloid:279.4,a3:297,a4:210}[doc.paper??'tabloid'])/850).toFixed(2))}
-                placeholder="Automatic" onError={onError} onCommit={value=>{
-                  const mm=({letter:215.9,tabloid:279.4,a3:297,a4:210}[doc.paper??'tabloid'])/850,width=Number(value)/mm;
-                  if(value.trim()&&(!Number.isFinite(width)||width<250||width>1000||own.bomColumns&&own.bomColumns.reduce((a,b)=>a+b,0)>width-40)){onError(`Enter a table width between ${(250*mm).toFixed(1)} and ${(1000*mm).toFixed(1)} mm, leaving room for the description.`);return false;}
-                  edit(d=>{const info=((d.sheets??={})[s]??={});if(value.trim())info.bomWidth=width;else delete info.bomWidth;});
-                }} /></Field>
-              <label className="iso-check">
-                <input type="checkbox" checked={!!own.bomColumns} onChange={e=>edit(d=>{
-                  const info=((d.sheets??={})[s]??={});if(e.target.checked)info.bomColumns=[46,69,46];else delete info.bomColumns;
-                })} />Set material column widths
-              </label>
-              {own.bomColumns&&(['Item','Quantity','Size'] as const).map((label,i)=><Field key={label} label={`${label} column width on paper (mm)`}>
-                <TextInput label={`${label} material column width for ${s}`} value={String(+(own.bomColumns![i]*({letter:215.9,tabloid:279.4,a3:297,a4:210}[doc.paper??'tabloid'])/850).toFixed(2))} onError={onError} onCommit={value=>{
-                  const mm=({letter:215.9,tabloid:279.4,a3:297,a4:210}[doc.paper??'tabloid'])/850,width=Number(value)/mm;
-                  const next=[...own.bomColumns!] as [number,number,number];next[i]=width;
-                  if(!value.trim()||!Number.isFinite(width)||width<12||width>150||next.reduce((a,b)=>a+b,0)>Math.min(300,(own.bomWidth??1000)-40)){
-                    onError(`Enter a column width between ${(12*mm).toFixed(1)} and ${(150*mm).toFixed(1)} mm, leaving room for the description.`);return false;
-                  }
-                  edit(d=>{((d.sheets??={})[s]??={}).bomColumns=next;});
-                }} />
-              </Field>)}
-              <label className="iso-check">
-                <input
-                  type="checkbox"
-                  checked={!!own.bomOrder}
-                  onChange={(e) => edit((d) => holdItemNumbers(d, s, e.target.checked))}
-                />
-                Hold item numbers as issued (new items are numbered after them)
-              </label>
-              {own.bomOrder && (
-                <details>
-                  <summary>Issued item order</summary>
-                  {sheetMaterials(doc, s).map((row, i, rows) => (
-                    <div key={row.key}>
-                      <div className="iso-sheet-row">
-                      <span title={row.description}>{row.id}. {row.nd} {row.description.slice(0, 28)}</span>
-                      <button aria-label={`Move item ${row.id} up`} disabled={!i} onClick={() => edit(d => {
-                        const order = sheetMaterials(d, s).map(r => r.key);
-                        [order[i - 1], order[i]] = [order[i], order[i - 1]];
-                        d.sheets![s].bomOrder = order;
-                      })}>↑</button>
-                      <button aria-label={`Move item ${row.id} down`} disabled={i === rows.length - 1} onClick={() => edit(d => {
-                        const order = sheetMaterials(d, s).map(r => r.key);
-                        [order[i], order[i + 1]] = [order[i + 1], order[i]];
-                        d.sheets![s].bomOrder = order;
-                      })}>↓</button>
-                      </div>
-                      <details>
-                        <summary>Verbatim issued cells</summary>
-                        <p className="iso-help">Calculated: {row.calculated?.qtyText ?? row.qtyText} · {row.calculated?.nd ?? row.nd} · {row.calculated?.description ?? row.description}</p>
-                        {([['qtyText', 'Issued QTY'], ['nd', 'Issued ND'], ['description', 'Issued description']] as const).map(([key, label]) => (
-                          <TextInput key={key} label={label + ' for item ' + row.id} value={own.issuedValues?.[row.key]?.[key] ?? ''}
-                            placeholder={row.calculated?.[key] ?? row[key]} max={key === 'description' ? 2000 : 120} onError={onError}
-                            onCommit={value => edit(d => {
-                              const cells = (d.sheets![s].issuedValues ??= {}), overrides = (cells[row.key] ??= {});
-                              if (value) overrides[key] = value; else delete overrides[key];
-                              if (!Object.keys(overrides).length) delete cells[row.key];
-                            })} />
-                        ))}
-                        <TextInput label={`Row height in mm on paper for item ${row.id}`}
-                          value={own.bomRowHeights?.[row.key] == null ? '' : String(+(own.bomRowHeights[row.key] * ({letter:215.9,tabloid:279.4,a3:297,a4:210}[doc.paper ?? 'tabloid']) / 850).toFixed(2))}
-                          placeholder="Automatic" onError={onError} onCommit={value => {
-                            const mm = ({letter:215.9,tabloid:279.4,a3:297,a4:210}[doc.paper ?? 'tabloid']) / 850;
-                            const height = Number(value) / mm;
-                            if (value.trim() && (!Number.isFinite(height) || height < 8 || height > 200)) { onError(`Enter a row height between ${(8*mm).toFixed(1)} and ${(200*mm).toFixed(1)} mm.`); return false; }
-                            edit(d => {
-                              const heights=(d.sheets![s].bomRowHeights ??= {});
-                              if (value.trim()) heights[row.key]=height; else delete heights[row.key];
-                            });
-                          }} />
-                      </details>
-                    </div>
-                  ))}
-                </details>
-              )}
-              <LetteringSettings doc={doc} spool={s} commit={commit}/>
-              <details>
-                <summary>Drafted dimensions</summary>
-                <p className="iso-help">Choose the measured points and paper offset. Lengths follow the model. A drafted set replaces automatic dimensions on this sheet.</p>
-                <label className="iso-check">
-                  <input type="checkbox" checked={own.dimensions != null} onChange={e => edit(d => {
-                    const info = ((d.sheets ??= {})[s] ??= {});
-                    if (e.target.checked) info.dimensions = []; else delete info.dimensions;
-                  })} />Use drafted dimensions
-                </label>
-                {own.dimensions && <Field label="Replace automatic dimensions">
-                  <select aria-label="Drafted dimension scope" value={own.dimensionScope ?? 'sheet'} onChange={e => edit(d => { d.sheets![s].dimensionScope = e.target.value as 'sheet' | 'legs'; })}>
-                    <option value="sheet">Whole sheet</option>
-                    <option value="legs">Measured straights only</option>
-                  </select>
-                </Field>}
-                {own.dimensions?.map((dim, i) => {
-                  const ids = new Set(doc.runs.filter(r => r.spool === s).flatMap(r => [r.from, r.to]));
-                  const nodes = doc.nodes.filter(n => ids.has(n.id) || n.associatedRunId && doc.runs.some(r => r.id === n.associatedRunId && r.spool === s));
-                  const change = (fn: (dim: SheetDimension) => void) => edit(d => fn(d.sheets![s].dimensions![i]));
-                  return <div key={i} className="iso-sheet-card">
-                    <strong>Dimension {i + 1}</strong>
-                    {(['from', 'to'] as const).map(end => <div key={end}>
-                      <Field label={end === 'from' ? 'From' : 'To'}>
-                        <select aria-label={`Dimension ${i + 1} ${end} node`} value={dim[end].nodeId} onChange={e => change(v => { v[end] = { nodeId: e.target.value }; })}>
-                          {nodes.map(n => <option key={n.id} value={n.id}>{n.tag || n.component || n.kind} · {n.id.slice(0, 8)}</option>)}
-                        </select>
-                      </Field>
-                      <Field label="Measured point">
-                        <select aria-label={`Dimension ${i + 1} ${end} point`} value={dim[end].adjacent ? `adjacent:${dim[end].adjacent}` : dim[end].face ? `${dim[end].face}:${dim[end].runId}` : 'work'} onChange={e => change(v => {
-                          const value = e.target.value;
-                          if (value === 'work') v[end] = { nodeId: v[end].nodeId };
-                          else if(value.startsWith('adjacent:'))v[end]={nodeId:v[end].nodeId,adjacent:value.slice(9)};
-                          else { const split = value.indexOf(':'); v[end] = {nodeId:v[end].nodeId,face:value.slice(0, split) as 'body' | 'mate',runId:value.slice(split + 1)}; }
-                        })}>
-                          <option value="work">Work point</option>
-                          {(doc.references??[]).filter(r=>r.atNodeId===dim[end].nodeId&&r.dimensionTo).map(r=><option key={r.id} value={`adjacent:${r.id}`}>Adjacent work point · {r.name}</option>)}
-                          {doc.runs.filter(r => [r.from, r.to].includes(dim[end].nodeId)).flatMap(r => (['body', 'mate'] as const).map(face =>
-                            <option key={`${face}:${r.id}`} value={`${face}:${r.id}`}>{face === 'body' ? 'Body face' : 'Mating face'} · {r.id.slice(0, 8)}</option>))}
-                        </select>
-                      </Field>
-                    </div>)}
-                    <Field label="Extension direction">
-                      <select aria-label={`Dimension ${i + 1} direction`} value={dim.axis.join(',')} onChange={e => change(v => { v.axis = e.target.value.split(',').map(Number) as Vec3; })}>
-                        {([[1,0,0,'East'],[-1,0,0,'West'],[0,1,0,'North'],[0,-1,0,'South'],[0,0,1,'Up'],[0,0,-1,'Down']] as const).map(([x,y,z,label]) => <option key={label} value={`${x},${y},${z}`}>{label}</option>)}
-                      </select>
-                    </Field>
-                    <TextInput label={`Dimension ${i + 1} paper offset`} value={String(dim.offset)} onError={onError} onCommit={value => {
-                      const offset = Number(value);
-                      if (!value.trim() || !Number.isFinite(offset) || Math.abs(offset) > 5000) { onError('Enter a paper offset between -5000 and 5000.'); return false; }
-                      change(v => { v.offset = offset; });
-                    }} />
-                    <Field label="Length format"><select aria-label={`Dimension ${i+1} length format`} value={dim.format??''} onChange={e=>change(v=>{v.format=(e.target.value||undefined) as 'feet'|'inches'|'feet-short'|undefined})}><option value="">Automatic</option><option value="feet">Feet and inches</option><option value="feet-short">Feet, omit zero inches</option><option value="inches">Inches</option></select></Field>
-                    <label className="iso-check"><input type="checkbox" aria-label={`Flip dimension ${i+1} lettering`}
-                      checked={!!dim.reverseText} onChange={e=>change(v=>{v.reverseText=e.target.checked || undefined;})} />Flip lettering</label>
-                    <button onClick={() => edit(d => { d.sheets![s].dimensions!.splice(i, 1); })}>Remove dimension {i + 1}</button>
-                  </div>;
-                })}
-                {own.dimensions && <button onClick={() => edit(d => {
-                  const run = d.runs.find(r => r.spool === s);
-                  if (run) {
-                    const from = d.nodes.find(n => n.id === run.from)!.position, to = d.nodes.find(n => n.id === run.to)!.position;
-                    const vertical = Math.abs(to[2] - from[2]) > Math.hypot(to[0] - from[0], to[1] - from[1]);
-                    d.sheets![s].dimensions!.push({ from: { nodeId: run.from }, to: { nodeId: run.to }, axis: vertical ? [1,0,0] : [0,0,1], offset: 43.5 });
-                  }
-                })}>Add dimension</button>}
-              </details>
-            </div>
+              {cell("lineNumber", "Line No.")}
+              {cell("revision", "Rev.")}
+            </Group>
           );
         })}
-        {spools.length > 0 && <p className="iso-help">Leave a box empty to use the value shown in grey.</p>}
       </Section>
 
+      <OverridesSection doc={doc} spools={spools} spool={spool} commit={commit} onError={onError} />
+
+      {spools.length > 0 && <MaterialTableSection doc={doc} spool={spools.includes(spool) ? spool : spools[0]} commit={commit} onError={onError} />}
+
       <Section title="Title block">
-        <div className="iso-sheet-list">
-          <span className="iso-sheet-label">Reference drawings</span>
+        <Group title="Reference drawings">
           {draft.referenceDrawings.map((ref, i) => (
-            <div className="iso-sheet-row" key={i + ":" + ref}>
-              <TextInput
-                label={"Reference drawing " + (i + 1)}
-                value={ref}
-                onError={onError}
-                onCommit={(v) => edit((d) => setReference(d, i, v))}
-              />
-              <button
-                className="iso-sheet-remove"
-                aria-label={"Remove reference drawing " + (i + 1)}
-                title="Remove"
-                onClick={() => commit((d) => removeReference(d, i))}
-              >
-                <Trash2 size={13} />
+            <Row key={i + ":" + ref} label={`Reference ${i + 1}`} keywords="reference drawing">
+              <TextInput label={"Reference drawing " + (i + 1)} value={ref} onError={onError} onCommit={(v) => edit((d) => setReference(d, i, v))} />
+              <button type="button" className="insp-reset" aria-label={"Remove reference drawing " + (i + 1)} title="Remove"
+                onClick={() => commit((d) => removeReference(d, i))}>
+                <Trash2 size={11} />
               </button>
-            </div>
+            </Row>
           ))}
           {draft.referenceDrawings.length < MAX_REFERENCES && (
-            <TextInput
-              key={draft.referenceDrawings.length}
-              label="Add reference drawing"
-              value=""
-              placeholder={draft.referenceDrawings.length ? "Add another" : "e.g. P-100-001 Rev.B"}
-              onError={onError}
-              onCommit={(v) => edit((d) => setReference(d, withTitleBlock(d).referenceDrawings.length, v))}
-            />
+            <Row label={draft.referenceDrawings.length ? "Add another" : "Add reference"} keywords="reference drawing">
+              <TextInput key={draft.referenceDrawings.length} label="Add reference drawing" value=""
+                placeholder={draft.referenceDrawings.length ? "Reference drawing" : "e.g. P-100-001 Rev.B"} onError={onError}
+                onCommit={(v) => edit((d) => setReference(d, withTitleBlock(d).referenceDrawings.length, v))} />
+            </Row>
           )}
-        </div>
-        <div className="iso-sheet-grid">{PEOPLE.map((p) => <div key={p[0]}>{titleText(p)}</div>)}</div>
-        <div className="iso-sheet-conditions" role="group" aria-label="Conditions">
-          <span />
-          <span>{metric ? "Press. (kPa)" : "Press. (psig)"}</span>
-          <span>{metric ? "Temp. (°C)" : "Temp. (°F)"}</span>
-          {(["design", "operating", "test"] as const).map((row) => [
-            <span key={row}>{row[0].toUpperCase() + row.slice(1)}</span>,
-            ...([0, 1] as const).map((c) => (
-              <TextInput
-                key={row + c}
-                label={`${row} ${c ? "temperature" : "pressure"}`}
-                value={draft.conditions[row][c]}
-                max={CONDITION_LIMIT}
-                onError={onError}
-                onCommit={(v) => edit((d) => setCondition(d, row, c, v))}
-              />
-            )),
-          ])}
-        </div>
-        {SERVICE.map((s) => <div key={s[0]}>{titleText(s)}</div>)}
-        <div className="iso-sheet-grid">{SPEC.map((s) => <div key={s[0]}>{titleText(s)}</div>)}</div>
+        </Group>
+        <Group title="People and dates">{PEOPLE.map((p) => <Fragment key={p[0]}>{titleText(p)}</Fragment>)}</Group>
+        <Group title="Conditions">
+          <PairHead columns={[metric ? "Press. (kPa)" : "Press. (psig)", metric ? "Temp. (°C)" : "Temp. (°F)"]} />
+          {(["design", "operating", "test"] as const).map((row) => (
+            <Row key={row} pair label={row[0].toUpperCase() + row.slice(1)} keywords="condition pressure temperature">
+              {([0, 1] as const).map((c) => (
+                <TextInput key={c} label={`${row} ${c ? "temperature" : "pressure"}`} value={draft.conditions[row][c]} max={CONDITION_LIMIT}
+                  onError={onError} onCommit={(v) => edit((d) => setCondition(d, row, c, v))} />
+              ))}
+            </Row>
+          ))}
+        </Group>
+        <Group title="Service">{SERVICE.map((s) => <Fragment key={s[0]}>{titleText(s)}</Fragment>)}</Group>
+        <Group title="Specification and identity">{SPEC.map((s) => <Fragment key={s[0]}>{titleText(s)}</Fragment>)}</Group>
+        <TemplateFieldRows doc={doc} onChange={(key, value) => edit((d) => setTemplateField(withTitleBlock(d), key, value))} />
       </Section>
 
       <Section title="Revisions" hint={String(draft.revisions.length)}>
-        <p className="iso-help">
-          Oldest first. The sheet prints the latest revisions; the newest one is the drawing's revision.
+        <Note keywords="revision">
+          Oldest first. The sheet prints the latest revisions that fit; the newest one is the drawing's revision.
           {!draft.revisions.length && doc.revision && ` Until one is added, revision ${doc.revision} is printed.`}
-        </p>
+        </Note>
         {draft.revisions.map((r, i) => {
           const cell = (key: keyof TitleBlockRevision, label: string, placeholder?: string) =>
             text(label, r[key], (d, v) => setRevisionField(d, i, key, v), { placeholder });
           return (
-            <div className={cn("iso-sheet-card", i === draft.revisions.length - 1 && "current")} key={i}>
-              <div className="iso-sheet-card-head">
-                <strong>Revision {r.rev || i + 1}</strong>
-                {i === draft.revisions.length - 1 && <small>Latest</small>}
-                <button
-                  className="iso-sheet-remove"
-                  aria-label={"Remove revision " + (r.rev || i + 1)}
-                  title="Remove revision"
-                  onClick={() => commit((d) => removeRevision(d, i))}
-                >
-                  <Trash2 size={13} />
-                </button>
-              </div>
-              <div className="iso-sheet-grid narrow-start">
-                {cell("rev", "Rev.")}
-                {cell("date", "Date", "YY-MM-DD")}
-              </div>
+            <Group key={i} title={`Revision ${r.rev || i + 1}${i === draft.revisions.length - 1 ? " · latest" : ""}`}>
+              {cell("rev", "Rev.")}
+              {cell("date", "Date", draft.dateFormat || "YY-MM-DD")}
               {cell("description", "Description", "Issued for construction")}
-              <div className="iso-sheet-grid">
-                {REVISION_PEOPLE.map(([key, label]) => (
-                  <div key={key}>{cell(key, label)}</div>
-                ))}
-              </div>
-            </div>
+              {REVISION_PEOPLE.map(([key, label]) => <Fragment key={key}>{cell(key, label)}</Fragment>)}
+              <Actions keywords="revision remove">
+                <button type="button" aria-label={"Remove revision " + (r.rev || i + 1)} onClick={() => commit((d) => removeRevision(d, i))}>
+                  <Trash2 size={12} /> Remove revision
+                </button>
+              </Actions>
+            </Group>
           );
         })}
-        <button
-          className="iso-primary"
-          disabled={draft.revisions.length >= MAX_REVISIONS}
-          onClick={() => commit((d) => addRevision(d))}
-        >
-          <Plus size={13} /> Add revision
-        </button>
+        <Actions keywords="revision add">
+          <button type="button" disabled={draft.revisions.length >= MAX_REVISIONS} onClick={() => commit((d) => addRevision(d))}>
+            <Plus size={12} /> Add revision
+          </button>
+        </Actions>
       </Section>
 
       <Section title="Logos" hint={`${logos.filter(Boolean).length} of 2`}>
@@ -843,16 +600,12 @@ export function SheetSettings({
           const logo = logos[slot],
             s = slot as 0 | 1;
           return (
-            <div className="iso-sheet-card" key={label}>
-              <div className="iso-sheet-card-head">
-                <strong>{label}</strong>
-                <small>{slot ? "Beside revisions" : "Above pipe spec"}</small>
-              </div>
+            <Group key={label} title={label}>
               <div className="iso-sheet-logo">
                 {logo ? <img src={logo.dataUrl} alt={label} /> : <span>No logo</span>}
               </div>
-              {logo && <span className="iso-sheet-file" title={logo.name}>{logo.name}</span>}
-              <div className="iso-sheet-actions">
+              {logo && <Note>{logo.name}</Note>}
+              <Actions keywords="logo upload">
                 <label className={cn("iso-sheet-upload", busy === s && "busy")}>
                   <input
                     type="file"
@@ -861,115 +614,70 @@ export function SheetSettings({
                     disabled={busy !== null}
                     onChange={(e) => void upload(s, e.currentTarget)}
                   />
-                  <Upload size={13} /> {busy === s ? "Converting…" : logo ? "Replace" : "Upload"}
+                  <Upload size={12} /> {busy === s ? "Converting…" : logo ? "Replace" : "Upload"}
                 </label>
                 {logo && (
-                  <button aria-label={"Remove " + label.toLowerCase()} onClick={() => commit((d) => setLogo(withTitleBlock(d), s, undefined))}>
-                    <Trash2 size={13} /> Remove
+                  <button type="button" aria-label={"Remove " + label.toLowerCase()} onClick={() => commit((d) => setLogo(withTitleBlock(d), s, undefined))}>
+                    <Trash2 size={12} /> Remove
                   </button>
                 )}
-              </div>
-            </div>
+              </Actions>
+            </Group>
           );
         })}
-        <p className="iso-help">PNG, JPEG or SVG. SVG and images over 1200 px are converted to PNG; each logo is limited to 1.5 MB.</p>
+        <Note keywords="logo">PNG, JPEG or SVG. SVG and images over 1200 px are converted to PNG; each logo is limited to 1.5 MB. The template decides where each prints.</Note>
       </Section>
 
       <Section title="Plant coordinates">
-        <p className="iso-help">
-          Plant position of the model origin. Continuation callouts print E/W, N/S and EL from it. Use a minus sign for
-          West, South or below datum.
-        </p>
-        {[0, 1, 2].map(axis)}
+        <Note keywords="plant origin coordinates">Plant position of the model origin. Continuation callouts print E/W, N/S and EL from it. A minus is West, South or below datum.</Note>
+        {AXES.map((name, i) => (
+          <Field key={name} label={name}>
+            <LengthInput aria={"Plant " + name} mm={origin[i]} units={doc.units} signed onError={onError}
+              title={'Feet and inches or millimetres, e.g. 55\'-2 5/8" or -1200 mm. Minus is West, South or below datum.'}
+              onCommit={(v) => { if (v == null) return false; const next = [...origin] as Vec3; next[i] = v; return edit((d) => setOrigin(d, next)); }} />
+          </Field>
+        ))}
         {node && (
-          <form
-            className="iso-sheet-card"
-            key={node.id + ":" + origin.join(",") + ":" + doc.units}
-            onSubmit={(e) => {
-              e.preventDefault();
-              const values = new FormData(e.currentTarget);
-              try {
-                const plant = parsePlant(["e", "n", "el"].map((k) => String(values.get(k) ?? "")), doc.units);
-                edit((d) => setOrigin(d, originFromPoint(plant, node.position)));
-              } catch (err) {
-                onError(err instanceof Error ? err.message : String(err));
-              }
-            }}
-          >
-            <div className="iso-sheet-card-head">
-              <strong>Set from selected point</strong>
-            </div>
-            <p className="iso-help">Type the plant coordinates of the selected {node.tag || "point"}; the origin is worked out from them.</p>
-            {(["e", "n", "el"] as const).map((k, i) => (
-              <Field label={AXES[i]} key={k}>
-                <input name={k} aria-label={"Selected point " + AXES[i]} defaultValue={lengthInputValue(plantCoordinate(doc, node.position)[i], doc.units)} />
+          <Group title={`Set from the selected ${node.tag || "point"}`}>
+            <Note>Type the selected point's plant coordinates; the origin is worked out from them.</Note>
+            {AXES.map((name, i) => (
+              <Field key={name} label={name}>
+                <LengthInput aria={"Selected point " + name} mm={plantCoordinate(doc, node.position)[i]} units={doc.units} signed onError={onError}
+                  onCommit={(v) => {
+                    if (v == null) return false;
+                    const plant = [...plantCoordinate(doc, node.position)] as Vec3;
+                    plant[i] = v;
+                    return edit((d) => setOrigin(d, originFromPoint(plant, node.position)));
+                  }} />
               </Field>
             ))}
-            <button className="iso-primary">Set origin</button>
-          </form>
+          </Group>
         )}
       </Section>
 
-      <Section title="Sheet callouts" hint={String((doc.sheetNotes??[]).filter(n=>n.spool===spool).length)}>
-        {(doc.sheetNotes??[]).filter(n=>n.spool===spool).map(note=>{
-          const update=(change:(n:NonNullable<IsoDocument['sheetNotes']>[number])=>void)=>edit(d=>{const n=d.sheetNotes?.find(n=>n.id===note.id);if(n)change(n)});
-          return <div className="iso-sheet-card" key={note.id}>
-            <div className="iso-sheet-card-head"><strong>Callout</strong><button aria-label="Remove callout" onClick={()=>edit(d=>{d.sheetNotes=d.sheetNotes?.filter(n=>n.id!==note.id)})}><Trash2 size={13}/></button></div>
-            {text('Callout text',note.text,(d,v)=>{d.sheetNotes!.find(n=>n.id===note.id)!.text=v})}
-            <div className="iso-sheet-grid">{(['X','Y'] as const).map((axis,i)=><Field key={axis} label={`Callout ${axis}`}><input aria-label={`Callout ${axis}`} type="number" value={note.at[i]} onChange={e=>update(n=>{n.at[i]=Number(e.target.value)})}/></Field>)}</div>
-            <Field label="Lettering"><select aria-label="Callout lettering" value={note.lettering??'cad'} onChange={e=>update(n=>{n.lettering=e.target.value as 'cad'|'sans'})}><option value="cad">CAD</option><option value="sans">Sans serif</option></select></Field>
-            <Field label="Text height"><input aria-label="Callout text height" type="number" min={.1} max={200} value={note.size??6.6} onChange={e=>update(n=>{n.size=Number(e.target.value)})}/></Field>
-            <Field label="Callout colour"><input aria-label="Callout colour" type="color" value={note.color??'#111111'} onChange={e=>update(n=>{n.color=e.target.value})}/></Field>
-            <label className="iso-check"><input type="checkbox" checked={!!note.box} onChange={e=>update(n=>{n.box=e.target.checked?{at:[n.at[0]-2,n.at[1]-10],width:120,height:18}:undefined})}/> Box</label>
-            {note.box&&<div className="iso-sheet-grid">{(['width','height'] as const).map(key=><Field key={key} label={`Box ${key}`}><input aria-label={`Callout box ${key}`} type="number" min={.1} value={note.box![key]} onChange={e=>update(n=>{n.box![key]=Number(e.target.value)})}/></Field>)}</div>}
-            <label className="iso-check"><input type="checkbox" checked={!!note.leader} onChange={e=>update(n=>{n.leader=e.target.checked?[[n.at[0]+160,n.at[1]-120],[n.at[0]+130,n.at[1]-4],[n.at[0]+120,n.at[1]-4]]:undefined;n.arrow=e.target.checked})}/> Leader</label>
-            {note.leader&&<Field label="Leader points (x, y)"><TextInput label="Callout leader points" value={note.leader.map(p=>p.join(', ')).join('; ')} onError={onError} onCommit={value=>{
-              const points=value.split(';').map(p=>p.split(',').map(Number));
-              if(points.length<2||points.some(p=>p.length!==2||!p.every(Number.isFinite))){onError('Enter at least two x, y pairs separated by semicolons.');return false}
-              return update(n=>{n.leader=points as [number,number][]})
-            }}/></Field>}
-          </div>
-        })}
-        <button className="iso-primary" onClick={()=>edit(d=>{(d.sheetNotes??=[]).push({id:crypto.randomUUID(),spool,text:'NOTE',at:[300,400]})})}><Plus size={13}/> Add callout</button>
+      <Section title="Sheet callouts" hint={String((doc.sheetNotes ?? []).filter((n) => n.spool === spool).length)}>
+        <Note keywords="callout note markup">Free notes placed on this sheet. Select one on the sheet (or below) to edit it, drag it to move it.</Note>
+        {(doc.sheetNotes ?? []).filter((n) => n.spool === spool).map((note) => (
+          <Row key={note.id} label={note.text.split("\n")[0].slice(0, 40) || "Callout"} keywords="callout">
+            <button type="button" onClick={() => onSelectNote?.(note.id)}>Edit</button>
+          </Row>
+        ))}
+        <Actions keywords="callout add">
+          <button type="button" className="is-primary" onClick={() => {
+            const [x0, y0, x1, y1] = drawing?.area ?? [0, 0, 0, 0], id = crypto.randomUUID();
+            if (edit((d) => { (d.sheetNotes ??= []).push({ id, spool, text: "NOTE", at: [(x0 + x1) / 2, (y0 + y1) / 2] }); })) onSelectNote?.(id);
+          }}><Plus size={12} /> Add callout</button>
+        </Actions>
       </Section>
 
       <Section title="General notes" hint={doc.notes.trim() ? String(doc.notes.split(/\r?\n/).filter((l) => l.trim()).length) : undefined}>
-        <textarea
-          aria-label="General notes"
-          key={doc.notes}
-          defaultValue={doc.notes}
-          rows={7}
-          maxLength={NOTES_LIMIT}
-          placeholder={"All dimensions to be verified on site.\nRemove burrs after cutting."}
-          onBlur={(e) => {
-            const next = e.target.value.replace(/\s+$/, "");
-            if (next === doc.notes) return;
-            if (next.length > NOTES_LIMIT) {
-              e.target.value = doc.notes;
-              onError(`Notes are limited to ${NOTES_LIMIT} characters.`);
-            } else if (!edit((d) => (d.notes = next))) e.target.value = doc.notes;
-          }}
-        />
-        <p className="iso-help">{doc.sheetFormat==='classic'?'One note per line. Long notes continue above the title block.':'One note per line. They print above the title block, numbered automatically.'}</p>
+        <Row label="Notes" keywords="general notes" stack>
+          <KitTextInput aria="General notes" multiline value={doc.notes} maxLength={NOTES_LIMIT} onError={onError}
+            placeholder={"All dimensions to be verified on site.\nRemove burrs after cutting."}
+            onCommit={(v) => edit((d) => (d.notes = v.replace(/\s+$/, "")))} />
+        </Row>
+        <Note keywords="notes">{doc.sheetFormat === "classic" ? "One note per line. Long notes continue above the title block." : "One note per line. They print above the title block, numbered automatically."} Ctrl/⌘+Enter finishes editing.</Note>
       </Section>
     </div>
   );
-}
-
-/** Lettering remains native text, so the same choice reaches SVG, PDF and DXF. */
-function LetteringSettings({doc,spool,commit}:{doc:IsoDocument;spool:string;commit:(edit:(d:IsoDocument)=>void)=>boolean|void}){
- const [open,setOpen]=useState(false),[selected,setSelected]=useState('');
- const labels=useMemo(()=>open?[...new Map(createDrawing(doc,spool).primitives.filter(p=>p.type==='text'&&p.label&&p.layer!=='TAG').map(p=>[p.type==='text'?p.label!.key:'',p])).values()]:[],[open,doc,spool]);
- const label=labels.find(p=>p.type==='text'&&p.label?.key===selected)??labels[0];
- const key=label?.type==='text'?label.label?.key:undefined,held=key?doc.sheets?.[spool]?.labelStyles?.[key]:undefined;
- return <details onToggle={e=>setOpen(e.currentTarget.open)}><summary>Label lettering</summary>
-  {open&&<><p className="iso-help">Adjust the size and plane of a label on this sheet. Blank fields use its automatic lettering.</p>
-   <select aria-label="Label to letter" value={key??''} onChange={e=>setSelected(e.target.value)}>{labels.map(p=>p.type==='text'&&<option key={p.label!.key} value={p.label!.key}>{p.text.trim().replace(/\n/g,' · ').slice(0,90)}</option>)}</select>
-   {key&&label?.type==='text'&&([['size','Letter height',.1,100],['rotation','Label rotation',-360,360],['oblique','Label oblique angle',-85,85]] as const).map(([field,title,min,max])=><Field key={field} label={title}><input aria-label={title} type="number" min={min} max={max} step="any" placeholder={String(field==='size'?label.size:label[field]??0)} value={held?.[field]??''} onChange={e=>{
-    const value=e.target.value===''?undefined:Number(e.target.value);if(value!=null&&(!Number.isFinite(value)||value<min||value>max))return;
-    commit(d=>{const info=((d.sheets??={})[spool]??={}),styles=(info.labelStyles??={}),style=(styles[key]??={});if(value==null)delete style[field];else style[field]=value;if(!Object.keys(style).length)delete styles[key];});
-   }}/></Field>)}
-   {key&&held&&<button onClick={()=>commit(d=>{delete d.sheets?.[spool]?.labelStyles?.[key];})}>Reset label lettering</button>}
-  </>}
- </details>
 }

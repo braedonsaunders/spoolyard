@@ -39,7 +39,12 @@ where it powers piping isometrics in Files and Tools.
   - continuation callouts with plant coordinates, centreline elevations, tie points, valve operators and flow arrows;
   - hatched offset triangles with their angles, set and roll.
 
-  Drawings are laid out not to scale, so short pieces stay readable, with automatic label placement. The next
+  Drawings are laid out not to scale, so short pieces stay readable, with automatic label placement. A material
+  list that would crowd its drawing moves to a sheet of its own after it, with the same title block and
+  `MATERIAL LIST CONTINUED ON SHEET n` on the drawing (Drawing setup › Material list: automatic, always on the
+  sheet, or always separate), and the set is numbered sheet n of m. No issued sheet overprints its lettering: on a
+  sheet too dense to place a label beside its item, the label is drawn whole in the margin with a leader to the
+  item, and one that finds no clear paper at all is left off and reported. The next
   spool's parts are drawn thin beyond each break. Link another `.piping` file at a continuation to include a
   snapshot of its neighbouring components without adding its material or welds to this drawing.
 - **Issued drawing controls.** Hold and reorder item numbers, retain verbatim issued BOM cells alongside the
@@ -79,7 +84,8 @@ where it powers piping isometrics in Files and Tools.
 - **Paper or model space.** Draw directly on the issued sheet, or switch to an infinite isometric grid. A 3D
   review checks the routing.
 - **Outputs:**
-  - a full-page PDF package: one sheet per spool and view, plus material, cut and weld schedules;
+  - a full-page PDF package: one sheet per spool and view (and its material-list sheet), plus material, cut and
+    weld schedules;
   - DXF and native DWG at true paper size with AutoCAD ROMANS lettering;
   - PCF for plant-design and stress tools;
   - SVG and CSV schedules.
@@ -142,6 +148,7 @@ drawing self-contained. DXF exports carry the same model in an XRECORD, so Spool
 
 ## License
 
-[AGPL-3.0](LICENSE). DWG export uses [GNU LibreDWG](https://www.gnu.org/software/libredwg/) compiled to
-WebAssembly (GPL-3.0, see `public/dwg-export/COPYING`); PDFs embed Noto Sans (SIL Open Font License, see
+[AGPL-3.0](LICENSE). DWG export uses [GNU LibreDWG](https://www.gnu.org/software/libredwg/) 0.14 compiled to
+WebAssembly (GPL-3.0-or-later, see `public/dwg-export/COPYING`; its source and reproducible build are in
+`public/dwg-export/SOURCE.md` and `scripts/build-dwg-export.sh`); PDFs embed Noto Sans (SIL Open Font License, see
 `public/fonts/LICENSE`).

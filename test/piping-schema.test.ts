@@ -58,7 +58,7 @@ test('the bundled sample and every library specification still open', () => {
   assert.ok(parseIsoJson(sample).runs.length > 0);
   for (const file of readdirSync(new URL('../public/library/specs/', import.meta.url))) {
     const spec = JSON.parse(readFileSync(new URL('../public/library/specs/' + file, import.meta.url), 'utf8'));
-    delete spec.branchCodes; delete spec.unsizedItems;
+    delete spec.unsizedItems;
     const d = newIso(); d.specs = [spec];
     assert.equal(parseIsoJson(JSON.stringify(d)).specs[0].fittings.length, spec.fittings.length, file);
   }

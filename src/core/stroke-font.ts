@@ -4,6 +4,8 @@
  * (Cognition, Inc.); see public/fonts/LICENSE. Proportions are measured from production isometric sheets:
  * glyphs at 0.8 width (AutoCAD width factor 0.8), slightly open tracking and a wide word space.
  */
+import { paperPt, type PaperSize } from './paper'
+
 export type StrokePoint = [number, number]
 export type Stroke = StrokePoint[]
 export type TextAnchor = 'start' | 'middle' | 'end'
@@ -25,8 +27,10 @@ export interface StrokeTextOptions {
 export const ROMANS_WIDTH_FACTOR = 0.8
 /** Baseline-to-baseline distance of stacked lines, in cap heights. */
 export const LINE_SPACING = 1.9
-/** A 0.48 pt CAD pen on tabloid paper, expressed in the drawing's 850-unit sheet height. */
-export const CAD_STROKE_WIDTH = 0.48 * 850 / 792
+/** The thin CAD pen for lettering and symbols: 0.48 pt (0.17 mm) on the printed paper. */
+export const CAD_PEN_PT = 0.48
+/** The thin CAD pen in sheet units for a paper size. */
+export const cadStrokeWidth = (paper?: PaperSize) => paperPt(CAD_PEN_PT, paper)
 
 /**
  * Hershey Roman Simplex (rowmans.jhf), ASCII 32–126. Each entry starts with the left and right bearing; then
@@ -78,11 +82,13 @@ const EXTRA: Record<string, string> = {
   '℄': 'HbZHYFWDUCQCODMFLHKKKPLSMUOWQXUXWWYUZS RRKR` RR`^`',
   '±': 'E_RGRW RIO[O RI[[[',
   '×': 'G]LLXX RXLLX',
+  // A middle dot: the full stop's dot raised to half the cap height.
+  '·': 'MWROQPRQSPRO',
   '�': 'JZMFM[W[WFMF'
 }
 const ALIASES: Record<string, string> = {
   '′': "'", '’': "'", '‘': "'", '″': '"', '“': '"', '”': '"', '–': '-', '—': '-', '−': '-', '\u00a0': ' ', '\t': ' ',
-  '½': '1/2', '¼': '1/4', '¾': '3/4', '⅛': '1/8', '⅜': '3/8', '⅝': '5/8', '⅞': '7/8'
+  '•': '·', '½': '1/2', '¼': '1/4', '¾': '3/4', '⅛': '1/8', '⅜': '3/8', '⅝': '5/8', '⅞': '7/8'
 }
 
 const CAP = 21
@@ -134,8 +140,16 @@ const advance = (line: Glyph[]) => line.reduce((sum, g) => sum + g.advance, 0)
 
 /** Advance width of the widest line for cap height `size`, in the same units as `size`. */
 export function measureText(text: string, size: number, width = 1): number {
-  return Math.max(0, ...lines(text).map(advance)) * (size / CAP) * ROMANS_WIDTH_FACTOR * width
+  let widest = advances.get(text)
+  if (widest == null) {
+    if (advances.size >= ADVANCES_KEPT) advances.clear()
+    advances.set(text, widest = Math.max(0, ...lines(text).map(advance)))
+  }
+  return widest * (size / CAP) * ROMANS_WIDTH_FACTOR * width
 }
+/** The widest line's advance of each text measured (glyph units), so a sheet's lettering is measured once. */
+const advances = new Map<string, number>()
+const ADVANCES_KEPT = 20000
 
 /** Polylines of the lettering in page coordinates (y down). Lines after a newline stack below the first. */
 export function strokeText(text: string, options: StrokeTextOptions): Stroke[] {

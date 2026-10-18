@@ -16,7 +16,82 @@ export type ComponentCategory =
   | 'instruments'
   | 'annotation'
 export type ComponentEndPrep = 'BW' | 'SW' | 'THD' | 'FL' | 'PLAIN'
-export interface ComponentType {
+/**
+ * The family of isometric symbol a component is drawn with. Drawing dispatches on the family, never on the catalogue
+ * code, so a specification row or custom code drawn as a ball valve is drawn as any other ball valve.
+ */
+export const SYMBOL_FAMILIES = [
+  'pipe', 'nipple', 'elbow', 'tee',
+  'reducer', 'eccentric-reducer', 'reducing-coupling',
+  'cap', 'socket-cap', 'tube-end', 'quick-coupling-cap',
+  'coupling', 'union', 'quick-coupling',
+  'olet', 'half-coupling',
+  'flange', 'lap-joint-flange', 'stub-end', 'blind-flange', 'gasket', 'bolt',
+  'valve', 'gate', 'globe', 'ball', 'plug-valve', 'check', 'butterfly', 'control', 'relief',
+  'hose', 'dampener', 'regulator', 'meter',
+  'support', 'hanger', 'u-bolt',
+  'instrument', 'flow-arrow', 'insulation', 'insulation-limit', 'wall', 'nozzle', 'equipment', 'glyph'
+] as const
+export type SymbolFamily = (typeof SYMBOL_FAMILIES)[number]
+export type ValveOperator = 'none' | 'lever' | 'actuator' | 'handwheel' | 'box'
+/**
+ * Drafting proportions of a symbol body not to scale, in lettering heights: its half-length along the pipe and its
+ * half-width across it, at the smallest size class (see `boreClass`).
+ */
+export interface BodyProportions { length: number; width: number }
+/** How a component is drafted, from its family with the type's own explicit choices over it. */
+export interface ComponentDrafting {
+  symbol: SymbolFamily
+  /**
+   * Dimension chains run through the component rather than stopping at it: it only joins the pieces either side
+   * (nipples, couplings, unions, quick couplings, regulators).
+   */
+  dimensionThrough?: boolean
+  /** Operator drawn on the stem when the node does not choose one. */
+  defaultOperator?: ValveOperator
+  body?: BodyProportions
+  /** Support caption when the node has no callout text of its own. */
+  supportLabel?: string
+  /** Type abbreviation lettered under a branch outlet's size, e.g. SOL. */
+  abbreviation?: string
+  /** Relative size of a scalable annotation symbol, such as a directional arrow. */
+  symbolScale?: number
+}
+/** Family defaults; a component type states only where it differs. */
+export const SYMBOL_FAMILY_DRAFTING: Partial<Record<SymbolFamily, Omit<ComponentDrafting, 'symbol'>>> = {
+  nipple: { dimensionThrough: true },
+  coupling: { dimensionThrough: true, body: { length: 1.14, width: 1.41 } },
+  union: { dimensionThrough: true, body: { length: 0.91, width: 1.14 } },
+  'quick-coupling': { dimensionThrough: true },
+  'quick-coupling-cap': { dimensionThrough: true },
+  'reducing-coupling': { dimensionThrough: true, body: { length: 1.14, width: 0.86 } },
+  'half-coupling': { dimensionThrough: true, body: { length: 0.76, width: 0.68 } },
+  regulator: { dimensionThrough: true, body: { length: 1.67, width: 1.14 } },
+  valve: { defaultOperator: 'handwheel', body: { length: 2.73, width: 1.52 } },
+  gate: { defaultOperator: 'handwheel', body: { length: 2.73, width: 1.52 } },
+  globe: { defaultOperator: 'handwheel', body: { length: 2.73, width: 1.52 } },
+  'plug-valve': { defaultOperator: 'lever', body: { length: 2.73, width: 1.52 } },
+  ball: { defaultOperator: 'lever', body: { length: 2.27, width: 1.14 } },
+  check: { defaultOperator: 'none', body: { length: 2.73, width: 1.52 } },
+  butterfly: { defaultOperator: 'lever', body: { length: 2.73, width: 1.52 } },
+  control: { defaultOperator: 'actuator', body: { length: 2.73, width: 1.52 } },
+  relief: { defaultOperator: 'none', body: { length: 2.27, width: 1.41 } },
+  hose: { body: { length: 2.73, width: 1.29 } },
+  meter: { body: { length: 2.27, width: 1.14 } }
+}
+/** The generic symbol of a component kind, for a custom or unknown code. */
+export const KIND_SYMBOL: Record<Kind | 'pipe' | 'annotation', SymbolFamily> = {
+  pipe: 'pipe', end: 'glyph', elbow90: 'elbow', elbow45: 'elbow', tee: 'tee', flange: 'flange', valve: 'valve', reducer: 'reducer',
+  cap: 'cap', support: 'support', weld: 'glyph', olet: 'olet', gasket: 'gasket', bolt: 'bolt', annotation: 'glyph'
+}
+/** Drafting of a symbol family, optionally over a component type's own choices. */
+export function familyDrafting(symbol: SymbolFamily, own: Partial<ComponentDrafting> = {}): ComponentDrafting {
+  const defined = Object.fromEntries(Object.entries(own).filter(([, v]) => v !== undefined))
+  return { ...SYMBOL_FAMILY_DRAFTING[symbol], ...defined, symbol }
+}
+export interface ComponentType extends Omit<ComponentDrafting, 'symbol'> {
+  /** The drawn symbol family. */
+  symbol: SymbolFamily
   code: string
   label: string
   category: ComponentCategory
@@ -52,6 +127,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Pipe',
     category: 'pipe',
     kind: 'pipe',
+    symbol: 'pipe',
     endPrep: 'BW',
     ports: 2,
     description: 'Straight pipe; schedule per spec wall-thickness chart.'
@@ -62,6 +138,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     category: 'pipe',
     // A bought length of threaded pipe, placed like an in-line fitting and drawn as pipe.
     kind: 'valve',
+    symbol: 'nipple',
     endPrep: 'THD',
     ports: 2,
     description: 'Short pipe length between screwed/socket-weld fittings; length from the spec Pipe Nipple Length.'
@@ -71,6 +148,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Pipe bend',
     category: 'elbows',
     kind: 'elbow90',
+    symbol: 'elbow',
     endPrep: 'BW',
     ports: 2,
     description: 'Induction/cold bend formed from pipe; radius set per job.'
@@ -80,6 +158,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: '90° long-radius elbow, butt-weld',
     category: 'elbows',
     kind: 'elbow90',
+    symbol: 'elbow',
     endPrep: 'BW',
     ports: 2,
     description: 'ASME B16.9 90° LR elbow (R = 1.5D).'
@@ -89,6 +168,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: '90° short-radius elbow, butt-weld',
     category: 'elbows',
     kind: 'elbow90',
+    symbol: 'elbow',
     endPrep: 'BW',
     ports: 2,
     description: 'ASME B16.9 90° SR elbow (R = 1D).'
@@ -98,6 +178,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: '90° 3D elbow, butt-weld',
     category: 'elbows',
     kind: 'elbow90',
+    symbol: 'elbow',
     endPrep: 'BW',
     ports: 2,
     description: '90° elbow with 3-diameter radius.'
@@ -107,6 +188,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: '45° elbow, butt-weld',
     category: 'elbows',
     kind: 'elbow45',
+    symbol: 'elbow',
     endPrep: 'BW',
     ports: 2,
     description: 'ASME B16.9 45° LR elbow.'
@@ -116,6 +198,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: '45° 3D elbow, butt-weld',
     category: 'elbows',
     kind: 'elbow45',
+    symbol: 'elbow',
     endPrep: 'BW',
     ports: 2,
     description: '45° elbow with 3-diameter radius.'
@@ -125,6 +208,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: '90° reducing elbow, long-radius, butt-weld',
     category: 'elbows',
     kind: 'elbow90',
+    symbol: 'elbow',
     endPrep: 'BW',
     reducing: true,
     ports: 2,
@@ -135,6 +219,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: '180° long-radius return, butt-weld',
     category: 'elbows',
     kind: 'elbow90',
+    symbol: 'elbow',
     endPrep: 'BW',
     ports: 2,
     description: 'ASME B16.9 LR return (centre-to-centre 3D).'
@@ -144,6 +229,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: '180° short-radius return, butt-weld',
     category: 'elbows',
     kind: 'elbow90',
+    symbol: 'elbow',
     endPrep: 'BW',
     ports: 2,
     description: 'ASME B16.9 SR return (centre-to-centre 2D).'
@@ -153,6 +239,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: '90° elbow, socket-weld',
     category: 'elbows',
     kind: 'elbow90',
+    symbol: 'elbow',
     endPrep: 'SW',
     ports: 2,
     description: 'ASME B16.11 socket-weld 90° elbow.'
@@ -162,6 +249,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: '45° elbow, socket-weld',
     category: 'elbows',
     kind: 'elbow45',
+    symbol: 'elbow',
     endPrep: 'SW',
     ports: 2,
     description: 'ASME B16.11 socket-weld 45° elbow.'
@@ -171,6 +259,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: '90° elbow, threaded',
     category: 'elbows',
     kind: 'elbow90',
+    symbol: 'elbow',
     endPrep: 'THD',
     ports: 2,
     description: 'ASME B16.11 threaded 90° elbow.'
@@ -180,6 +269,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: '45° elbow, threaded',
     category: 'elbows',
     kind: 'elbow45',
+    symbol: 'elbow',
     endPrep: 'THD',
     ports: 2,
     description: 'ASME B16.11 threaded 45° elbow.'
@@ -189,6 +279,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Straight tee, butt-weld',
     category: 'tees',
     kind: 'tee',
+    symbol: 'tee',
     endPrep: 'BW',
     ports: 3,
     description: 'ASME B16.9 equal tee.'
@@ -198,6 +289,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Reducing tee, butt-weld',
     category: 'tees',
     kind: 'tee',
+    symbol: 'tee',
     endPrep: 'BW',
     reducing: true,
     ports: 3,
@@ -208,6 +300,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Straight cross, butt-weld',
     category: 'tees',
     kind: 'tee',
+    symbol: 'tee',
     endPrep: 'BW',
     ports: 4,
     description: 'ASME B16.9 equal cross.'
@@ -217,6 +310,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Reducing cross, butt-weld',
     category: 'tees',
     kind: 'tee',
+    symbol: 'tee',
     endPrep: 'BW',
     reducing: true,
     ports: 4,
@@ -227,6 +321,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: '45° lateral, butt-weld',
     category: 'tees',
     kind: 'tee',
+    symbol: 'tee',
     endPrep: 'BW',
     ports: 3,
     description: 'Straight 45° lateral (run is asymmetric).'
@@ -236,6 +331,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Reducing 45° lateral, butt-weld',
     category: 'tees',
     kind: 'tee',
+    symbol: 'tee',
     endPrep: 'BW',
     reducing: true,
     ports: 3,
@@ -246,6 +342,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Straight tee, socket-weld',
     category: 'tees',
     kind: 'tee',
+    symbol: 'tee',
     endPrep: 'SW',
     ports: 3,
     description: 'ASME B16.11 socket-weld tee.'
@@ -255,6 +352,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Reducing tee, socket-weld',
     category: 'tees',
     kind: 'tee',
+    symbol: 'tee',
     endPrep: 'SW',
     reducing: true,
     ports: 3,
@@ -265,6 +363,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Straight cross, socket-weld',
     category: 'tees',
     kind: 'tee',
+    symbol: 'tee',
     endPrep: 'SW',
     ports: 4,
     description: 'ASME B16.11 socket-weld cross.'
@@ -274,6 +373,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Reducing cross, socket-weld',
     category: 'tees',
     kind: 'tee',
+    symbol: 'tee',
     endPrep: 'SW',
     reducing: true,
     ports: 4,
@@ -284,6 +384,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: '45° lateral, socket-weld',
     category: 'tees',
     kind: 'tee',
+    symbol: 'tee',
     endPrep: 'SW',
     ports: 3,
     description: 'Socket-weld 45° lateral.'
@@ -293,6 +394,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Reducing 45° lateral, socket-weld',
     category: 'tees',
     kind: 'tee',
+    symbol: 'tee',
     endPrep: 'SW',
     reducing: true,
     ports: 3,
@@ -303,6 +405,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Straight tee, threaded',
     category: 'tees',
     kind: 'tee',
+    symbol: 'tee',
     endPrep: 'THD',
     ports: 3,
     description: 'ASME B16.11 threaded tee.'
@@ -312,6 +415,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Reducing tee, threaded',
     category: 'tees',
     kind: 'tee',
+    symbol: 'tee',
     endPrep: 'THD',
     reducing: true,
     ports: 3,
@@ -322,6 +426,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Straight cross, threaded',
     category: 'tees',
     kind: 'tee',
+    symbol: 'tee',
     endPrep: 'THD',
     ports: 4,
     description: 'ASME B16.11 threaded cross.'
@@ -331,6 +436,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Reducing cross, threaded',
     category: 'tees',
     kind: 'tee',
+    symbol: 'tee',
     endPrep: 'THD',
     reducing: true,
     ports: 4,
@@ -341,6 +447,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: '45° lateral, threaded',
     category: 'tees',
     kind: 'tee',
+    symbol: 'tee',
     endPrep: 'THD',
     ports: 3,
     description: 'Threaded 45° lateral.'
@@ -350,6 +457,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Reducing 45° lateral, threaded',
     category: 'tees',
     kind: 'tee',
+    symbol: 'tee',
     endPrep: 'THD',
     reducing: true,
     ports: 3,
@@ -360,6 +468,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Concentric reducer, butt-weld',
     category: 'reducers',
     kind: 'reducer',
+    symbol: 'reducer',
     endPrep: 'BW',
     reducing: true,
     ports: 2,
@@ -370,6 +479,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Eccentric reducer, butt-weld',
     category: 'reducers',
     kind: 'reducer',
+    symbol: 'eccentric-reducer',
     endPrep: 'BW',
     reducing: true,
     ports: 2,
@@ -380,6 +490,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Concentric swage',
     category: 'reducers',
     kind: 'reducer',
+    symbol: 'reducer',
     endPrep: 'PLAIN',
     reducing: true,
     ports: 2,
@@ -390,6 +501,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Eccentric swage',
     category: 'reducers',
     kind: 'reducer',
+    symbol: 'eccentric-reducer',
     endPrep: 'PLAIN',
     reducing: true,
     ports: 2,
@@ -400,6 +512,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Concentric swage',
     category: 'reducers',
     kind: 'reducer',
+    symbol: 'reducer',
     endPrep: 'PLAIN',
     reducing: true,
     ports: 2,
@@ -410,6 +523,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Eccentric swage',
     category: 'reducers',
     kind: 'reducer',
+    symbol: 'eccentric-reducer',
     endPrep: 'PLAIN',
     reducing: true,
     ports: 2,
@@ -420,6 +534,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Reducing coupling, socket-weld',
     category: 'reducers',
     kind: 'reducer',
+    symbol: 'reducing-coupling',
     endPrep: 'SW',
     reducing: true,
     ports: 2,
@@ -430,6 +545,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Reducing coupling, threaded',
     category: 'reducers',
     kind: 'reducer',
+    symbol: 'reducing-coupling',
     endPrep: 'THD',
     reducing: true,
     ports: 2,
@@ -440,6 +556,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Transition piece',
     category: 'reducers',
     kind: 'reducer',
+    symbol: 'reducer',
     endPrep: 'BW',
     ports: 2,
     description: 'Wall-thickness / material transition piece.'
@@ -449,6 +566,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Cap, butt-weld',
     category: 'caps-plugs',
     kind: 'cap',
+    symbol: 'cap',
     endPrep: 'BW',
     ports: 1,
     description: 'ASME B16.9 cap.'
@@ -458,6 +576,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Cap, socket-weld',
     category: 'caps-plugs',
     kind: 'cap',
+    symbol: 'socket-cap',
     endPrep: 'SW',
     ports: 1,
     description: 'ASME B16.11 socket-weld cap.'
@@ -467,6 +586,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Cap, threaded',
     category: 'caps-plugs',
     kind: 'cap',
+    symbol: 'socket-cap',
     endPrep: 'THD',
     ports: 1,
     description: 'ASME B16.11 threaded cap.'
@@ -476,6 +596,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Hex-head plug, threaded',
     category: 'caps-plugs',
     kind: 'cap',
+    symbol: 'socket-cap',
     endPrep: 'THD',
     ports: 1,
     description: 'ASME B16.11 threaded plug.'
@@ -485,6 +606,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Full coupling, socket-weld',
     category: 'couplings-unions',
     kind: 'valve',
+    symbol: 'coupling',
     endPrep: 'SW',
     ports: 2,
     description: 'ASME B16.11 socket-weld full coupling (inline, 2 ports).'
@@ -494,6 +616,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Full coupling, threaded',
     category: 'couplings-unions',
     kind: 'valve',
+    symbol: 'coupling',
     endPrep: 'THD',
     ports: 2,
     description: 'ASME B16.11 threaded full coupling (inline, 2 ports).'
@@ -503,6 +626,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Union, socket-weld',
     category: 'couplings-unions',
     kind: 'valve',
+    symbol: 'union',
     endPrep: 'SW',
     ports: 2,
     description: 'MSS SP-83 socket-weld union.'
@@ -512,6 +636,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Union, threaded',
     category: 'couplings-unions',
     kind: 'valve',
+    symbol: 'union',
     endPrep: 'THD',
     ports: 2,
     description: 'MSS SP-83 threaded union.'
@@ -521,6 +646,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Half coupling, socket-weld',
     category: 'branches',
     kind: 'olet',
+    symbol: 'half-coupling',
     endPrep: 'SW',
     ports: 1,
     description: 'Half coupling welded to the header as a branch outlet.'
@@ -530,6 +656,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Half coupling, threaded',
     category: 'branches',
     kind: 'olet',
+    symbol: 'half-coupling',
     endPrep: 'THD',
     ports: 1,
     description: 'Threaded half coupling welded to the header as a branch outlet.'
@@ -539,6 +666,8 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Weldolet',
     category: 'branches',
     kind: 'olet',
+    symbol: 'olet',
+    abbreviation: 'WOL',
     endPrep: 'BW',
     ports: 1,
     description: 'Butt-weld branch outlet (MSS SP-97).'
@@ -548,6 +677,8 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Sockolet',
     category: 'branches',
     kind: 'olet',
+    symbol: 'olet',
+    abbreviation: 'SOL',
     endPrep: 'SW',
     ports: 1,
     description: 'Socket-weld branch outlet (MSS SP-97).'
@@ -557,6 +688,8 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Threadolet',
     category: 'branches',
     kind: 'olet',
+    symbol: 'olet',
+    abbreviation: 'TOL',
     endPrep: 'THD',
     ports: 1,
     description: 'Threaded branch outlet (MSS SP-97).'
@@ -566,6 +699,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Elbolet, butt-weld',
     category: 'branches',
     kind: 'olet',
+    symbol: 'olet',
     endPrep: 'BW',
     ports: 1,
     description: 'Butt-weld outlet on an elbow.'
@@ -575,6 +709,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Elbolet, socket-weld',
     category: 'branches',
     kind: 'olet',
+    symbol: 'olet',
     endPrep: 'SW',
     ports: 1,
     description: 'Socket-weld outlet on an elbow.'
@@ -584,6 +719,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Elbolet, threaded',
     category: 'branches',
     kind: 'olet',
+    symbol: 'olet',
     endPrep: 'THD',
     ports: 1,
     description: 'Threaded outlet on an elbow.'
@@ -593,6 +729,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Reinforcing pad',
     category: 'branches',
     kind: 'olet',
+    symbol: 'glyph',
     endPrep: 'PLAIN',
     ports: 0,
     description: 'Reinforcing pad for a stub-in branch; not inline.'
@@ -602,6 +739,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Weld-neck flange, raised face',
     category: 'flanges',
     kind: 'flange',
+    symbol: 'flange',
     endPrep: 'BW',
     ports: 2,
     description: 'ASME B16.5 WN RF flange.'
@@ -611,6 +749,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Weld-neck flange, flat face',
     category: 'flanges',
     kind: 'flange',
+    symbol: 'flange',
     endPrep: 'BW',
     ports: 2,
     description: 'ASME B16.5 WN FF flange.'
@@ -620,6 +759,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Long weld-neck flange, raised face',
     category: 'flanges',
     kind: 'flange',
+    symbol: 'flange',
     endPrep: 'BW',
     ports: 2,
     description: 'Long weld-neck RF flange.'
@@ -629,6 +769,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Long weld-neck flange, flat face',
     category: 'flanges',
     kind: 'flange',
+    symbol: 'flange',
     endPrep: 'BW',
     ports: 2,
     description: 'Long weld-neck FF flange.'
@@ -638,6 +779,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Lap-joint flange with stub end, raised face',
     category: 'flanges',
     kind: 'flange',
+    symbol: 'lap-joint-flange',
     endPrep: 'BW',
     ports: 2,
     description: 'ASME B16.5 lap-joint flange on a butt-weld stub end (MSS SP-43 type A).'
@@ -647,6 +789,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Lap-joint flange with stub end, flat face',
     category: 'flanges',
     kind: 'flange',
+    symbol: 'lap-joint-flange',
     endPrep: 'BW',
     ports: 2,
     description: 'ASME B16.5 lap-joint flange on a butt-weld stub end, flat face.'
@@ -656,6 +799,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Stub end, long pattern',
     category: 'flanges',
     kind: 'flange',
+    symbol: 'stub-end',
     endPrep: 'BW',
     ports: 2,
     description: 'ASME B16.9 long-pattern lap-joint stub end; its lap-joint flange is supplied with the joint.'
@@ -665,6 +809,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Stub end, short pattern',
     category: 'flanges',
     kind: 'flange',
+    symbol: 'stub-end',
     endPrep: 'BW',
     ports: 2,
     description: 'MSS SP-43 short-pattern stub end; its lap-joint flange is supplied with the joint.'
@@ -674,6 +819,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'MSS weld-neck flange, raised face',
     category: 'flanges',
     kind: 'flange',
+    symbol: 'flange',
     endPrep: 'BW',
     ports: 2,
     description: 'MSS SP-44 WN RF flange.'
@@ -683,6 +829,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'MSS weld-neck flange, flat face',
     category: 'flanges',
     kind: 'flange',
+    symbol: 'flange',
     endPrep: 'BW',
     ports: 2,
     description: 'MSS SP-44 WN FF flange.'
@@ -692,6 +839,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Slip-on flange, raised face',
     category: 'flanges',
     kind: 'flange',
+    symbol: 'flange',
     endPrep: 'PLAIN',
     ports: 2,
     description: 'ASME B16.5 slip-on RF flange.'
@@ -701,6 +849,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Socket-weld flange, raised face',
     category: 'flanges',
     kind: 'flange',
+    symbol: 'flange',
     endPrep: 'SW',
     ports: 2,
     description: 'ASME B16.5 socket-weld RF flange.'
@@ -710,6 +859,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Socket-weld flange, flat face',
     category: 'flanges',
     kind: 'flange',
+    symbol: 'flange',
     endPrep: 'SW',
     ports: 2,
     description: 'ASME B16.5 socket-weld FF flange.'
@@ -719,6 +869,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Threaded flange, raised face',
     category: 'flanges',
     kind: 'flange',
+    symbol: 'flange',
     endPrep: 'THD',
     ports: 2,
     description: 'ASME B16.5 threaded RF flange.'
@@ -728,6 +879,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Threaded flange, flat face',
     category: 'flanges',
     kind: 'flange',
+    symbol: 'flange',
     endPrep: 'THD',
     ports: 2,
     description: 'ASME B16.5 threaded FF flange.'
@@ -737,6 +889,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Blind flange, raised face',
     category: 'flanges',
     kind: 'flange',
+    symbol: 'blind-flange',
     endPrep: 'FL',
     ports: 1,
     description: 'ASME B16.5 blind RF flange.'
@@ -746,6 +899,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'MSS blind flange, raised face',
     category: 'flanges',
     kind: 'flange',
+    symbol: 'blind-flange',
     endPrep: 'FL',
     ports: 1,
     description: 'MSS SP-44 blind RF flange.'
@@ -755,6 +909,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'MSS blind flange, flat face',
     category: 'flanges',
     kind: 'flange',
+    symbol: 'blind-flange',
     endPrep: 'FL',
     ports: 1,
     description: 'MSS SP-44 blind FF flange.'
@@ -764,6 +919,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Gasket, raised face',
     category: 'gaskets-bolts',
     kind: 'gasket',
+    symbol: 'gasket',
     endPrep: 'FL',
     ports: 2,
     description: 'ASME B16.20 spiral-wound gasket for RF flanges.'
@@ -773,6 +929,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Gasket, flat face',
     category: 'gaskets-bolts',
     kind: 'gasket',
+    symbol: 'gasket',
     endPrep: 'FL',
     ports: 2,
     description: 'Full-face gasket for FF flanges.'
@@ -782,6 +939,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Stud bolts with nuts, raised face',
     category: 'gaskets-bolts',
     kind: 'bolt',
+    symbol: 'bolt',
     endPrep: 'FL',
     ports: 0,
     description: 'Stud bolt set for one RF flanged joint.'
@@ -791,6 +949,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Gate valve, flanged',
     category: 'valves',
     kind: 'valve',
+    symbol: 'gate',
     endPrep: 'FL',
     ports: 2,
     description: 'ASME B16.10 flanged gate valve.'
@@ -800,6 +959,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Gate valve, butt-weld',
     category: 'valves',
     kind: 'valve',
+    symbol: 'gate',
     endPrep: 'BW',
     ports: 2,
     description: 'ASME B16.10 butt-weld gate valve.'
@@ -809,6 +969,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Gate valve, socket-weld',
     category: 'valves',
     kind: 'valve',
+    symbol: 'gate',
     endPrep: 'SW',
     ports: 2,
     description: 'API 602 socket-weld gate valve.'
@@ -818,6 +979,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Gate valve, threaded',
     category: 'valves',
     kind: 'valve',
+    symbol: 'gate',
     endPrep: 'THD',
     ports: 2,
     description: 'API 602 threaded gate valve.'
@@ -827,6 +989,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Gate valve, threaded × socket-weld',
     category: 'valves',
     kind: 'valve',
+    symbol: 'gate',
     endPrep: 'SW',
     ports: 2,
     description: 'Gate valve, threaded (female) one end, socket-weld other.'
@@ -836,6 +999,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Globe valve, flanged',
     category: 'valves',
     kind: 'valve',
+    symbol: 'globe',
     endPrep: 'FL',
     ports: 2,
     description: 'ASME B16.10 flanged globe valve.'
@@ -845,6 +1009,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Globe valve, butt-weld',
     category: 'valves',
     kind: 'valve',
+    symbol: 'globe',
     endPrep: 'BW',
     ports: 2,
     description: 'ASME B16.10 butt-weld globe valve.'
@@ -854,6 +1019,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Globe valve, socket-weld',
     category: 'valves',
     kind: 'valve',
+    symbol: 'globe',
     endPrep: 'SW',
     ports: 2,
     description: 'Socket-weld globe valve.'
@@ -863,6 +1029,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Globe valve, threaded',
     category: 'valves',
     kind: 'valve',
+    symbol: 'globe',
     endPrep: 'THD',
     ports: 2,
     description: 'Threaded globe valve.'
@@ -872,6 +1039,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Globe valve, threaded × socket-weld',
     category: 'valves',
     kind: 'valve',
+    symbol: 'globe',
     endPrep: 'SW',
     ports: 2,
     description: 'Globe valve, threaded one end, socket-weld other.'
@@ -881,6 +1049,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Ball valve, flanged',
     category: 'valves',
     kind: 'valve',
+    symbol: 'ball',
     endPrep: 'FL',
     ports: 2,
     description: 'Flanged ball valve; port per spec Ball Valve Type.'
@@ -890,6 +1059,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Ball valve, socket-weld',
     category: 'valves',
     kind: 'valve',
+    symbol: 'ball',
     endPrep: 'SW',
     ports: 2,
     description: 'Socket-weld ball valve.'
@@ -899,6 +1069,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Ball valve, threaded',
     category: 'valves',
     kind: 'valve',
+    symbol: 'ball',
     endPrep: 'THD',
     ports: 2,
     description: 'Threaded ball valve.'
@@ -908,6 +1079,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Ball valve, threaded × socket-weld',
     category: 'valves',
     kind: 'valve',
+    symbol: 'ball',
     endPrep: 'SW',
     ports: 2,
     description: 'Ball valve, threaded one end, socket-weld other.'
@@ -917,6 +1089,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Check valve, flanged',
     category: 'valves',
     kind: 'valve',
+    symbol: 'check',
     endPrep: 'FL',
     ports: 2,
     description: 'Flanged check valve; pattern per spec Check Valve Type.'
@@ -926,6 +1099,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Check valve, socket-weld',
     category: 'valves',
     kind: 'valve',
+    symbol: 'check',
     endPrep: 'SW',
     ports: 2,
     description: 'Socket-weld check valve.'
@@ -935,6 +1109,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Check valve, threaded',
     category: 'valves',
     kind: 'valve',
+    symbol: 'check',
     endPrep: 'THD',
     ports: 2,
     description: 'Threaded check valve.'
@@ -944,6 +1119,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Check valve, threaded × socket-weld',
     category: 'valves',
     kind: 'valve',
+    symbol: 'check',
     endPrep: 'SW',
     ports: 2,
     description: 'Check valve, threaded one end, socket-weld other.'
@@ -953,6 +1129,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Plug valve, flanged',
     category: 'valves',
     kind: 'valve',
+    symbol: 'plug-valve',
     endPrep: 'FL',
     ports: 2,
     description: 'Flanged plug valve; pattern per spec Plug Valve Type.'
@@ -962,6 +1139,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Plug valve, socket-weld',
     category: 'valves',
     kind: 'valve',
+    symbol: 'plug-valve',
     endPrep: 'SW',
     ports: 2,
     description: 'Socket-weld plug valve.'
@@ -971,6 +1149,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Plug valve, threaded',
     category: 'valves',
     kind: 'valve',
+    symbol: 'plug-valve',
     endPrep: 'THD',
     ports: 2,
     description: 'Threaded plug valve.'
@@ -980,6 +1159,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Plug valve, threaded × socket-weld',
     category: 'valves',
     kind: 'valve',
+    symbol: 'plug-valve',
     endPrep: 'SW',
     ports: 2,
     description: 'Plug valve, threaded one end, socket-weld other.'
@@ -990,6 +1170,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Angle valve, flanged',
     category: 'valves',
     kind: 'valve',
+    symbol: 'valve',
     endPrep: 'FL',
     ports: 2,
     description: 'Flanged angle valve (90° body).'
@@ -1000,6 +1181,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Angle valve, socket-weld',
     category: 'valves',
     kind: 'valve',
+    symbol: 'valve',
     endPrep: 'SW',
     ports: 2,
     description: 'Socket-weld angle valve (90° body).'
@@ -1010,6 +1192,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Angle valve, threaded',
     category: 'valves',
     kind: 'valve',
+    symbol: 'valve',
     endPrep: 'THD',
     ports: 2,
     description: 'Threaded angle valve (90° body).'
@@ -1019,6 +1202,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Needle valve, socket-weld',
     category: 'valves',
     kind: 'valve',
+    symbol: 'valve',
     endPrep: 'SW',
     ports: 2,
     description: 'Socket-weld needle valve.'
@@ -1028,6 +1212,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Needle valve, threaded',
     category: 'valves',
     kind: 'valve',
+    symbol: 'valve',
     endPrep: 'THD',
     ports: 2,
     description: 'Threaded (F × F) needle valve.'
@@ -1037,6 +1222,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Needle valve, threaded male × female',
     category: 'valves',
     kind: 'valve',
+    symbol: 'valve',
     endPrep: 'THD',
     ports: 2,
     description: 'Threaded M × F needle valve.'
@@ -1046,6 +1232,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: '3-way valve, flanged',
     category: 'valves',
     kind: 'valve',
+    symbol: 'valve',
     endPrep: 'FL',
     ports: 3,
     description: 'Flanged 3-way valve.'
@@ -1055,6 +1242,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: '3-way valve, socket-weld',
     category: 'valves',
     kind: 'valve',
+    symbol: 'valve',
     endPrep: 'SW',
     ports: 3,
     description: 'Socket-weld 3-way valve.'
@@ -1064,6 +1252,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: '3-way valve, threaded',
     category: 'valves',
     kind: 'valve',
+    symbol: 'valve',
     endPrep: 'THD',
     ports: 3,
     description: 'Threaded 3-way valve.'
@@ -1073,6 +1262,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: '4-way valve, flanged',
     category: 'valves',
     kind: 'valve',
+    symbol: 'valve',
     endPrep: 'FL',
     ports: 4,
     description: 'Flanged 4-way valve.'
@@ -1082,6 +1272,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: '4-way valve, socket-weld',
     category: 'valves',
     kind: 'valve',
+    symbol: 'valve',
     endPrep: 'SW',
     ports: 4,
     description: 'Socket-weld 4-way valve.'
@@ -1091,6 +1282,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: '4-way valve, threaded',
     category: 'valves',
     kind: 'valve',
+    symbol: 'valve',
     endPrep: 'THD',
     ports: 4,
     description: 'Threaded 4-way valve.'
@@ -1100,33 +1292,37 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Butterfly valve',
     category: 'valves',
     kind: 'valve',
+    symbol: 'butterfly',
     endPrep: 'FL',
     ports: 2,
-    description: 'Lug butterfly valve (API 609 category A).'
+    description: 'API 609 butterfly valve; wafer, lug or double-flanged body and Category A or B from its specification row.'
   },
   {
     code: 'BFLY-LUG',
     label: 'Butterfly valve, lug type',
     category: 'valves',
     kind: 'valve',
+    symbol: 'butterfly',
     endPrep: 'FL',
     ports: 2,
-    description: 'API 609 category A lug butterfly valve; bolted from each side with lug bolts.'
+    description: 'API 609 lug butterfly valve (Category A or B); bolted from each side with lug bolts.'
   },
   {
     code: 'BFLY-WAFER',
     label: 'Butterfly valve, wafer type',
     category: 'valves',
     kind: 'valve',
+    symbol: 'butterfly',
     endPrep: 'FL',
     ports: 2,
-    description: 'API 609 category A wafer butterfly valve; clamped between flanges by through studs.'
+    description: 'API 609 wafer butterfly valve (Category A or B); clamped between flanges by through studs.'
   },
   {
     code: 'ROTR-FL',
     label: 'Rotary valve, flanged',
     category: 'valves',
     kind: 'valve',
+    symbol: 'valve',
     endPrep: 'FL',
     ports: 2,
     description: 'Flanged rotary valve.'
@@ -1136,6 +1332,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Thermal relief valve',
     category: 'valves',
     kind: 'valve',
+    symbol: 'relief',
     endPrep: 'THD',
     ports: 2,
     description: 'Thermal relief valve.'
@@ -1145,6 +1342,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Relief valve (PSV), angle body, threaded',
     category: 'valves',
     kind: 'valve',
+    symbol: 'relief',
     endPrep: 'THD',
     reducing: true,
     angle: true,
@@ -1156,6 +1354,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Relief valve (PSV), angle body, flanged',
     category: 'valves',
     kind: 'valve',
+    symbol: 'relief',
     endPrep: 'FL',
     reducing: true,
     angle: true,
@@ -1167,6 +1366,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Hose, flanged ends',
     category: 'specialty',
     kind: 'valve',
+    symbol: 'hose',
     endPrep: 'FL',
     ports: 2,
     description: 'Flexible hose of fixed length between flanged ends; takeout = half its length.'
@@ -1176,6 +1376,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Hose, threaded ends',
     category: 'specialty',
     kind: 'valve',
+    symbol: 'hose',
     endPrep: 'THD',
     ports: 2,
     description: 'Flexible hose of fixed length with threaded ends; takeout = half its length.'
@@ -1185,6 +1386,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Pulsation dampener',
     category: 'specialty',
     kind: 'valve',
+    symbol: 'dampener',
     endPrep: 'FL',
     ports: 1,
     description: 'One-port flanged vessel on a pump line; the node is its inlet flange face.'
@@ -1194,6 +1396,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Air regulator, threaded',
     category: 'specialty',
     kind: 'valve',
+    symbol: 'regulator',
     endPrep: 'THD',
     ports: 2,
     description: 'In-line air or gas pressure regulator; takeout = half its length between the pipe ends.'
@@ -1203,6 +1406,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Camlock adaptor',
     category: 'specialty',
     kind: 'valve',
+    symbol: 'quick-coupling',
     endPrep: 'THD',
     ports: 2,
     description: 'Cam-and-groove hose adaptor, threaded to the pipe; its groove end is the open end.'
@@ -1212,15 +1416,27 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Camlock cap',
     category: 'caps-plugs',
     kind: 'cap',
+    symbol: 'quick-coupling-cap',
     endPrep: 'THD',
     ports: 1,
     description: 'Cam-and-groove dust cap closing a camlock adaptor.'
+  },
+  {
+    code: 'TUBE',
+    label: 'Tubing tail, cut to suit',
+    category: 'specialty',
+    kind: 'cap',
+    symbol: 'tube-end',
+    endPrep: 'THD',
+    ports: 1,
+    description: 'Instrument or air tubing left at the end of a line, cut to suit on site.'
   },
   {
     code: 'CHICAGO-ADPT',
     label: 'Chicago adapter',
     category: 'specialty',
     kind: 'valve',
+    symbol: 'coupling',
     endPrep: 'THD',
     ports: 2,
     description: 'Universal (Chicago) air-hose coupling, threaded to the pipe; its lug end is the open end.'
@@ -1230,6 +1446,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Spectacle blind, raised face',
     category: 'specialty',
     kind: 'flange',
+    symbol: 'blind-flange',
     endPrep: 'FL',
     ports: 2,
     description: 'ASME B16.48 spectacle blind between RF flanges.'
@@ -1239,6 +1456,8 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Pipe anchor',
     category: 'supports',
     kind: 'support',
+    symbol: 'support',
+    supportLabel: 'ANCHOR',
     ports: 0,
     description: 'Fixed anchor point.',
   },
@@ -1247,6 +1466,8 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Pipe guide',
     category: 'supports',
     kind: 'support',
+    symbol: 'support',
+    supportLabel: 'GUIDE',
     ports: 0,
     description: 'Lateral/axial guide.',
   },
@@ -1255,6 +1476,8 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Pipe shoe, welded',
     category: 'supports',
     kind: 'support',
+    symbol: 'support',
+    supportLabel: 'SHOE',
     ports: 0,
     description: 'Welded pipe shoe.',
   },
@@ -1263,6 +1486,8 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Pipe shoe (tagged)',
     category: 'supports',
     kind: 'support',
+    symbol: 'support',
+    supportLabel: 'SHOE',
     ports: 0,
     description: 'Spec-tagged pipe shoe type (size-independent).'
   },
@@ -1271,6 +1496,8 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Base guide',
     category: 'supports',
     kind: 'support',
+    symbol: 'support',
+    supportLabel: 'BASE GUIDE',
     ports: 0,
     description: 'Guide on a base support.'
   },
@@ -1279,6 +1506,8 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Base support',
     category: 'supports',
     kind: 'support',
+    symbol: 'support',
+    supportLabel: 'BASE SUPPORT',
     ports: 0,
     description: 'Pipe base support (dummy stanchion to grade).',
   },
@@ -1287,6 +1516,8 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Dummy leg',
     category: 'supports',
     kind: 'support',
+    symbol: 'support',
+    supportLabel: 'DUMMY LEG',
     ports: 0,
     description: 'Dummy leg welded to an elbow.'
   },
@@ -1295,6 +1526,8 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Pipe hanger',
     category: 'supports',
     kind: 'support',
+    symbol: 'hanger',
+    supportLabel: 'HANGER',
     ports: 0,
     description: 'Rod hanger.'
   },
@@ -1303,6 +1536,8 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Spring hanger',
     category: 'supports',
     kind: 'support',
+    symbol: 'hanger',
+    supportLabel: 'SPRING HANGER',
     ports: 0,
     description: 'Variable-spring hanger.'
   },
@@ -1311,6 +1546,8 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Spring support',
     category: 'supports',
     kind: 'support',
+    symbol: 'hanger',
+    supportLabel: 'SPRING SUPPORT',
     ports: 0,
     description: 'Spring can support.'
   },
@@ -1319,6 +1556,8 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Trunnion, welded',
     category: 'supports',
     kind: 'support',
+    symbol: 'support',
+    supportLabel: 'TRUNNION',
     ports: 0,
     description: 'Welded trunnion support.'
   },
@@ -1327,6 +1566,8 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'U-bolt',
     category: 'supports',
     kind: 'support',
+    symbol: 'u-bolt',
+    supportLabel: 'U-BOLT',
     ports: 0,
     description: 'U-bolt pipe clamp.',
   },
@@ -1335,6 +1576,8 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Hanger symbol',
     category: 'supports',
     kind: 'support',
+    symbol: 'hanger',
+    supportLabel: 'HANGER',
     ports: 0,
     description: 'Hanger symbol for the isometric.',
   },
@@ -1343,6 +1586,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Orifice flange set, weld-neck, raised face',
     category: 'instruments',
     kind: 'flange',
+    symbol: 'flange',
     endPrep: 'BW',
     ports: 2,
     description: 'ASME B16.36 WN RF orifice flange set.'
@@ -1352,6 +1596,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Orifice flange set, slip-on, raised face',
     category: 'instruments',
     kind: 'flange',
+    symbol: 'flange',
     endPrep: 'PLAIN',
     ports: 2,
     description: 'ASME B16.36 slip-on RF orifice flange set.'
@@ -1361,6 +1606,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Orifice flange set, threaded, raised face',
     category: 'instruments',
     kind: 'flange',
+    symbol: 'flange',
     endPrep: 'THD',
     ports: 2,
     description: 'ASME B16.36 threaded RF orifice flange set.'
@@ -1370,6 +1616,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Orifice flange set, threaded, ring-type joint',
     category: 'instruments',
     kind: 'flange',
+    symbol: 'flange',
     endPrep: 'THD',
     ports: 2,
     description: 'ASME B16.36 threaded RTJ orifice flange set.'
@@ -1379,6 +1626,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'In-line flowmeter, flanged',
     category: 'instruments',
     kind: 'valve',
+    symbol: 'meter',
     endPrep: 'FL',
     byOthers: true,
     ports: 2,
@@ -1389,6 +1637,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Instrument bubble',
     category: 'instruments',
     kind: 'annotation',
+    symbol: 'instrument',
     ports: 0,
     description: 'ISA instrument circle lettered with its tag (PI, FT-101), joined to the pipe.'
   },
@@ -1397,6 +1646,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Orifice taps, parallel',
     category: 'instruments',
     kind: 'annotation',
+    symbol: 'glyph',
     ports: 0,
     description: 'Orifice tap symbol, taps parallel.',
   },
@@ -1405,6 +1655,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Orifice taps, offset',
     category: 'instruments',
     kind: 'annotation',
+    symbol: 'glyph',
     ports: 0,
     description: 'Orifice tap symbol, taps offset.',
   },
@@ -1413,6 +1664,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Column identification balloon',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'glyph',
     ports: 0,
     description: 'Balloon tagging the supporting column.',
   },
@@ -1421,6 +1673,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Pipe insulation',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'insulation',
     ports: 0,
     description: 'Insulation symbol on a pipe.',
   },
@@ -1429,6 +1682,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Pipe insulation, traced',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'insulation',
     ports: 0,
     description: 'Heat-traced insulation on a pipe.',
   },
@@ -1437,6 +1691,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Field weld',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'glyph',
     ports: 0,
     description: 'Field weld symbol.',
   },
@@ -1445,6 +1700,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Weld dot',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'glyph',
     ports: 0,
     description: 'Shop weld dot.',
   },
@@ -1453,6 +1709,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Weld tag',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'glyph',
     ports: 0,
     description: 'Weld number tag.',
   },
@@ -1461,6 +1718,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Weld tag',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'glyph',
     ports: 0,
     description: 'Weld number tag.',
   },
@@ -1469,6 +1727,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Gasket tick mark',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'glyph',
     ports: 0,
     description: 'Gasket tick mark at a flanged joint.',
   },
@@ -1477,6 +1736,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Threaded end symbol',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'glyph',
     ports: 0,
     description: 'Threaded pipe end mark.',
   },
@@ -1485,6 +1745,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Pipe end symbol',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'glyph',
     ports: 0,
     description: 'Pipe end or continuation break.',
   },
@@ -1493,6 +1754,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Wall penetration',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'wall',
     ports: 0,
     description: 'Wall line and sleeve cloud where the pipe passes through a wall.'
   },
@@ -1501,6 +1763,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Insulation limit',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'insulation-limit',
     ports: 0,
     description: 'Where insulation stops: INSUL. toward the start of the pipe, NONE toward its end.'
   },
@@ -1509,6 +1772,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Equipment nozzle',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'nozzle',
     ports: 0,
     description: 'Equipment flange and nozzle neck at the pipe end, lettered with the nozzle over the boxed equipment tag.'
   },
@@ -1517,6 +1781,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Equipment outline',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'equipment',
     ports: 0,
     description: 'Equipment flange, nozzle neck and outline at the pipe end, lettered with the equipment tag.'
   },
@@ -1525,6 +1790,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Ground / wall penetration',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'glyph',
     ports: 0,
     description: 'Ground or wall penetration symbol.',
   },
@@ -1533,6 +1799,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Spec break',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'glyph',
     ports: 0,
     description: 'Specification break.',
   },
@@ -1541,6 +1808,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Centreline symbol',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'glyph',
     ports: 0,
     description: 'Centreline symbol.',
   },
@@ -1549,6 +1817,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Slope',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'glyph',
     ports: 0,
     description: 'Slope indicator.',
   },
@@ -1557,6 +1826,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Grade',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'glyph',
     ports: 0,
     description: 'Grade / elevation symbol.',
   },
@@ -1565,6 +1835,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Spool mark number',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'glyph',
     ports: 0,
     description: 'Spool mark number flag.',
   },
@@ -1573,6 +1844,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Specialty item',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'glyph',
     ports: 0,
     description: 'Specialty item flag.',
   },
@@ -1581,6 +1853,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'PL marker',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'glyph',
     ports: 0,
     description: 'PL marker.',
   },
@@ -1589,6 +1862,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Flow arrow',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'flow-arrow',
     ports: 0,
     description: 'Flow direction arrow on a pipe.',
   },
@@ -1597,6 +1871,8 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Small directional arrow',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'flow-arrow',
+    symbolScale: 0.85,
     ports: 0,
     description: 'Small directional arrow.',
   },
@@ -1605,6 +1881,8 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Very small directional arrow',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'flow-arrow',
+    symbolScale: 0.7,
     ports: 0,
     description: 'Very small directional arrow.',
   },
@@ -1613,6 +1891,8 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Large directional arrow',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'flow-arrow',
+    symbolScale: 1.3,
     ports: 0,
     description: 'Large directional arrow.',
   },
@@ -1621,6 +1901,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Off-page arrow, left',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'glyph',
     ports: 0,
     description: 'Continuation (off-page) arrow, left.',
   },
@@ -1629,6 +1910,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Off-page arrow, right',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'glyph',
     ports: 0,
     description: 'Continuation (off-page) arrow, right.',
   },
@@ -1637,6 +1919,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Off-page arrow, dual direction',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'glyph',
     ports: 0,
     description: 'Continuation (off-page) arrow, both directions.',
   },
@@ -1645,6 +1928,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'North arrow',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'glyph',
     ports: 0,
     description: 'North arrow.',
   },
@@ -1653,6 +1937,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'North arrow',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'glyph',
     ports: 0,
     description: 'North arrow.',
   },
@@ -1661,6 +1946,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'North arrow, boxed',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'glyph',
     ports: 0,
     description: 'Boxed north arrow.',
   },
@@ -1669,6 +1955,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Balloon, single line',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'glyph',
     ports: 0,
     description: 'Single-line callout balloon.',
   },
@@ -1677,6 +1964,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Balloon, double line',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'glyph',
     ports: 0,
     description: 'Double-line callout balloon.',
   },
@@ -1685,6 +1973,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Balloon, hexagonal',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'glyph',
     ports: 0,
     description: 'Hexagonal callout balloon.',
   },
@@ -1693,6 +1982,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Balloon, hexagonal with line',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'glyph',
     ports: 0,
     description: 'Hexagonal callout balloon with a leader.',
   },
@@ -1701,6 +1991,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Material balloon',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'glyph',
     ports: 0,
     description: 'Bill-of-material item balloon.',
   },
@@ -1709,6 +2000,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Revision triangle',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'glyph',
     ports: 0,
     description: 'Revision triangle.',
   },
@@ -1717,6 +2009,7 @@ export const COMPONENT_TYPES: ComponentType[] = [
     label: 'Red flag',
     category: 'annotation',
     kind: 'annotation',
+    symbol: 'glyph',
     ports: 0,
     description: 'Red-flag (hold / change) marker.',
   }
@@ -1724,3 +2017,14 @@ export const COMPONENT_TYPES: ComponentType[] = [
 export const COMPONENT_TYPE_BY_CODE: Record<string, ComponentType> = Object.fromEntries(
   COMPONENT_TYPES.map(t => [t.code, t])
 )
+/**
+ * How a component code is drafted: its catalogue type's metadata, else the generic symbol of its kind. `symbol`
+ * (a node's or specification row's explicit family) overrides the type's.
+ */
+export function componentDrafting(code: string | undefined, kind: Kind | 'pipe' | 'annotation', symbol?: SymbolFamily): ComponentDrafting {
+  const type = code ? COMPONENT_TYPE_BY_CODE[code] : undefined
+  if (symbol && symbol !== type?.symbol) return familyDrafting(symbol)
+  if (!type) return familyDrafting(KIND_SYMBOL[kind])
+  const { symbol: family, dimensionThrough, defaultOperator, body, supportLabel, abbreviation, symbolScale } = type
+  return familyDrafting(family, { dimensionThrough, defaultOperator, body, supportLabel, abbreviation, symbolScale })
+}

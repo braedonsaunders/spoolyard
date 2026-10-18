@@ -5,16 +5,48 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import { SaveQueue } from '../src/editor/save-queue';
-import { lengthInputValue, parseLength, newIso, appendRun, bom, displayBom, formatAllowance } from '../src/core/model';
+import { lengthInputValue, parseLength, newIso, appendRun, bom, displayBom, formatAllowance, formatLength } from '../src/core/model';
+import { editedLength } from '../src/core/format';
 import { materialCsv } from '../src/core/schedules';
 
-test('length edit values retain exact metric measurements in either working unit', () => {
-  for (const mm of [1000, 100, 1.5, 0.5, 76.2, 304.8, 838.2, -1000, 123.456789]) {
+test('length fields show drafting text and never rewrite a value they only show', () => {
+  for (const mm of [1000, 100, 1.5, 0.5, 76.2, 304.8, 838.2, -1000, 123.456789, 438.13, 33.4, 1.6]) {
     for (const units of ['mm', 'imperial'] as const) {
-      assert.ok(Math.abs(parseLength(lengthInputValue(mm, units), units, true) - mm) < 1e-6, `${mm} ${units}`);
+      for (const precision of ['drafting', 'fine'] as const) {
+        const shown = lengthInputValue(mm, units, precision);
+        // Tabbing through the field commits nothing, however the value was rounded for reading.
+        assert.equal(editedLength(shown, mm, units, precision, true), undefined, `${mm} ${units} ${precision}`);
+        // The text reads back within its own rounding: 1/32″ for feet-inches, 0.0005″ fine, 0.05 / 0.005 mm.
+        const tolerance = units === 'mm' ? (precision === 'fine' ? 0.005 : 0.05) : precision === 'fine' ? 0.0005 * 25.4 + 1e-3 : 25.4 / 32;
+        assert.ok(Math.abs(parseLength(shown, units, true) - mm) <= tolerance + 1e-9, `${mm} ${units} ${precision}: ${shown}`);
+      }
     }
   }
   assert.equal(lengthInputValue(304.8, 'imperial'), '1′ 0″');
+  // QA: raw floats never reach a field.
+  assert.equal(lengthInputValue(17.2492126 * 25.4, 'imperial'), '1′ 5 1/4″');
+  assert.equal(lengthInputValue(1.31496063 * 25.4, 'imperial', 'fine'), '1.315″');
+  assert.equal(lengthInputValue(0.06299213 * 25.4, 'imperial', 'fine'), '0.063″');
+  assert.equal(lengthInputValue(25.4 / 16, 'imperial', 'fine'), '0.0625″');
+  assert.equal(lengthInputValue(88.9, 'imperial', 'fine'), '3.5″');
+  assert.equal(lengthInputValue(10.3, 'imperial', 'fine'), '0.406″');
+  assert.equal(lengthInputValue(12.7, 'imperial'), '1/2″');
+  assert.equal(lengthInputValue(123.456789, 'mm'), '123.5');
+  assert.equal(lengthInputValue(3.378, 'mm', 'fine'), '3.38');
+  assert.equal(lengthInputValue(-0.01, 'mm'), '0');
+  // Typing a different value commits it; typing the shown value again, or the value held, does not.
+  assert.equal(editedLength('1\' 5 1/2"', 17.2492126 * 25.4, 'imperial'), 17.5 * 25.4);
+  assert.equal(editedLength('438.13 mm', 438.13, 'imperial'), undefined);
+  assert.throws(() => editedLength('abc', 10, 'imperial'));
+});
+
+test('interface lengths write a fraction under an inch without a leading zero', () => {
+  assert.equal(formatLength(12.7, 'imperial'), '1/2″');
+  assert.equal(formatLength(-12.7, 'imperial'), '−1/2″');
+  assert.equal(formatLength(0, 'imperial'), '0″');
+  assert.equal(formatLength(25.4 * 12.5, 'imperial'), '1′ 0 1/2″');
+  assert.equal(formatLength(25.4 * 3.25, 'imperial'), '3 1/4″');
+  for (const text of ['1/2″', '−1/2″', '1′ 0 1/2″']) assert.equal(formatLength(parseLength(text, 'imperial', true), 'imperial'), text);
 });
 
 test('imperial material schedules use feet and pounds without changing model quantities', () => {
@@ -32,7 +64,9 @@ test('imperial material schedules use feet and pounds without changing model qua
   assert.match(materialCsv(doc), /"10'","ft-in"/);
   assert.equal(bom(doc)[0].qty, 3.048);
   assert.notEqual(formatAllowance(0.5, 'imperial'), '0″');
-  assert.ok(Math.abs(parseLength(formatAllowance(0.5, 'imperial'), 'imperial') - 0.5) < 1e-6);
+  assert.equal(formatAllowance(0.5, 'imperial'), '0.02″');
+  assert.equal(formatAllowance(1.6, 'imperial'), '0.063″');
+  assert.equal(formatAllowance(1.6, 'mm'), '1.6 mm');
 });
 
 test('saving drains edits made during a pending write before resolving', async () => {

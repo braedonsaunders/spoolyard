@@ -54,8 +54,10 @@ test('socket-weld pipe stops short of each socket bottom by the specification ga
   const middle = doc.runs[1], result = runResult(doc, middle);
   assert.deepEqual(result.gaps, [1.6, 1.6]);
   close(result.cut, inch(24) - 2 * elbow.takeout - 3.2);
-  // A specification that does not set the gap bottoms the pipe, as the issued sheets do.
+  // A specification that does not set the gap takes the B31.3 1/16" (and review asks to confirm it); 0 bottoms the pipe.
   delete doc.specs[0].socketGap;
+  assert.deepEqual(runResult(doc, middle).gaps, [1.6, 1.6]);
+  doc.specs[0].socketGap = 0;
   assert.deepEqual(runResult(doc, middle).gaps, [0, 0]);
   close(runResult(doc, middle).cut, inch(24) - 2 * elbow.takeout);
 });
@@ -84,10 +86,13 @@ test('a branch outlet measured from the header outside adds the header radius an
   // 6" OD 6.625: 9 - 3.3125 - 1/16 root gap - (1 1/16 height - 1/2 socket) - 1/16 socket gap = 5".
   close(result.cut, inch(9) - 168.3 / 2 - 1.6 - (26.99 - 12.7) - 1.6);
   assert.deepEqual(validateIso(doc), []);
-  // Without a specification row the MSS SP-97 height is used, from the header outside.
+  // Without a specification row the MSS SP-97 height is used, from the header outside, less the as-made socket depth
+  // every built-in socket-weld item uses (the library row takes the shallower B16.11 minimum).
   delete sol.catalogId;
   doc.specs[0].fittings = doc.specs[0].fittings.filter(f => f.component !== 'SOL');
-  close(runResult(doc, branch).cut, result.cut);
+  const std = standardRow('SOL', 0.75, '3000#')!;
+  assert.equal(std.takeoutReference, 'header-outside');
+  close(runResult(doc, branch).cut, inch(9) - 168.3 / 2 - 1.6 - (std.height! - std.socketDepth!) - 1.6);
   // A row whose takeout is from the header centreline, as a client specification may give it, is used as it is.
   doc.specs[0].fittings.push({ id: 'A:SOL-6x0.75', component: 'SOL', kind: 'olet', nps: 6, smallerNps: 0.75, takeout: 110, socketDepth: 12.7, description: 'SOCKOLET', source: 'test' });
   sol.catalogId = 'A:SOL-6x0.75';
@@ -97,7 +102,7 @@ test('a branch outlet measured from the header outside adds the header radius an
 test('slip-on flanges take two fillet welds; olets and welded supports take their own welds', () => {
   const doc = newIso(); doc.specs = [clone(specA)];
   const elbow = appendRun(doc, null, [1500, 0, 0], 'A', 3, 'SP', 'L');
-  const end = appendRun(doc, elbow.id, [0, 1000, 0], 'A', 3, 'SP', 'L');
+  appendRun(doc, elbow.id, [0, 1000, 0], 'A', 3, 'SP', 'L');
   applyComponent(doc, getNode(doc, doc.runs[0].from), 'FLG-RFSO', row(doc, 'FLG-RFSO', 3));
   const olet = attachComponent(doc, doc.runs[1].id, 'olet', 0.5);
   applyComponent(doc, olet, 'SOL', row(doc, 'SOL', 0.75));
@@ -133,7 +138,7 @@ test('socket-weld and threaded pipe drawn straight on is joined by a coupling, n
     appendRun(doc, joint.id, [300, 0, 0], 'A', 1, 'SP', 'L', prep);
     assert.equal(joint.component, code);
     assert.equal(joint.catalogId, row(doc, code, 1).id);
-    assert.ok(bom(doc).some(r => r.description === row(doc, code, 1).description));
+    assert.ok(bom(doc).some(r => r.description === sheetMaterials(doc, 'SP').find(m => m.memberIds.includes(joint.id))!.description));
     assert.equal(welds(doc).length, prep === 'SW' ? 2 : 0);
     assert.deepEqual(validateIso(doc), []);
     // A drawing that still joins them with a bare weld is flagged and lists no weld there.
@@ -192,7 +197,7 @@ test('BOM rows can be bought from: olets by header and branch, lap-joint flanges
   const lj = rows.find(r => /LAP-JOINT/.test(r.description))!.description;
   assert.doesNotMatch(lj, /\bRF\b/);
   assert.match(lj, /A105/);
-  assert.match(rows.find(r => r.category === 'stub')!.description, /^STUB END, LONG PATTERN, ASME B16\.9, BE, .*A234.*, STD\.$/);
+  assert.match(rows.find(r => r.category === 'stub')!.description, /^STUB END, LONG PATTERN, ASME B16\.9, BE, .*A234.*, STD$/);
 });
 
 test('a nipple is a pipe of catalogued length with finished ends, listed by count and never cut', () => {
@@ -212,7 +217,9 @@ test('a nipple is a pipe of catalogued length with finished ends, listed by coun
   assert.deepEqual(validateIso(doc), []);
   const rows = sheetMaterials(doc, 'SP');
   const listed = rows.find(r => r.category === 'nipple')!;
-  assert.deepEqual([listed.qtyText, listed.nd, listed.description], ['1', '3/4"', 'NIPPLE, 3/4" X 3" LG, XS, A106 GR. B, TBE']);
+  // The nipple length is written in the drawing's units: millimetres here, inches on an imperial drawing.
+  assert.deepEqual([listed.qtyText, listed.nd, listed.description], ['1', '3/4"', 'NIPPLE, 3/4" X 76 MM LG, XS, A106 GR. B, TBE']);
+  assert.equal(sheetMaterials({ ...doc, units: 'imperial' }, 'SP').find(r => r.category === 'nipple')!.description, 'NIPPLE, 3/4" X 3" LG, XS, A106 GR. B, TBE');
   assert.ok(!rows.some(r => r.category === 'pipe' && r.memberIds.includes(nipple.id)));
   assert.ok(bom(doc).some(r => r.unit === 'ea' && r.description === listed.description));
   assert.ok(!cutSchedule(doc).some(r => r.run.id === nipple.id));
@@ -228,6 +235,8 @@ test('a nipple drawn as an in-line component takes the specification nipple leng
   const node = insertComponent(doc, doc.runs[0].id, 'valve', 0.5);
   Object.assign(node, { component: 'NIPPLE' });
   close(nodeItem(doc, node)!.takeout, inch(1.5));
+  assert.match(sheetMaterials(doc, 'SP').find(r => r.category === 'nipple')!.description, /^NIPPLE, 3\/4" X 76 MM LG, XS, A106 GR\. B, TBE$/);
+  doc.units = 'imperial';
   assert.match(sheetMaterials(doc, 'SP').find(r => r.category === 'nipple')!.description, /^NIPPLE, 3\/4" X 3" LG, XS, A106 GR\. B, TBE$/);
   assert.deepEqual(validateIso(doc), []);
 });
@@ -278,7 +287,7 @@ test('supports the specification supplies are listed last in the BOM; a drawn-on
   let rows = sheetMaterials(doc, 'SP');
   assert.deepEqual(rows.filter(r => r.category === 'support').map(r => [r.nd, r.description]), [['6"', 'PIPE SHOE WELDED, CS']]);
   assert.equal(rows.at(-1)!.category, 'support');
-  assert.ok(bom(doc).some(r => r.description === row(doc, 'SHOE', 6).description));
+  assert.ok(bom(doc).some(r => r.description === 'PIPE SHOE WELDED, CS'));
   assert.ok(!bom(doc).some(r => /U-bolt/i.test(r.description)));
   shoe.inBom = false; ubolt.inBom = true;
   rows = sheetMaterials(doc, 'SP');
@@ -336,8 +345,10 @@ test('a slip-on flange sets the pipe back a wall and 1/16" from its face', () =>
 });
 
 test('standard sockolets, thredolets and plugs need no typed lengths', () => {
-  assert.equal(standardRow('SOL', 1, '150#')!.takeout, 20.64);
-  assert.equal(standardRow('TOL', 1, '150#')!.takeout, 15.88);
+  // The forged class is the fitting's own (a flange class no longer stands for one); SOL: A less the as-made socket depth.
+  assert.equal(standardRow('SOL', 1, '150#'), undefined);
+  assert.equal(standardRow('SOL', 1, '3000#')!.takeout, 33.34 - 15.88);
+  assert.equal(standardRow('TOL', 1, '3000#')!.takeout, 15.88);
   assert.equal(standardRow('WOL', 2, '150#', undefined, 'STD')!.takeout, 38.1);
   assert.equal(standardRow('WOL', 6, '150#', undefined, 'XS')!.takeout, 77.79);
   const doc = newIso(); doc.specs = [clone(specA)];

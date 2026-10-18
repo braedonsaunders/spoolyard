@@ -1,37 +1,29 @@
 import { COMPONENT_TYPE_BY_CODE } from './components'
-import { flangedJoints, flangePipePrep, isFlangePair, isLapJoint, matingFlange, nodeCode, nodeItem, type FlangedJoint } from './joints'
-import { draftLength, sizeText } from './format'
-import { sheetMaterials, type MaterialRow } from './material-list'
+import { flangedJoints, isLapJoint, matingFlange, nodeCode, type FlangedJoint } from './joints'
+import { allowanceText, draftLength, scheduleText, sizeFor, sizeHeader, UNKNOWN } from './format'
+import { feetThreshold } from './profile'
+import { measureMember, packageSpools, pieceEnds, sheetMaterials, type MaterialRow, type PipeEnd, type PipePiece } from './material-list'
 import {
-  connected, csv, distance, getNode, getSpec, pipePrepAt, round, runResult, sheetInfoOf, takeout, welds,
-  type CatalogItem, type IsoDocument, type PipeNode, type PipeRun, type Weld
+  connected, csv, distance, getNode, getSpec, round, runResult, sheetInfoOf, takeout, weldDiameterInches, weldHours, welds, withIndex, runById,
+  type IsoDocument, type PipeNode, type PipeRun, type Weld
 } from './model'
+export { allowanceText, scheduleText, UNKNOWN } from './format'
+export { packageSpools, pipeEnd, type PipeEnd } from './material-list'
 
 /**
  * The fabrication schedules issued with the sheets. Every one is numbered as the sheets are: material and pipe items
  * by each spool's bill of materials, welds in sequence along each spool.
  */
 type Units = IsoDocument['units']
-/** Spools in the order the package issues their sheets. */
-export const packageSpools = (doc: IsoDocument) => [...new Set(doc.runs.map(r => r.spool))]
-/** Printed for a value the drawing does not know. */
-export const UNKNOWN = '—'
+type Drawing = Pick<IsoDocument, 'units' | 'profile'>
+const drawing = (on: Units | Drawing): Drawing => typeof on === 'string' ? { units: on } : on
 export const lengthUnits = (units: Units) => units === 'mm' ? 'millimetres' : 'feet and inches'
-/** A length as the sheets write it: whole millimetres, or feet-inches to 1/16". */
-export const lengthText = (mm: number, units: Units) => Number.isFinite(mm) ? draftLength(mm, units) : UNKNOWN
-/** An overall as the sheet dimensions it: inches below two feet. */
-export const overallText = (mm: number, units: Units) => Number.isFinite(mm) ? draftLength(mm, units, 24) : UNKNOWN
-/** A takeout or root gap: tenths of a millimetre, or inches to 1/16" (decimal inches only where that reads zero). */
-export function allowanceText(mm: number, units: Units): string {
-  if (!Number.isFinite(mm)) return UNKNOWN
-  if (units === 'mm') return String(round(mm, 1))
-  return !mm || Math.round(Math.abs(mm) / 25.4 * 16) ? draftLength(mm, units, 24) : `${round(mm / 25.4, 3)}"`
-}
-/** Wall schedule in drafting notation: STD, XS, XXS, SCH 40, SCH 10S. */
-export function scheduleText(text = ''): string {
-  const bare = text.trim().toUpperCase().replace(/\.$/, '').replace(/^SCH(EDULE)?\.?\s*/, '')
-  return /^\d+S?$/.test(bare) ? 'SCH ' + bare : bare
-}
+/** A length as lists write it: whole millimetres, or feet-inches to 1/16" (inches below the profile's list threshold). */
+export const lengthText = (mm: number, on: Units | Drawing) =>
+  Number.isFinite(mm) ? draftLength(mm, drawing(on).units, feetThreshold(drawing(on), 'lists')) : UNKNOWN
+/** An overall as the sheet dimensions it (inches below the profile's dimension threshold, two feet by default). */
+export const overallText = (mm: number, on: Units | Drawing) =>
+  Number.isFinite(mm) ? draftLength(mm, drawing(on).units, feetThreshold(drawing(on), 'dimensions')) : UNKNOWN
 const sheetTitle = (doc: IsoDocument, spool: string) => sheetInfoOf(doc, spool).drawingNumber
 
 export interface MaterialScheduleRow extends MaterialRow {
@@ -42,47 +34,18 @@ export interface MaterialScheduleRow extends MaterialRow {
   cost: number
   hours: number
 }
-interface Measure { weightKg: number | null; areaM2: number | null; cost: number; hours: number }
-type Priced = Pick<CatalogItem, 'weightKg' | 'areaM2' | 'unitCost' | 'laborHours'>
-const each = (item: Priced | undefined, qty = 1, per = 1): Measure => ({
-  weightKg: item?.weightKg == null ? null : item.weightKg / per * qty,
-  areaM2: item?.areaM2 == null ? null : item.areaM2 / per * qty,
-  cost: (item?.unitCost ?? 0) * qty,
-  hours: (item?.laborHours ?? 0) * qty
-})
-/** Weight, area, cost and labour of one member of a bill-of-materials row: a pipe, a node or a joint part. */
-function measure(doc: IsoDocument, member: string, joints: FlangedJoint[]): Measure {
-  const run = doc.runs.find(r => r.id === member)
-  if (run) {
-    const spec = getSpec(doc, run.specId), v = runResult(doc, run), m = Number.isFinite(v.cut) && v.cut > 0 ? v.cut / 1000 : NaN
-    const known = Number.isFinite(m)
-    return {
-      weightKg: known && Number.isFinite(v.weightKg) ? v.weightKg : null,
-      areaM2: known && Number.isFinite(v.areaM2) ? v.areaM2 : null,
-      cost: known ? m * spec.pipeCostM : 0,
-      hours: known ? m * spec.pipeLaborHoursM : 0
-    }
-  }
-  const node = doc.nodes.find(n => n.id === member)
-  if (node) {
-    const item = nodeItem(doc, node), qty = node.quantity ?? (isFlangePair(doc, node) ? 2 : 1)
-    return each({
-      weightKg: node.weightKg ?? item?.weightKg, areaM2: node.areaM2 ?? item?.areaM2,
-      unitCost: node.unitCost ?? item?.unitCost, laborHours: node.laborHours ?? item?.laborHours
-    }, qty)
-  }
-  const [id, part] = member.split('#'), joint = joints.find(j => j.id === id)
-  if (part === 'flange') return each(joint?.flanges.find(f => f.implicit)?.item)
-  if (part === 'stub') return each(joint?.stubEnds[0])
-  if (part === 'gasket') return each(joint?.gasket?.item)
-  if (part === 'bolts' && joint?.bolts) return each(joint.bolts.item, joint.bolts.count, joint.bolts.item?.boltCount ?? joint.bolts.count)
-  return { weightKg: null, areaM2: null, cost: 0, hours: 0 }
+export interface ScheduleOptions {
+  /** Use the cells held as issued instead of the calculated ones. Schedules and exports are calculated by default. */
+  issued?: boolean
 }
 /** Each sheet's bill of materials, item for item and number for number, with weights for the schedule. */
-export function materialSchedule(doc: IsoDocument): MaterialScheduleRow[] {
+export function materialSchedule(doc: IsoDocument, options: ScheduleOptions = {}): MaterialScheduleRow[] {
+  return withIndex(doc, () => materialRows(doc, options))
+}
+function materialRows(doc: IsoDocument, options: ScheduleOptions): MaterialScheduleRow[] {
   const joints = flangedJoints(doc)
-  return packageSpools(doc).flatMap(spool => sheetMaterials(doc, spool).map(row => {
-    const parts = row.memberIds.map(member => measure(doc, member, joints))
+  return packageSpools(doc).flatMap(spool => sheetMaterials(doc, spool, { issued: !!options.issued }).map(row => {
+    const parts = row.memberIds.map(member => measureMember(doc, member, row.memberQty[member] ?? 0, joints))
     const sum = (key: 'weightKg' | 'areaM2') => parts.some(p => p[key] == null) ? null : parts.reduce((s, p) => s + p[key]!, 0)
     return {
       ...row, spool, drawing: sheetTitle(doc, spool), weightKg: sum('weightKg'), areaM2: sum('areaM2'),
@@ -91,16 +54,6 @@ export function materialSchedule(doc: IsoDocument): MaterialScheduleRow[] {
   }))
 }
 
-export type PipeEnd = 'BE' | 'PE' | 'TE'
-/** How a pipe end is prepared: bevelled for a butt weld, plain into a socket or slip-on, threaded. */
-export function pipeEnd(doc: IsoDocument, run: PipeRun, index: number): PipeEnd {
-  let prep = pipePrepAt(doc, run, index)
-  if (prep === 'FL') {
-    const node = getNode(doc, index ? run.to : run.from), code = nodeCode(doc, node)
-    if (node.kind === 'flange' && code) prep = flangePipePrep(code)
-  }
-  return prep === 'THD' ? 'TE' : prep === 'SW' || prep === 'PLAIN' ? 'PE' : 'BE'
-}
 /**
  * How far in from a node the sheet dimensions its pipe: a flanged valve to its mating flange face, across the gasket;
  * a reducer to its end. Elsewhere the node itself is the dimension point.
@@ -119,34 +72,72 @@ export interface CutRow {
   item: number
   piece: number
   pieces: number
+  /** The piece's first pipe (the pipe itself, unless the piece runs on through formed bends). */
   run: PipeRun
-  /** Between the dimension points the sheet uses, with takeouts measured from the same points. */
+  /** Every pipe of the piece, in order; more than one where it is formed through bends. */
+  runIds: string[]
+  /** Formed bends in the piece. */
+  bends: number
+  /**
+   * Between the dimension points the sheet uses, with takeouts measured from the same points. A piece formed through
+   * bends runs along its centreline through the bends' work points, so its cut is shorter than overall less takeouts.
+   */
   overall: number
   takeouts: [number, number]
   gaps: [number, number]
   cut: number
   ends: [PipeEnd, PipeEnd]
-  /** Listed on the sheet by length without a cut. */
+  /** Field-fit makeup left on at each end (cut long, trimmed on site): added to the cut. */
+  makeup: [number, number]
+  /** Tangents of the formed bends inside the piece, measured to their work points: taken off the overall. */
+  bendTangents: number
+  /** Centreline arcs of those bends, with the profile's bend allowance: added to the cut. */
+  bendArcs: number
+  /** Listed on the sheet by length without a cut (the pipe is marked uncut). */
   uncut: boolean
+}
+/** cut = overall − takeouts − gaps + makeup − bend tangents + bend arcs; the terms beyond the first three, as a note. */
+export function cutAdjustments(row: Pick<CutRow, 'makeup' | 'bendTangents' | 'bendArcs' | 'bends'>, units: Units): string {
+  const parts: string[] = [], makeup = row.makeup[0] + row.makeup[1]
+  if (makeup > 0) parts.push(`+ ${allowanceText(makeup, units)} FIELD-FIT MAKEUP`)
+  if (row.bends > 0) parts.push(`- ${allowanceText(row.bendTangents, units)} BEND TANGENTS + ${allowanceText(row.bendArcs, units)} BEND ${row.bends > 1 ? 'ARCS' : 'ARC'}`)
+  return parts.join(' ')
+}
+function cutRow(doc: IsoDocument, joints: FlangedJoint[], spool: string, row: MaterialRow, piece: PipePiece, i: number, pieces: number): CutRow {
+  const run = (id: string) => runById(doc, id)!
+  const runs = piece.runIds.map(run)
+  const [start, finish] = piece.ends.map(e => ({ run: run(e.runId), index: e.index }))
+  const station = (e: typeof start) => stationOffset(doc, getNode(doc, e.index === 0 ? e.run.from : e.run.to), e.run, joints)
+  const result = (e: typeof start) => runResult(doc, e.run)
+  return {
+    spool, drawing: sheetTitle(doc, spool), item: row.id, piece: i + 1, pieces, run: runs[0], runIds: piece.runIds, bends: piece.bendIds.length,
+    overall: runs.reduce((sum, r) => sum + runResult(doc, r).overall, 0) - station(start) - station(finish),
+    takeouts: [result(start).takeouts[start.index] - station(start), result(finish).takeouts[finish.index] - station(finish)],
+    gaps: [result(start).gaps[start.index], result(finish).gaps[finish.index]], cut: piece.cut,
+    ends: pieceEnds(doc, piece), makeup: [result(start).makeup[start.index], result(finish).makeup[finish.index]],
+    // Inside a piece formed through bends, each pipe stops at a bend's tangent point and the arc joins them.
+    bendTangents: runs.reduce((sum, r) => sum + [r.from, r.to].reduce((t, id, i) => t + (piece.bendIds.includes(id) ? runResult(doc, r).takeouts[i] : 0), 0), 0),
+    bendArcs: piece.cut - runs.reduce((sum, r) => sum + runResult(doc, r).cut, 0),
+    uncut: !!row.pipe?.uncut
+  }
 }
 /** Every pipe piece, numbered by its item on the sheet. */
 export function cutSchedule(doc: IsoDocument): CutRow[] {
+  return withIndex(doc, () => cutRows(doc))
+}
+function cutRows(doc: IsoDocument): CutRow[] {
   const joints = flangedJoints(doc)
-  return packageSpools(doc).flatMap(spool => sheetMaterials(doc, spool).filter(row => row.category === 'pipe').flatMap(row => {
-    const runs = row.memberIds.flatMap(id => doc.runs.filter(r => r.id === id))
-    return runs.map((run, i): CutRow => {
-      const v = runResult(doc, run), [a, b] = [run.from, run.to].map(id => stationOffset(doc, getNode(doc, id), run, joints))
-      return {
-        spool, drawing: sheetTitle(doc, spool), item: row.id, piece: i + 1, pieces: runs.length, run,
-        overall: v.overall - a - b, takeouts: [v.takeouts[0] - a, v.takeouts[1] - b], gaps: v.gaps, cut: v.cut,
-        ends: [pipeEnd(doc, run, 0), pipeEnd(doc, run, 1)], uncut: !/ - CUT TO /.test(row.calculated?.description ?? row.description)
-      }
-    })
-  }))
+  return packageSpools(doc).flatMap(spool => sheetMaterials(doc, spool, { issued: false }).filter(row => row.pipe).flatMap(row =>
+    row.pipe!.pieces.map((piece, i) => cutRow(doc, joints, spool, row, piece, i, row.pipe!.pieces.length))))
 }
 export const pieceText = (row: Pick<CutRow, 'item' | 'piece' | 'pieces'>) => row.pieces > 1 ? `${row.item} (${row.piece} of ${row.pieces})` : String(row.item)
-export const cutText = (row: Pick<CutRow, 'cut' | 'uncut'>, units: Units) =>
-  row.uncut ? 'NOT CUT' : Number.isFinite(row.cut) && row.cut > 0 ? draftLength(row.cut, units) : UNKNOWN
+/** A piece's cut as the schedules print it; a cut that also takes field-fit makeup or formed bends says so. */
+export const cutText = (row: Pick<CutRow, 'cut' | 'uncut'> & Partial<Pick<CutRow, 'makeup' | 'bendTangents' | 'bendArcs' | 'bends'>>, on: Units | Drawing) => {
+  if (row.uncut) return 'NOT CUT'
+  if (!(Number.isFinite(row.cut) && row.cut > 0)) return UNKNOWN
+  const note = row.makeup && row.bends != null ? cutAdjustments({ makeup: row.makeup, bends: row.bends, bendTangents: row.bendTangents ?? 0, bendArcs: row.bendArcs ?? 0 }, drawing(on).units) : ''
+  return lengthText(row.cut, on) + (note ? ` (${note})` : '')
+}
 
 export type WeldType = 'BUTT' | 'SOCKET FILLET' | 'BRANCH' | 'ATTACHMENT' | 'SLIP-ON FILLET'
 const WELD_TYPE: Record<Weld['type'], WeldType> = { BW: 'BUTT', SW: 'SOCKET FILLET', SO: 'SLIP-ON FILLET', BR: 'BRANCH', RP: 'ATTACHMENT', AT: 'ATTACHMENT' }
@@ -160,7 +151,15 @@ export interface WeldRow {
   schedule: string
   /** The parts the weld joins, e.g. PIPE–ELL. */
   joint: string
+  /** Weld size in diameter-inches, and its labour at the specification's hours per diameter-inch. */
+  diameterInches: number
+  hours: number
+  /** Where the weld is made: in the shop, in the field, or in the field to a pipe cut long and fitted there (FFW). */
+  site: WeldSite
 }
+export type WeldSite = 'SHOP' | 'FIELD' | 'FIELD-FIT'
+/** Shop, field, or field-fit (a field weld made after trimming the makeup left on the pipe). */
+export const weldSite = (weld: Pick<Weld, 'field' | 'fieldFit'>): WeldSite => weld.fieldFit ? 'FIELD-FIT' : weld.field ? 'FIELD' : 'SHOP'
 /** Shop name of the part a pipe or fitting meets at a node. */
 function partName(doc: IsoDocument, node: PipeNode, run: PipeRun): string {
   const code = nodeCode(doc, node) ?? ''
@@ -187,7 +186,7 @@ function partName(doc: IsoDocument, node: PipeNode, run: PipeRun): string {
   }
 }
 /** The weld map: every weld with its type, size, schedule and the parts it joins. */
-export const weldSchedule = (doc: IsoDocument): WeldRow[] => welds(doc).map(weld => weldRow(doc, weld))
+export const weldSchedule = (doc: IsoDocument): WeldRow[] => withIndex(doc, () => welds(doc).map(weld => weldRow(doc, weld)))
 export function weldRow(doc: IsoDocument, weld: Weld): WeldRow {
   const node = getNode(doc, weld.nodeId)
   // A branch or pad weld joins the header the outlet sits on.
@@ -202,37 +201,70 @@ export function weldRow(doc: IsoDocument, weld: Weld): WeldRow {
   const outlet = weld.type === 'BR' ? weld.nps : undefined
   return {
     weld, spool: run.spool, drawing: sheetTitle(doc, run.spool), line: run.line, type,
-    size: sizeText(run.nps, outlet), schedule: scheduleText(size?.schedule ?? spec.schedule),
-    joint: `${other}–${own}`
+    size: sizeFor(doc, run.nps, outlet), schedule: scheduleText(size?.schedule ?? spec.schedule),
+    joint: `${other}–${own}`, diameterInches: weldDiameterInches(weld), hours: weldHours(doc, weld), site: weldSite(weld)
   }
 }
 
-const csvLength = (mm: number, units: Units) => Number.isFinite(mm) ? draftLength(mm, units) : ''
+const csvLength = (mm: number, doc: Drawing) => Number.isFinite(mm) ? lengthText(mm, doc) : ''
 const csvAllowance = (mm: number, units: Units) => Number.isFinite(mm) ? allowanceText(mm, units) : ''
 const csvUnit = (units: Units) => units === 'mm' ? 'mm' : 'ft-in'
-/** Each sheet's bill of materials with its item numbers. */
-export function materialCsv(doc: IsoDocument): string {
+/**
+ * A length as plain decimal numbers for spreadsheets, beside its drafting text: millimetres to 0.1 mm and inches to
+ * 0.001 in; blank when unknown.
+ */
+export const decimalLength = (mm: number): [number | '', number | ''] =>
+  Number.isFinite(mm) ? [round(mm, 1), round(mm / 25.4, 3)] : ['', '']
+/** Column headings of `decimalLength` values for a named length. */
+const decimalHeadings = (name: string) => [`${name} mm`, `${name} in`]
+/** Each sheet's bill of materials with its item numbers; calculated cells unless `issued` asks for the issued ones. */
+export function materialCsv(doc: IsoDocument, options: ScheduleOptions = {}): string {
   const imperial = doc.units === 'imperial'
   return csv([
-    ['Drawing', 'Spool', 'Item', 'Quantity', 'Unit', 'ND', 'Description', imperial ? 'Weight lb' : 'Weight kg', imperial ? 'Surface ft2' : 'Surface m2', 'Cost', 'Labor hours'],
-    ...materialSchedule(doc).map(r => [
+    ['Drawing', 'Spool', 'Item', 'Quantity', 'Unit', 'ND', 'Description', imperial ? 'Weight lb' : 'Weight kg', imperial ? 'Surface ft2' : 'Surface m2', 'Cost', 'Labor hours', 'Shop/field',
+      ...decimalHeadings('Pipe length')],
+    ...materialSchedule(doc, options).map(r => [
       r.drawing, r.spool, r.id, r.qtyText, r.category === 'pipe' ? csvUnit(doc.units) : 'ea', r.nd, r.description,
       r.weightKg == null ? '' : round(r.weightKg / (imperial ? 0.45359237 : 1)),
       r.areaM2 == null ? '' : round(r.areaM2 / (imperial ? 0.09290304 : 1), 3),
-      round(r.cost), round(r.hours)
+      round(r.cost), round(r.hours), r.supply === 'field' ? 'FIELD' : 'SHOP',
+      ...(r.category === 'pipe' ? decimalLength(r.qty) : ['', ''])
     ])
+  ])
+}
+/** Labour by spool: pipe handling per metre, item labour from the specification rows, and welds by diameter-inch. */
+export interface LabourRow { spool: string; drawing: string; pipeHours: number; itemHours: number; weldDiameterInches: number; weldHours: number; total: number }
+export function labourSummary(doc: IsoDocument): LabourRow[] {
+  const material = materialSchedule(doc), weldRows = weldSchedule(doc)
+  return packageSpools(doc).map(spool => {
+    const rows = material.filter(r => r.spool === spool), spoolWelds = weldRows.filter(w => w.spool === spool)
+    const pipeHours = rows.filter(r => r.category === 'pipe').reduce((s, r) => s + r.hours, 0)
+    const itemHours = rows.filter(r => r.category !== 'pipe').reduce((s, r) => s + r.hours, 0)
+    const weldDiameterInches = spoolWelds.reduce((s, w) => s + w.diameterInches, 0), hours = spoolWelds.reduce((s, w) => s + w.hours, 0)
+    return { spool, drawing: sheetTitle(doc, spool), pipeHours, itemHours, weldDiameterInches, weldHours: hours, total: pipeHours + itemHours + hours }
+  })
+}
+export function labourCsv(doc: IsoDocument): string {
+  return csv([
+    ['Drawing', 'Spool', 'Pipe hours', 'Item hours', 'Weld dia-in', 'Weld hours', 'Total hours'],
+    ...labourSummary(doc).map(r => [r.drawing, r.spool, round(r.pipeHours), round(r.itemHours), round(r.weldDiameterInches, 3), round(r.weldHours), round(r.total)])
   ])
 }
 /** Pipe pieces by sheet item number. */
 export function cutCsv(doc: IsoDocument): string {
   const u = ` (${csvUnit(doc.units)})`
   return csv([
-    ['Drawing', 'Spool', 'Item', 'Piece', 'NPS', 'Spec', 'Line', 'Heat', 'Overall' + u, 'Start takeout' + u, 'End takeout' + u,
-      'Start gap' + u, 'End gap' + u, 'Cut' + u, 'Start end', 'End end'],
+    ['Drawing', 'Spool', 'Item', 'Piece', sizeHeader(doc), 'Spec', 'Line', 'Heat', 'Overall' + u, 'Start takeout' + u, 'End takeout' + u,
+      'Start gap' + u, 'End gap' + u, 'Cut' + u, 'Start end', 'End end',
+      ...['Overall', 'Start takeout', 'End takeout', 'Start gap', 'End gap', 'Cut'].flatMap(decimalHeadings),
+      // cut = overall − takeouts − gaps + makeup − bend tangents + bend arcs
+      ...['Field-fit makeup', 'Bend tangents', 'Bend arcs'].flatMap(decimalHeadings)],
     ...cutSchedule(doc).map(r => [
-      r.drawing, r.spool, r.item, `${r.piece} of ${r.pieces}`, sizeText(r.run.nps), r.run.specId, r.run.line, r.run.heat,
-      Number.isFinite(r.overall) ? overallText(r.overall, doc.units) : '', ...r.takeouts.map(v => csvAllowance(v, doc.units)), ...r.gaps.map(v => csvAllowance(v, doc.units)),
-      r.uncut ? 'NOT CUT' : r.cut > 0 ? csvLength(r.cut, doc.units) : '', ...r.ends
+      r.drawing, r.spool, r.item, `${r.piece} of ${r.pieces}`, sizeFor(doc, r.run.nps), r.run.specId, r.run.line, r.run.heat,
+      Number.isFinite(r.overall) ? overallText(r.overall, doc) : '', ...r.takeouts.map(v => csvAllowance(v, doc.units)), ...r.gaps.map(v => csvAllowance(v, doc.units)),
+      r.uncut ? 'NOT CUT' : r.cut > 0 ? csvLength(r.cut, doc) : '', ...r.ends,
+      ...[r.overall, ...r.takeouts, ...r.gaps, r.uncut || !(r.cut > 0) ? NaN : r.cut].flatMap(decimalLength),
+      ...[r.makeup[0] + r.makeup[1], r.bendTangents, r.bendArcs].flatMap(decimalLength)
     ])
   ])
 }
@@ -240,6 +272,6 @@ export function cutCsv(doc: IsoDocument): string {
 export function weldCsv(doc: IsoDocument): string {
   return csv([
     ['Weld', 'Drawing', 'Spool', 'Line', 'Type', 'Size', 'Schedule', 'Joint', 'Shop/field', 'WPS', 'NDE %', 'Welder'],
-    ...weldSchedule(doc).map(r => [r.weld.tag, r.drawing, r.spool, r.line, r.type, r.size, r.schedule, r.joint, r.weld.field ? 'FIELD' : 'SHOP', '', '', ''])
+    ...weldSchedule(doc).map(r => [r.weld.tag, r.drawing, r.spool, r.line, r.type, r.size, r.schedule, r.joint, r.site, '', '', ''])
   ])
 }

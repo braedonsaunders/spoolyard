@@ -1,8 +1,12 @@
 import { COMPONENT_TYPE_BY_CODE } from './components'
-import { bolting, ratingClass, standardRow, stubEnd as standardStub } from './standards'
-import { compose, draftLength, schedule, sizeText } from './format'
 import {
-  add, connected, fitting, getNode, getSpec, length, mul, sub, takeout,
+  BUTTERFLY_BODY, GASKET_THICKNESS, bolting, ratingClass, standardRow, stubEnd as standardStub,
+  type BoltMakeup, type ButterflyBody, type FlangeFace, type Resolved, type StandardOptions
+} from './standards'
+import { designValue } from './spec-design'
+import { compose, draftLength, listLength, schedule, sizeFor, sizeText } from './format'
+import {
+  add, connected, fitting, getNode, getSpec, length, mul, sub, takeout, withIndex,
   type CatalogItem, type EndPrep, type IsoDocument, type Kind, type PipeNode, type PipeRun, type PipeSpec, type Vec3
 } from './model'
 
@@ -29,54 +33,114 @@ export const isLapJoint = (code?: string) => !!code && /LJ$|^STUB-END/.test(code
 export const isBlind = (code?: string) => !!code && /BL$|SBLND/.test(code)
 const flangedPort = (code?: string) => !!code && COMPONENT_TYPE_BY_CODE[code]?.endPrep === 'FL'
 
-export const specRating = (spec: PipeSpec) =>
-  ratingClass(spec.parameters?.['Welded/Flanged General Parameters.ANSI Rating']) ?? ratingClass(spec.rating) ?? 150
-export const specFace = (spec: PipeSpec): 'RF' | 'FF' =>
-  /^FF/i.test(spec.parameters?.['Welded/Flanged General Parameters.Flange Face'] ?? '') ? 'FF' : 'RF'
+const FORGED_CLASSES = [2000, 3000, 6000, 9000]
+/**
+ * The specification's pressure class for flanged items: its design field (or imported ANSI Rating), else the class in
+ * its rating; else Class 150 is assumed and the assumption returned, so validation asks for the class. A class the
+ * built-in tables do not cover (400, 2500) is returned as is and gives no standard dimensions.
+ */
+export function specFlangeClass(spec: PipeSpec): Resolved<number> {
+  const own = designValue(spec, 'flangeClass')
+  if (own.value && !FORGED_CLASSES.includes(own.value)) return { value: own.value, source: own.source! }
+  const rated = ratingClass(spec.rating)
+  if (rated && !FORGED_CLASSES.includes(rated)) return { value: rated, source: `specification ${spec.id} rating "${spec.rating}"` }
+  return {
+    value: 150, source: 'assumed',
+    assumed: `Class 150 flange dimensions are assumed because the specification names no flange pressure class (rating "${spec.rating}")`
+  }
+}
+/** The flange class used for the specification's flanged items (see specFlangeClass for whether it was assumed). */
+export const specRating = (spec: PipeSpec) => specFlangeClass(spec).value
+/** The specification's flange face; raised face assumed, and said, when it names none. */
+export function specFlangeFace(spec: PipeSpec): Resolved<FlangeFace> {
+  const own = designValue(spec, 'flangeFace')
+  return own.value ? { value: own.value, source: own.source! }
+    : { value: 'RF', source: 'assumed', assumed: 'raised-face flanges are assumed because the specification names no flange face' }
+}
+export const specFace = (spec: PipeSpec): FlangeFace => specFlangeFace(spec).value
+/** ASME B16.11 class the specification names for forged fittings (its design field, imported Pipe Rating, or a forged rating). */
+export function specForgedClass(spec: PipeSpec): number | undefined {
+  const own = designValue(spec, 'forgedClass').value, rated = ratingClass(spec.rating)
+  return own && FORGED_CLASSES.includes(own) ? own : rated && FORGED_CLASSES.includes(rated) ? rated : undefined
+}
 const sameBranch = (f: CatalogItem, nps: number, smallerNps?: number) =>
   smallerNps == null || smallerNps === nps ? !f.smallerNps || f.smallerNps === nps : f.smallerNps === smallerNps
 
-const NIPPLE_LENGTH = 'Screwed/Socket Weld General Parameters.Pipe Nipple Length'
-/** A nipple's catalogued length (mm): the specification's nipple row, else its Pipe Nipple Length (in). */
+/** A nipple's catalogued length (mm): the specification's nipple row, else its nipple-length design value. */
 export function nippleLength(spec: PipeSpec, nps: number): number | undefined {
   const own = spec.nipples?.find(n => n.nps === nps)?.length
   if (own && own > 0) return own
-  const inches = Number(spec.parameters?.[NIPPLE_LENGTH])
-  return inches > 0 ? inches * 25.4 : undefined
+  return designValue(spec, 'nippleLength').value
 }
 /** Nipple end finish from the end preparations: threaded both ends, plain one end, plain or bevelled both ends. */
 export function nippleEnds(a: EndPrep, b: EndPrep): string {
   const threaded = [a, b].filter(p => p === 'THD').length, bevelled = [a, b].filter(p => p === 'BW').length
   return threaded === 2 ? 'TBE' : threaded ? 'POE' : bevelled === 2 ? 'BBE' : bevelled ? 'BOE' : 'PBE'
 }
+/** The units and profile a drawing writes lengths and sizes in. */
+type Drawing = Pick<IsoDocument, 'units' | 'profile'>
 /**
- * BOM text of a nipple: size by length (catalogued in inches, as its size is), schedule, material and ends, e.g.
- * NIPPLE, 3/4" X 3" LG, XS, A106 GR. B, TBE.
+ * BOM text of a nipple: size by length, schedule, material and ends, e.g. NIPPLE, 3/4" X 3" LG, XS, A106 GR. B, TBE
+ * (NIPPLE, DN20 X 76 MM LG on a metric DN drawing). The size and length follow the drawing's units and size notation;
+ * without a drawing (a specification's own list) the length is written in inches, as nipples are catalogued.
  */
-export function nippleText(spec: PipeSpec, nps: number, length: number, ends: string): string {
+export function nippleText(spec: PipeSpec, nps: number, length: number, ends: string, drawing?: Drawing): string {
   const own = spec.nipples?.find(n => n.nps === nps), size = spec.sizes.find(s => s.nps === nps)
   if (own?.bomDescription) return own.bomDescription.toUpperCase()
-  return compose(own?.description ?? 'NIPPLE', `${sizeText(nps)} X ${draftLength(length, 'imperial', Infinity)} LG`, schedule(own?.schedule ?? size?.schedule ?? spec.schedule),
+  const bore = drawing ? sizeFor(drawing, nps) : sizeText(nps)
+  const long = drawing ? `${listLength(drawing, length)}${drawing.units === 'mm' ? ' MM' : ''}` : draftLength(length, 'imperial', Infinity)
+  return compose(own?.description ?? 'NIPPLE', `${bore} X ${long} LG`, schedule(own?.schedule ?? size?.schedule ?? spec.schedule),
     own?.material ?? size?.material ?? spec.material, ends)
 }
 /** A nipple placed as an in-line component (older drawings) takes half its catalogued length each side. */
-function nippleRow(spec: PipeSpec, nps: number, named?: CatalogItem): CatalogItem | undefined {
+function nippleRow(spec: PipeSpec, nps: number, named?: CatalogItem, drawing?: Drawing): CatalogItem | undefined {
   const length = nippleLength(spec, nps)
   if (!length) return named
   return {
     ...named, id: named?.id ?? `std:NIPPLE:${nps}`, kind: 'valve', nps, component: 'NIPPLE', takeout: length / 2, faceToFace: length,
-    description: named?.description ?? nippleText(spec, nps, length, 'TBE'), takeoutMissing: undefined,
+    description: named?.description ?? nippleText(spec, nps, length, 'TBE', drawing), takeoutMissing: undefined, takeoutToPipeEnd: true,
     source: "Specification nipple length; takeout = half the nipple, whose ends carry the thread engagement"
   }
 }
 
-/** A specification row with known dimensions, else the built-in ASME row for the same component. */
-export function catalogRow(spec: PipeSpec, code: string, nps: number, smallerNps?: number): CatalogItem | undefined {
+/** Generic valve codes whose B16.10 pattern the specification's design names. */
+const PATTERN_FIELD: Record<string, 'ballValvePattern' | 'plugValvePattern'> = { 'BALL-FL': 'ballValvePattern', 'PLUG-FL': 'plugValvePattern' }
+const STUB_CODES = ['STUB-END', 'STUB-END-SHORT']
+/**
+ * What the built-in standard needs to dimension `code` for this specification: the row's own rating, else the
+ * specification's class (assumed and said when it has none); the row's pattern, body type and category, else the
+ * specification's; the pipe wall at the size (the stub-end weight for stub ends).
+ */
+export function standardInputs(spec: PipeSpec, code: string, nps: number, named?: CatalogItem): { rating: number; schedule?: string; options: StandardOptions } {
+  const own = ratingClass(named?.rating), design = <K extends Parameters<typeof designValue>[1]>(k: K) => designValue(spec, k).value
+  const cls = own && !FORGED_CLASSES.includes(own) ? { value: own, assumed: undefined } : specFlangeClass(spec)
+  const pipe = spec.sizes.find(s => s.nps === nps), patternField = PATTERN_FIELD[code]
+  return {
+    rating: cls.value,
+    schedule: STUB_CODES.includes(code) ? design('stubEndSchedule') ?? pipe?.schedule ?? spec.schedule : named?.schedule ?? pipe?.schedule ?? spec.schedule,
+    options: {
+      forgedClass: own && FORGED_CLASSES.includes(own) ? own : specForgedClass(spec),
+      valvePattern: named?.valvePattern ?? (patternField ? design(patternField) : undefined),
+      butterflyBody: named?.bodyType ?? design('butterflyBody'),
+      butterflyCategory: named?.valveCategory ?? design('butterflyCategory'),
+      gasketThickness: design('gasketThickness'),
+      boltType: design('boltType'),
+      oletSchedule: design('oletSchedule'),
+      ratingAssumed: cls.assumed
+    }
+  }
+}
+/**
+ * A specification row with known dimensions, else the built-in standard row for the same component, with the row's
+ * description and material. A standard row's `assumed` says what the specification did not give.
+ */
+export function catalogRow(spec: PipeSpec, code: string, nps: number, smallerNps?: number, drawing?: Drawing): CatalogItem | undefined {
   const rows = spec.fittings.filter(f => f.component === code && f.nps === nps && sameBranch(f, nps, smallerNps))
   const row = rows.find(f => !f.takeoutMissing)
   if (row) return row
-  if (code === 'NIPPLE') return nippleRow(spec, nps, rows[0])
-  const pipe = spec.sizes.find(s => s.nps === nps), std = standardRow(code, nps, specRating(spec), smallerNps, pipe?.schedule ?? spec.schedule)
+  if (code === 'NIPPLE') return nippleRow(spec, nps, rows[0], drawing)
+  const pipe = spec.sizes.find(s => s.nps === nps), input = standardInputs(spec, code, nps, rows[0])
+  const std = standardRow(code, nps, input.rating, smallerNps, input.schedule, input.options)
   if (!std) return rows[0]
   const named = rows[0], wrought = /^(W-|STUB-END|[CE]-RED$|REDELL$|LR180R$|SR180R$)/.test(code)
   return {
@@ -116,13 +180,13 @@ export function nodeItem(doc: IsoDocument, node: PipeNode): CatalogItem | undefi
   if (item && !item.takeoutMissing) return item
   const code = item?.component ?? node.component, sizes = code && !node.bendAngle ? nodeSizes(doc, node) : undefined
   if (!code || !sizes) return item
-  return catalogRow(sizes.spec, code, item?.nps ?? sizes.nps, item?.smallerNps ?? sizes.smallerNps) ?? item
+  return catalogRow(sizes.spec, code, item?.nps ?? sizes.nps, item?.smallerNps ?? sizes.smallerNps, doc) ?? item
 }
 
 export interface MatingFlange { code: string; item?: CatalogItem; stub?: CatalogItem }
 /** The specification's flange for a flanged connection at this size. */
 export function defaultFlangeCode(spec: PipeSpec, nps: number): string {
-  const face = specFace(spec), chosen = spec.parameters?.['Default Flange']
+  const face = specFace(spec), chosen = designValue(spec, 'defaultFlange').value
   if (chosen) return chosen
   const has = (code: string) => spec.fittings.some(f => f.nps === nps && f.component === code)
   for (const code of [`FLG-${face}WN`, `FLG-${face}LJ`]) if (has(code)) return code
@@ -144,11 +208,34 @@ export function matingFlange(doc: IsoDocument, node: PipeNode, run: PipeRun): Ma
   const spec = getSpec(doc, run.specId), code = chosen ?? defaultFlangeCode(spec, run.nps)
   return { code, item: catalogRow(spec, code, run.nps), stub: isLapJoint(code) ? stubEnd(spec, run.nps) : undefined }
 }
-export function gasketRow(spec: PipeSpec, nps: number, face: 'RF' | 'FF'): CatalogItem | undefined {
-  const rows = spec.fittings.filter(f => f.kind === 'gasket' && f.nps === nps)
-  return rows.find(f => f.component === `GASK-${face}`) ?? rows[0] ?? catalogRow(spec, `GASK-${face}`, nps)
+export interface JointGasket { item?: CatalogItem; thickness: number; source: string; assumed?: string }
+/**
+ * The gasket at a flanged joint and its compressed thickness, from one place: the specification's gasket row for
+ * the face (its thickness, else twice its takeout), else the specification's gasket-thickness design value, else the
+ * built-in ASME gasket with the assumption stated. A row for the other face is never used.
+ */
+export function jointGasket(spec: PipeSpec, nps: number, face: FlangeFace): JointGasket {
+  const other = face === 'RF' ? 'GASK-FF' : 'GASK-RF'
+  const sized = spec.fittings.filter(f => f.kind === 'gasket' && f.nps === nps), rows = sized.filter(f => f.component !== other)
+  const own = rows.find(f => f.component === `GASK-${face}`) ?? rows[0]
+  const rowThickness = (f?: CatalogItem) => f && (f.thickness ?? (!f.takeoutMissing && f.takeout > 0 ? f.takeout * 2 : undefined))
+  const t = rowThickness(own)
+  if (own && t) return { item: own, thickness: t, source: `specification row ${own.id}` }
+  const given = designValue(spec, 'gasketThickness'), std = catalogRow(spec, `GASK-${face}`, nps)
+  if (given.value) return { item: own ?? std, thickness: given.value, source: given.source! }
+  // A specification of this face whose gasket rows are named for the other face (a flat-faced lap-joint class listing
+  // its ring gaskets as GASK-RF) still names the gasket it buys, and its stated thickness beats an assumed standard
+  // one. A joint of the face the specification is not (a flat-faced nozzle on a raised-face line) never borrows them.
+  const named = face === specFace(spec) ? sized.find(f => f.component === other && rowThickness(f)) : undefined, nt = rowThickness(named)
+  if (named && nt) return { item: named, thickness: nt, source: `specification row ${named.id}` }
+  const thickness = std?.thickness ?? (face === 'RF' ? GASKET_THICKNESS.spiralWoundCompressed : GASKET_THICKNESS.sheet18)
+  return {
+    item: own ?? std, thickness, source: std?.source ?? 'assumed',
+    assumed: std?.assumed ?? `a ${thickness} mm gasket is assumed because the specification names no gasket for this joint`
+  }
 }
-export const gasketThickness = (row?: CatalogItem) => row ? row.thickness ?? row.takeout * 2 : 0
+/** The gasket row at a joint (see jointGasket for its thickness). */
+export const gasketRow = (spec: PipeSpec, nps: number, face: FlangeFace): CatalogItem | undefined => jointGasket(spec, nps, face).item
 /** Pipe-side length of a flange: weld-neck hub, slip-on set-back or stub-end length. */
 const flangeLength = (flange: MatingFlange | null) =>
   !flange ? 0 : isLapJoint(flange.code) ? (flange.stub?.takeout ?? NaN) : (flange.item?.takeout ?? NaN)
@@ -171,7 +258,16 @@ const matesComponent = (doc: IsoDocument, node: PipeNode) => connected(doc, node
   r.connector && flangedPort(nodeCode(doc, across(doc, node, r))))
 /** A stub-end node welded straight to its lap-joint flange node belongs to that flange's joint. */
 const stubOfFlange = (doc: IsoDocument, node: PipeNode) => /^STUB-END/.test(nodeCode(doc, node) ?? '') &&
-  connected(doc, node.id).some(r => r.connector && across(doc, node, r).kind === 'flange' && !/^STUB-END/.test(nodeCode(doc, across(doc, node, r)) ?? ''))
+  connected(doc, node.id).some(r => stubInFlange(doc, r))
+/**
+ * The link from a stub-end node to the lap-joint flange node it carries: the flange is loose on the lap (ASME B16.5),
+ * so the link is neither pipe nor a weld; the stub end is welded on its other side.
+ */
+export const stubInFlange = (doc: IsoDocument, run: PipeRun) => {
+  if (!run.connector) return false
+  const [a, b] = [run.from, run.to].map(id => getNode(doc, id)), stub = (n: PipeNode) => /^STUB-END/.test(nodeCode(doc, n) ?? '')
+  return stub(a) !== stub(b) && (stub(a) ? b : a).kind === 'flange'
+}
 /**
  * A flange between two pieces, pipe or a fitting welded straight to it, is a bolted pair: two flanges, one gasket, one
  * set of bolts. Older drawings marked the second side FL with no flange.
@@ -213,7 +309,7 @@ export function flangedAllowance(doc: IsoDocument, node: PipeNode, run: PipeRun)
       // (a continuation or a separately modelled bolted mate) do not.
       if (other.kind === 'end' || other.kind === 'flange' || flangedPort(nodeCode(doc, other))) return 0
     }
-    const spec = getSpec(doc, run.specId), gasket = gasketThickness(gasketRow(spec, run.nps, faceOf(code, spec)))
+    const spec = getSpec(doc, run.specId), gasket = jointGasket(spec, run.nps, faceOf(code, spec)).thickness
     // A pair splits its gasket. A flange at a pipe end is measured to its own face, unless the drawing measures to
     // the face it bolts to (a nozzle, the next drawing's flange), with the gasket it brings inside the dimension.
     const own = node.jointSupply
@@ -224,8 +320,8 @@ export function flangedAllowance(doc: IsoDocument, node: PipeNode, run: PipeRun)
   if (!flangedPort(code)) return 0
   const mate = matingFlange(doc, node, run), spec = getSpec(doc, run.specId)
   // Bolted straight to another flanged component, each takes half the gasket between them.
-  if (!mate) return boltedDirect(doc, node, run) ? gasketThickness(gasketRow(spec, run.nps, faceOf(code, spec))) / 2 : 0
-  return gasketThickness(gasketRow(spec, run.nps, faceOf(mate.code, spec))) + flangeLength(mate)
+  if (!mate) return boltedDirect(doc, node, run) ? jointGasket(spec, run.nps, faceOf(code, spec)).thickness / 2 : 0
+  return jointGasket(spec, run.nps, faceOf(mate.code, spec)).thickness + flangeLength(mate)
 }
 const faceOf = (code: string | undefined, spec: PipeSpec): 'RF' | 'FF' => /FF/.test(code ?? '') ? 'FF' : /RF/.test(code ?? '') ? 'RF' : specFace(spec)
 
@@ -235,7 +331,7 @@ export function continuationPoint(doc: IsoDocument, node: PipeNode): Vec3 {
   if (!face || node.kind !== 'flange' || flangedPort(code) || edges.length !== 1) return node.position
   const run = edges[0], other = across(doc, node, run), direction = sub(node.position, other.position), span = length(direction)
   if (!span) return node.position
-  const spec = getSpec(doc, run.specId), gap = gasketThickness(gasketRow(spec, run.nps, faceOf(code, spec)))
+  const spec = getSpec(doc, run.specId), gap = jointGasket(spec, run.nps, faceOf(code, spec)).thickness
   const atMate = node.jointSupply?.measuredTo === 'mate' && node.jointSupply.gasket !== false
   const offset = (face === 'mate' ? gap : 0) - (atMate ? gap : 0)
   return add(node.position, mul(direction, offset / span))
@@ -250,7 +346,22 @@ export function pipeEndPrep(doc: IsoDocument, run: PipeRun, index: number, prep:
   return mate ? flangePipePrep(mate.code) : prep
 }
 
-export interface JointBolts { kind: 'stud' | 'lug'; count: number; diameter: number; length: number; item?: CatalogItem }
+export interface JointBolts {
+  kind: 'stud' | 'lug' | 'machine'
+  count: number
+  /**
+   * Nuts on each bolt: two on a stud through a flange pair or wafer body, one on a machine bolt, one on a lug stud
+   * (it threads into the lug), none on a cap screw into a lug.
+   */
+  nuts: 0 | 1 | 2
+  diameter: number
+  length: number
+  /** The specification bolt row the set is bought as (its material and description), when it has one. */
+  item?: CatalogItem
+  /** Where count, diameter and length come from: one specification row, or the standard (one consistent set). */
+  source: string
+  assumed?: string
+}
 export interface FlangedJoint {
   id: string
   nodeId: string
@@ -259,13 +370,13 @@ export interface FlangedJoint {
   position: Vec3
   nps: number
   rating: number
-  face: 'RF' | 'FF'
+  face: FlangeFace
   kind: 'equipment' | 'flange-pair' | 'component-port'
   /** Flanges at this joint; implicit ones are supplied with a flanged component and are not separate nodes. */
   flanges: Array<{ code: string; item?: CatalogItem; implicit: boolean }>
   stubEnds: CatalogItem[]
   /** The joint's gasket and bolting; `supplied` says whether this drawing's material list provides them. */
-  gasket: { item?: CatalogItem; thickness: number } | null
+  gasket: JointGasket | null
   bolts: JointBolts | null
   /** What this drawing's material list provides; the rest is on another drawing or by others. */
   supplied: { flange: boolean; gasket: boolean; bolts: boolean }
@@ -277,26 +388,80 @@ export interface FlangedJoint {
   stubRunIds: string[]
   /** Bolting is required but neither the specification nor the standard sizes it. */
   boltsUnknown: boolean
+  /** What this joint's class, face, gasket or bolting had to assume; validation lists it (see dimensionIssues). */
+  assumed: string[]
   spool: string
   line: string
   specId: string
 }
-function jointBolts(spec: PipeSpec, nps: number, face: 'RF' | 'FF', makeup: 'flange-pair' | 'lj-pair' | 'lug-valve-side' | 'wafer-valve'): JointBolts | null {
-  const row = spec.fittings.find(f => f.kind === 'bolt' && f.nps === nps) ?? catalogRow(spec, 'BOLT-RF', nps)
+/** The valve body a lug or wafer joint bolts through: its face-to-face and API 609 category; `tapped` for any other lugged body. */
+interface BoltedBody { faceToFace?: number; category?: CatalogItem['valveCategory']; tapped?: boolean }
+/**
+ * Bolting for one joint. A specification bolt row is used only for the makeup it describes: a stud (or, by the
+ * specification's bolt type, machine) bolt row for a flange pair, a lug row for a lug side, matched by face and class;
+ * its count, diameter and length are taken together or not at all. Lap-joint pairs and wafer bodies need longer studs
+ * than a pair row gives, so they are sized by the standard method (with the stud row's material).
+ */
+function jointBolts(spec: PipeSpec, nps: number, face: FlangeFace, makeup: BoltMakeup, body: BoltedBody = {}, lapJoint = makeup === 'lj-pair'): JointBolts | null {
+  const cls = specFlangeClass(spec), type = designValue(spec, 'boltType').value ?? 'stud'
+  const want = makeup === 'lug-valve-side' ? 'lug' : makeup === 'flange-pair' || makeup === 'lj-pair' ? type : 'stud'
+  const otherFace = face === 'RF' ? 'BOLT-FF' : 'BOLT-RF'
+  const sized = spec.fittings.filter(f => f.kind === 'bolt' && f.nps === nps && (ratingClass(f.rating) == null || ratingClass(f.rating) === cls.value))
+  // Rows for this face first; a specification of this face whose bolting is named for the other face only still states
+  // the bolting it buys, so its rows are used rather than an assumed standard set (see jointGasket).
+  const faced = sized.filter(f => f.component !== otherFace), rows = faced.length || face !== specFace(spec) ? faced : sized
+  const kindOf = (f: CatalogItem) => f.boltKind ?? 'stud', own = rows.find(f => kindOf(f) === want)
+  // Lug bolts are bought in the stud row's material; machine bolts only from a machine-bolt row.
+  const material = own ?? (want === 'machine' ? undefined : rows.find(f => kindOf(f) === 'stud') ?? catalogRow(spec, `BOLT-${face}`, nps))
+  // A pair row is the specification's own flange pair, whether its flanges are weld-neck or lap-joint.
+  const usable = makeup === 'flange-pair' || makeup === 'lj-pair' || makeup === 'lug-valve-side' ? own : undefined
+  const screws = want === 'lug' && type === 'machine'
+  if (usable?.boltCount && usable.boltDiameter && usable.boltLength)
+    return { kind: want, count: usable.boltCount, nuts: nutsOn(want, screws), diameter: usable.boltDiameter, length: usable.boltLength, item: usable, source: `specification row ${usable.id}` }
   // Lap-joint studs pass through both stub-end laps and the gasket as specified.
-  const stub = stubEnd(spec, nps), short = stub?.component === 'STUB-END-SHORT'
-  const lap = stub?.thickness ?? standardStub(nps, short, spec.sizes.find(s => s.nps === nps)?.schedule ?? spec.schedule)?.lapThickness
-  const std = bolting(nps, specRating(spec), face, makeup, makeup === 'lj-pair' ? { lap, gasket: gasketThickness(gasketRow(spec, nps, face)) } : {})
-  // A specification's stud row describes flange pairs; lug and through-bolts for valves come from the standard.
-  const own = makeup === 'flange-pair' || makeup === 'lj-pair'
-  const count = (own ? row?.boltCount : undefined) ?? std?.count, diameter = (own ? row?.boltDiameter : undefined) ?? std?.diameter,
-    len = (own ? row?.boltLength : undefined) ?? std?.length
-  if (!count || !diameter || !len) return null
-  return { kind: makeup === 'lug-valve-side' ? 'lug' : 'stud', count, diameter, length: len, item: row }
+  const stub = lapJoint ? stubEnd(spec, nps) : undefined, short = stub?.component === 'STUB-END-SHORT'
+  const lap = stub?.thickness ?? (lapJoint ? standardStub(nps, short, designValue(spec, 'stubEndSchedule').value ?? spec.sizes.find(s => s.nps === nps)?.schedule ?? spec.schedule) : undefined)
+  const lapThickness = typeof lap === 'number' ? lap : lap?.lapThickness
+  const options = {
+    lap: lapThickness, gasket: jointGasket(spec, nps, face).thickness, type: makeup === 'flange-pair' || makeup === 'lj-pair' || makeup === 'lug-valve-side' ? type : undefined,
+    body: body.faceToFace, category: body.category
+  }
+  // A lugged mate of unknown length (a lug valve or tapped nozzle off this drawing) is sized as the class's API 609
+  // lug butterfly body, the same as a drawn lug valve, and the assumption is said; a class with no API 609 body takes
+  // one bolt diameter into a tapped body.
+  const lugged = makeup === 'lug-valve-side' && body.tapped && body.faceToFace == null
+    ? bolting(nps, cls.value, face, makeup, options) : undefined
+  const std = lugged
+    ? { ...lugged, assumed: [`lug bolts into the mate are sized for an API 609 lug butterfly body because the mate's body length is not given`, lugged.assumed].filter(Boolean).join('; ') }
+    : bolting(nps, cls.value, face, makeup, { ...options, tapped: body.tapped })
+  if (!std) return null
+  const assumed = [
+    cls.assumed, typeof lap === 'object' ? lap?.assumed : undefined, std.assumed,
+    usable ? `the specification bolt row ${usable.id} lacks a count, diameter or length, so the whole standard bolt set is used` : undefined
+  ].filter((a): a is string => !!a)
+  return { kind: std.kind, count: std.count, nuts: nutsOn(std.kind, !!std.capScrews), diameter: std.diameter, length: std.length, item: material, source: std.source, ...(assumed.length ? { assumed: assumed.join('; ') } : {}) }
 }
+const nutsOn = (kind: JointBolts['kind'], capScrews: boolean): JointBolts['nuts'] => kind === 'stud' ? 2 : kind === 'machine' ? 1 : capScrews ? 0 : 1
+/**
+ * A butterfly valve's body type: fixed by its component code (BFLY-LUG, BFLY-WAFER), else its row's catalogue body
+ * type, else the specification's; a lug body is assumed, and said, when none is given. Undefined for other codes.
+ */
+export function butterflyBody(spec: PipeSpec, code: string | undefined, item?: CatalogItem): Resolved<ButterflyBody> | undefined {
+  if (!code || !(code in BUTTERFLY_BODY)) return undefined
+  const fixed = BUTTERFLY_BODY[code]
+  if (fixed) return { value: fixed, source: `component ${code}` }
+  if (item?.bodyType) return { value: item.bodyType, source: `specification row ${item.id}` }
+  const own = designValue(spec, 'butterflyBody')
+  return own.value ? { value: own.value, source: own.source! }
+    : { value: 'lug', source: 'assumed', assumed: 'a lug-body butterfly valve is assumed because no body type (wafer, lug or double-flanged) was given' }
+}
+const notes = (...items: Array<string | undefined>) => [...new Set(items.flatMap(a => a ? a.split('; ') : []))]
 
 /** Every flanged joint, with the flanges, stub ends, gasket and bolting it needs. */
 export function flangedJoints(doc: IsoDocument, spool = ''): FlangedJoint[] {
+  return withIndex(doc, () => findJoints(doc, spool))
+}
+function findJoints(doc: IsoDocument, spool: string): FlangedJoint[] {
   const out: FlangedJoint[] = []
   for (const node of doc.nodes) {
     const edges = connected(doc, node.id), code = nodeCode(doc, node)
@@ -306,6 +471,8 @@ export function flangedJoints(doc: IsoDocument, spool = ''): FlangedJoint[] {
     const owner = spansSpools(doc, node) ? breakOwner(doc, node) : host.spool, owned = !spool || owner === spool
     const here = (r: PipeRun) => !spool || r.spool === spool
     const base = { nps: host.nps, rating: specRating(spec), spool: host.spool, supplySpool: owner, line: host.line, specId: spec.id }
+    // The joint's face is the flange code's when it names one, else the specification's.
+    const faceNote = (named: string | undefined, s: PipeSpec) => named && /RF|FF/.test(named) ? undefined : specFlangeFace(s).assumed
     if (node.kind === 'flange' && !flangedPort(code) && code && !/^ORFC|^ORIFICE/.test(code)) {
       if (matesComponent(doc, node) || stubOfFlange(doc, node)) continue
       const face = faceOf(code, spec), lj = isLapJoint(code)
@@ -326,23 +493,25 @@ export function flangedJoints(doc: IsoDocument, spool = ''): FlangedJoint[] {
       }).slice(0, pair ? 2 : 1).filter(here) : []
       // A pair split by a spool break: each sheet has the flange on its own pipe.
       const sides = pair ? (spool ? pairSides(doc, node).filter(here).length : 2) : 1
-      const gasket = gasketRow(spec, host.nps, face)
+      const gasket = jointGasket(spec, host.nps, face)
+      // Lug bolts into a tapped equipment body.
       const lug = !pair && own?.mate === 'lug'
-      const bolts = jointBolts(spec, host.nps, face, lug ? 'lug-valve-side' : lj ? 'lj-pair' : 'flange-pair')
+      const bolts = jointBolts(spec, host.nps, face, lug ? 'lug-valve-side' : lj ? 'lj-pair' : 'flange-pair', { tapped: lug }, lj)
       out.push({
         ...base, id: node.id, nodeId: node.id, runIds: edges.map(r => r.id), position: node.position, face,
         kind: pair ? 'flange-pair' : 'equipment',
         flanges: pair ? Array(sides).fill(flange) : supply.flange ? [flange] : [],
         stubEnds: stubRuns.map(() => stub!), stubRunIds: stubRuns.map(r => r.id),
-        gasket: { item: gasket, thickness: gasketThickness(gasket) },
-        bolts, supplied: supply, boltsUnknown: supply.bolts && !bolts,
+        gasket, bolts, supplied: supply, boltsUnknown: supply.bolts && !bolts,
+        assumed: notes(specFlangeClass(spec).assumed, faceNote(code, spec), supply.gasket ? gasket.assumed : undefined, supply.bolts ? bolts?.assumed : undefined),
         ...(stubNode ? {} : { flangeNodeId: node.id })
       })
       continue
     }
     if (!flangedPort(code)) continue
-    const wafer = code === 'BFLY-WAFER', lug = /^BFLY(-LUG)?$/.test(code!)
-    const item = nodeItem(doc, node)
+    const item = nodeItem(doc, node), body = butterflyBody(spec, code, item)
+    // A double-flanged butterfly valve bolts up like any flanged valve: a stud set through each mating flange.
+    const wafer = body?.value === 'wafer', lug = body?.value === 'lug'
     for (const [index, run] of edges.entries()) {
       // A port on another sheet's pipe is listed here only for the gasket and bolting this sheet owns.
       const mine = here(run)
@@ -354,15 +523,21 @@ export function flangedJoints(doc: IsoDocument, spool = ''): FlangedJoint[] {
       const allowance=flangedAllowance(doc,node,run)
       const measured=takeout(doc,node,run.id),declared=node.branchEdgeId===run.id?node.branchTakeout??item?.branchTakeout:node.takeout??item?.takeout
       const faceDistance=Math.max(0,Number.isFinite(measured)&&Number.isFinite(allowance)?measured!-allowance:Number.isFinite(declared)?declared!:0)
-      const gasket = gasketRow(runSpec, run.nps, face)
+      const gasket = jointGasket(runSpec, run.nps, face)
       const other = getNode(doc, run.from === node.id ? run.to : run.from), explicit = run.connector && other.kind === 'flange'
       // Two components bolted face to face share one joint; its gasket and bolts are listed with the first of them.
       const direct = boltedDirect(doc, node, run), second = direct && doc.nodes.indexOf(other) < doc.nodes.indexOf(node)
-      const lugged = lug || choice?.mate === 'lug' || (direct && /^BFLY(-LUG)?$/.test(nodeCode(doc, other) ?? ''))
-      const makeup = lugged ? 'lug-valve-side' : wafer ? 'wafer-valve' : mate && isLapJoint(mate.code) ? 'lj-pair' : 'flange-pair'
+      const otherItem = direct ? nodeItem(doc, other) : undefined
+      const otherLug = direct && butterflyBody(runSpec, nodeCode(doc, other), otherItem)?.value === 'lug'
+      const lugged = lug || choice?.mate === 'lug' || otherLug
+      const makeup: BoltMakeup = lugged ? 'lug-valve-side' : wafer ? 'wafer-valve' : mate && isLapJoint(mate.code) ? 'lj-pair' : 'flange-pair'
+      // The body the bolts pass through or thread into: this valve's, the lug valve it bolts to, or a tapped body.
+      const bolted: BoltedBody = lug || wafer ? { faceToFace: item?.faceToFace, category: item?.valveCategory }
+        : otherLug ? { faceToFace: otherItem?.faceToFace, category: otherItem?.valveCategory } : { tapped: lugged }
       // A wafer valve's through-studs belong to its first joint.
       const physical = !(wafer && index > 0) && !second
-      const bolts = physical ? jointBolts(runSpec, run.nps, face, makeup) : null
+      const bolts = physical ? jointBolts(runSpec, run.nps, face, makeup, bolted, !!mate && isLapJoint(mate.code)) : null
+      const supplied = { flange: mine && (!!mate || !!explicit), gasket: owned && choice?.gasket !== false && !second, bolts: owned && choice?.bolts !== false && physical }
       out.push({
         ...base, nps: run.nps, spool: run.spool, line: run.line, specId: runSpec.id, rating: specRating(runSpec),
         id: `${node.id}:${run.id}`, nodeId: node.id, runIds: [run.id], face, kind: 'component-port',
@@ -370,12 +545,36 @@ export function flangedJoints(doc: IsoDocument, spool = ''): FlangedJoint[] {
         flanges: !mine ? [] : mate ? [{ code: mate.code, item: mate.item, implicit: true }]
           : explicit ? [{ code: nodeCode(doc, other) ?? 'FLANGE', item: nodeItem(doc, other), implicit: false }] : [],
         stubEnds: mine && mate?.stub ? [mate.stub] : [], stubRunIds: mine && mate?.stub ? [run.id] : [],
-        gasket: { item: gasket, thickness: gasketThickness(gasket) },
-        bolts, supplied: { flange: mine && (!!mate || !!explicit), gasket: owned && choice?.gasket !== false && !second, bolts: owned && choice?.bolts !== false && physical },
+        gasket, bolts, supplied,
         boltsUnknown: owned && choice?.bolts !== false && physical && !bolts,
+        assumed: notes(specFlangeClass(runSpec).assumed, faceNote(choice?.component ?? designValue(runSpec, 'defaultFlange').value, runSpec),
+          supplied.gasket ? gasket.assumed : undefined, supplied.bolts ? bolts?.assumed : undefined, body?.assumed),
         ...(explicit ? { flangeNodeId: other.id } : {})
       })
     }
   }
   return out
+}
+
+/**
+ * Validation messages for every dimension that had to be assumed: one per specification and assumption, naming the
+ * items it applies to. A node with its own measured takeout does not use the standard dimension, so is not listed.
+ */
+export function dimensionIssues(doc: IsoDocument): string[] {
+  const groups = new Map<string, { spec: string; text: string; items: Set<string> }>()
+  const add = (spec: string, assumed: string | string[] | undefined, what: string) => {
+    for (const text of notes(...(Array.isArray(assumed) ? assumed : [assumed]))) {
+      const key = spec + '\u0000' + text, g = groups.get(key) ?? { spec, text, items: new Set<string>() }
+      g.items.add(what)
+      groups.set(key, g)
+    }
+  }
+  for (const node of doc.nodes) {
+    if (node.takeout != null || node.portTakeouts) continue
+    const item = nodeItem(doc, node), sizes = item?.assumed ? nodeSizes(doc, node) : undefined
+    if (item?.assumed && sizes) add(sizes.spec.id, item.assumed, `${nodeCode(doc, node) ?? node.kind} ${sizeText(item.nps, item.smallerNps)}`)
+  }
+  for (const joint of flangedJoints(doc)) add(joint.specId, joint.assumed, `${sizeText(joint.nps)} flanged joint`)
+  return [...groups.values()].map(g =>
+    `Specification ${g.spec}: ${g.text[0].toUpperCase() + g.text.slice(1)} (${[...g.items].join(', ')}). Set it in the specification or on the item.`)
 }

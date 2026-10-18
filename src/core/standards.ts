@@ -7,7 +7,50 @@ import type { Kind } from './model'
  * threaded fittings the effective takeout (to socket bottom / less thread engagement).
  * B16.5 flange dimensions are measured from the gasket face: Class 150/300 include the 1.6 mm raised face,
  * Class 600 and above add the 6.4 mm raised face to the published thickness and hub length.
+ *
+ * Provenance: every row's `source` names its standard. Where no ASME/MSS/API table fixes a dimension (olet heights,
+ * laterals, forged socket depths, forged caps, unions) the value is manufacturer data and its source says so
+ * (`VENDOR`). Where a lookup needed something the caller did not give (a pressure class, a valve pattern, a pipe
+ * wall), the row is still returned but `assumed` says what was assumed, so validation can ask for it. Nothing
+ * falls back silently.
  */
+export type FlangeFace = 'RF' | 'FF'
+export type BoltType = 'stud' | 'machine'
+export type ValvePattern = 'long' | 'short' | 'regular' | 'venturi'
+export type ButterflyBody = 'wafer' | 'lug' | 'double-flanged'
+/** API 609 Category A: concentric, resilient seated (Class 125/150). Category B: offset seat (Class 150–600). */
+export type ButterflyCategory = 'A' | 'B'
+/** A value with where it came from; `assumed` says what was taken for granted to get it. */
+export interface Resolved<T> { value: T; source: string; assumed?: string }
+/** Manufacturer data used where no ASME, MSS or API table fixes the dimension. */
+export const VENDOR = 'manufacturer data (Bonney Forge catalogue; no ASME/MSS table fixes this dimension)'
+/**
+ * Socket-weld gap: the pipe is withdrawn about 1/16 in (1.6 mm) from the socket bottom before welding
+ * (ASME B31.3 Fig. 328.5.2C, ASME B16.11). Use where a specification sets no `socketGap`.
+ */
+export const SOCKET_WELD_GAP = 1.6
+/**
+ * Gasket thicknesses (mm). ASME B16.20 spiral-wound gaskets are wound 4.5 mm (0.175 in) thick and compress to the
+ * recommended 3.3 mm (0.13 in) when bolted up; the compressed thickness is the one in a joint. ASME B16.21 sheet
+ * gaskets are cut 1/16 in or 1/8 in thick.
+ */
+export const GASKET_THICKNESS = { spiralWoundWinding: 4.5, spiralWoundCompressed: 3.3, sheet116: 1.59, sheet18: 3.18 } as const
+/** Options a specification supplies to fix a standard dimension; each is optional and its absence is reported. */
+export interface StandardOptions {
+  /** ASME B16.11 class (2000, 3000, 6000, 9000) of socket-weld and threaded fittings; else read from `rating`. */
+  forgedClass?: number
+  /** ASME B16.10 pattern of a flanged ball or plug valve. */
+  valvePattern?: ValvePattern
+  butterflyBody?: ButterflyBody
+  butterflyCategory?: ButterflyCategory
+  /** Compressed gasket thickness (mm) the specification names. */
+  gasketThickness?: number
+  boltType?: BoltType
+  /** Weldolet weight (STD or XS) the specification names; else it follows the branch wall. */
+  oletSchedule?: string
+  /** Stated when `rating` itself was assumed by the caller (no class in the specification). */
+  ratingAssumed?: string
+}
 export interface StandardRow {
   kind: Kind
   nps: number
@@ -26,8 +69,17 @@ export interface StandardRow {
   /** Branch outlets: height A from the outlet end to the run pipe's outside, which `takeout` is measured from. */
   height?: number
   takeoutReference?: 'header-outside'
+  /** 180° returns: centre-to-centre O and back-to-face K (ASME B16.9). */
+  centreToCentre?: number
+  backToFace?: number
+  /** Valve pattern, butterfly body type and API 609 category the dimensions are for. */
+  valvePattern?: ValvePattern
+  bodyType?: ButterflyBody
+  valveCategory?: ButterflyCategory
   description: string
   source: string
+  /** What was assumed to give this row (a class, a pattern, a wall); absent when every input was given. */
+  assumed?: string
 }
 export interface FlangeData {
   rating: number
@@ -57,13 +109,35 @@ export interface Bolting {
   count: number
   diameter: number
   length: number
-  kind: 'stud' | 'lug'
+  kind: 'stud' | 'lug' | 'machine'
+  /** Lug bolting as hex-head cap screws (the specification's bolt type is machine bolts): no nut, the head on the flange. */
+  capScrews?: boolean
+  /** The table or the stated length method the length comes from. */
+  source: string
+  assumed?: string
+}
+export interface BoltingOptions {
+  /** Stub-end lap thickness (mm): lap-joint pairs, and a lap-joint flange bolted to a lug or wafer body. */
+  lap?: number
+  /** Compressed gasket thickness (mm) at each face. */
+  gasket?: number
+  /** Valve body face-to-face (mm) for wafer and lug bodies; else the API 609 length of `category`. */
+  body?: number
+  category?: ButterflyCategory
+  /** Lug bolts into a tapped body that is not an API 609 valve (equipment, a lugged hose end): one diameter engaged. */
+  tapped?: boolean
+  /**
+   * Machine bolts instead of stud bolts for flange pairs (B16.5 lists their lengths for Class 150 and 300); into a lug
+   * body, hex-head cap screws with no nut instead of lug studs with one nut each.
+   */
+  type?: BoltType
 }
 export type BoltMakeup = 'flange-pair' | 'lj-pair' | 'lug-valve-side' | 'wafer-valve'
 const r2 = (v: number) => Math.round(v * 100) / 100
 /** Published inch value (2-decimal fractions) → millimetres. */
 const mm = (inch: number) => r2((Math.round(inch * 32) * 25.4) / 32)
-const mmx = (inch: number) => r2(inch * 25.4)
+/** Inch value → millimetres to 0.01, rounding half up as B36.10M does (0.375 in = 9.53 mm). */
+const mmx = (inch: number) => Math.round(inch * 2540 + 1e-6) / 100
 const quarter = (v: number) => Math.round(v * 4 + 1e-9) / 4
 const upQuarter = (v: number) => Math.ceil(v * 4 - 1e-9) / 4
 const same = (a: number, b: number) => Math.abs(a - b) < 1e-6
@@ -102,25 +176,52 @@ const WALL = [
   [18, 0.165, 0.188, 0.375, 0.5, 0.562, 0.75, 0.938, 1.375, 1.781, 0],
   [20, 0.188, 0.218, 0.375, 0.5, 0.594, 0.812, 1.031, 1.5, 1.969, 0],
   [22, 0.188, 0.218, 0.375, 0.5, 0, 0.875, 1.125, 1.625, 2.125, 0],
-  [24, 0.218, 0.25, 0.375, 0.5, 0.688, 0.969, 1.219, 1.812, 2.344, 0]
+  [24, 0.218, 0.25, 0.375, 0.5, 0.688, 0.969, 1.219, 1.812, 2.344, 0],
+  // NPS 26–48: standard weight and extra strong only (the other schedules there are not tabulated here).
+  ...[26, 28, 30, 32, 34, 36, 38, 40, 42, 44, 46, 48].map(n => [n, 0, 0, 0.375, 0.5, 0, 0, 0, 0, 0, 0])
 ]
 const WALL_COLUMNS = ['5S', '10S', 'STD', 'XS', '40', '60', '80', '120', '160', 'XXS']
+/** ASME B36.10M schedules listed only for the larger sizes (in): Sch 10, 20, 30, 100, 140. */
+const WALL_LARGE: Record<string, number[][]> = {
+  10: [[14, 0.25], [16, 0.25], [18, 0.25], [20, 0.25], [22, 0.25], [24, 0.25]],
+  20: [[8, 0.25], [10, 0.25], [12, 0.25], [14, 0.312], [16, 0.312], [18, 0.312], [20, 0.375], [22, 0.375], [24, 0.375]],
+  30: [[8, 0.277], [10, 0.307], [12, 0.33], [14, 0.375], [16, 0.375], [18, 0.438], [20, 0.5], [22, 0.5], [24, 0.562]],
+  100: [[8, 0.594], [10, 0.719], [12, 0.844], [14, 0.938], [16, 1.031], [18, 1.156], [20, 1.281], [22, 1.375], [24, 1.531]],
+  140: [[8, 0.812], [10, 1], [12, 1.125], [14, 1.25], [16, 1.438], [18, 1.562], [20, 1.75], [22, 1.875], [24, 2.062]]
+}
 /** ASME B36.10M outside diameter (in). */
 const OD = [[0.125, 0.405], [0.25, 0.54], [0.375, 0.675], [0.5, 0.84], [0.75, 1.05], [1, 1.315], [1.25, 1.66], [1.5, 1.9], [2, 2.375],
   [2.5, 2.875], [3, 3.5], [3.5, 4], [4, 4.5], [5, 5.563], [6, 6.625], [8, 8.625], [10, 10.75], [12, 12.75]]
-/** Pipe outside diameter (mm); NPS 14 and up equal their size. */
+/** Pipe outside diameter (mm, ASME B36.10M); NPS 14 to 48 equal their size in inches. */
 export function pipeOd(nps: number): number | undefined {
-  return nps >= 14 && isNps(nps) ? mmx(nps) : (v => v == null ? undefined : mmx(v))(at(OD, nps)?.[1])
+  return nps >= 14 && at(WALL, nps) ? mmx(nps) : (v => v == null ? undefined : mmx(v))(at(OD, nps)?.[1])
 }
-/** Nominal pipe wall (mm) for a schedule ('STD', 'XS', 'XXS', '5S', '10S', '40S', '80S', '40', 'SCH.80', 'SCH 160'…); undefined if unknown. */
+/** Nominal pipe wall (mm) for a schedule ('STD', 'XS', 'XXS', '5S', '10S', '40S', '80S', '10'…'160', 'SCH.80', 'SCH 160'…); undefined if not listed. */
 export function pipeWall(nps: number, schedule = 'STD'): number | undefined {
   const s = schedule.toUpperCase().replace(/^SCH(EDULE)?\.?\s*/, '').replace(/\.$/, '').trim()
+  const large = at(WALL_LARGE[s], nps)?.[1]
+  if (large) return mmx(large)
   const i = WALL_COLUMNS.indexOf(s === '40S' ? 'STD' : s === '80S' ? 'XS' : s) + 1, r = at(WALL, nps)
   return i && r?.[i] ? mmx(r[i]) : undefined
 }
+/**
+ * The wall of `schedule`, or of `fallback` with the assumption stated when the schedule is missing or not listed
+ * at this size. `what` names the dimension the wall is for.
+ */
+function wallFor(nps: number, schedule: string | undefined, fallback: string, what: string): { wall?: number; assumed?: string } {
+  const own = schedule ? pipeWall(nps, schedule) : undefined
+  if (own != null) return { wall: own }
+  const wall = pipeWall(nps, fallback)
+  return {
+    wall,
+    assumed: wall == null ? undefined : schedule
+      ? `${what} uses the ${fallback} wall because schedule ${schedule} has no ASME B36.10M/B36.19M wall at this size`
+      : `${what} uses the ${fallback} wall because no pipe schedule was given`
+  }
+}
 // ---- ASME B16.5 (inches). [nps, O, C, Y weld neck, Y slip-on/SW/THD (0 = none), Y lapped, bolt circle, bolts, bolt dia, stud length, machine bolt]
 // Class 150/300 C and Y include the 0.06 in raised face; Class 600+ exclude the 0.25 in raised face (added in flange()).
-// Thicknesses are the traditional (B16.5-1996) values used by flange makers and the library specs.
+// Thicknesses are the traditional ASME B16.5-1996 values still used by flange makers (later editions round some up).
 const B165: Record<number, number[][]> = {
   150: [
     [0.5, 3.5, 0.44, 1.88, 0.62, 0.62, 2.38, 4, 0.5, 2.25, 1.75],
@@ -236,7 +337,11 @@ const B165: Record<number, number[][]> = {
 }
 /** B16.5 socket-weld flange socket depth D (in). */
 const SW_FLANGE_DEPTH = [[0.5, 0.38], [0.75, 0.44], [1, 0.5], [1.25, 0.56], [1.5, 0.62], [2, 0.69], [2.5, 0.75], [3, 0.81]]
-/** NPT make-up (hand-tight plus wrench) thread engagement (in), the shop chart used by the library specs. */
+/**
+ * NPT make-up thread engagement (in, hand-tight plus wrench), the common pipe-fitter thread-engagement chart. It is
+ * approximate: ASME B1.20.1 fixes the gauge lengths L1 and L3, not a made-up length. A specification row's
+ * `threadEngagement` overrides it.
+ */
 const ENGAGE = [
   [0.125, 0.25], [0.25, 0.375], [0.375, 0.375], [0.5, 0.5], [0.75, 0.5625], [1, 0.6875], [1.25, 0.6875],
   [1.5, 0.6875], [2, 0.75], [2.5, 0.9375], [3, 1], [3.5, 1.0625], [4, 1.125], [5, 1.25], [6, 1.3125],
@@ -244,9 +349,12 @@ const ENGAGE = [
 ]
 const engagement = (nps: number) => at(ENGAGE, nps)?.[1]
 const FLANGE_CLASSES = [150, 300, 600, 900, 1500]
-/** Flange class for a rating; a rating without a class ('', 'Project specified') means Class 150, an unsupported class (400, 2500) none. */
-const flangeClass = (rating: string | number | undefined) => {
-  const c = ratingClass(rating) ?? (typeof rating === 'number' ? undefined : 150)
+/**
+ * B16.5 flange class for a rating; undefined for a rating without a class ('', 'Project specified') and for a class
+ * these tables do not cover (400, 2500). Callers that must go on without a class assume one and say so.
+ */
+export const flangeClass = (rating: string | number | undefined) => {
+  const c = ratingClass(rating)
   return c && FLANGE_CLASSES.includes(c) ? c : undefined
 }
 const B165_SOURCE = 'ASME B16.5 (traditional thicknesses; dimensions from the gasket face, raised face included)'
@@ -275,39 +383,101 @@ export function flange(nps: number, rating?: string | number): FlangeData | unde
     threaded: cls <= 600 || nps <= 2.5
   }
 }
-// ---- API 609 butterfly valve face-to-face (mm): Category A (concentric) Class 150 lug & wafer; Class 300 Category B (double offset).
-const BFLY: Record<number, number[][]> = {
-  150: [[1.5, 33], [2, 43], [2.5, 46], [3, 46], [4, 52], [5, 56], [6, 56], [8, 60], [10, 68], [12, 78], [14, 78], [16, 102], [18, 114], [20, 127], [24, 154]],
+// ---- API 609 butterfly valve face-to-face (mm), lug and wafer bodies.
+/** Category A (concentric, resilient seated), Class 125/150 flanges; the ISO 5752 Series 20 lengths. */
+const API609_A = [[1.5, 33], [2, 43], [2.5, 46], [3, 46], [4, 52], [5, 56], [6, 56], [8, 60], [10, 68], [12, 78], [14, 78], [16, 102], [18, 114], [20, 127], [24, 154]]
+/** Category B (offset seat, high performance) by flange class. */
+const API609_B: Record<number, number[][]> = {
+  150: [[3, 48], [4, 54], [6, 57], [8, 64], [10, 71], [12, 81], [14, 92], [16, 102], [18, 114], [20, 127], [24, 154]],
   300: [[3, 48], [4, 54], [6, 59], [8, 73], [10, 83], [12, 92], [14, 117], [16, 133], [18, 149], [20, 159], [24, 181]]
 }
-const butterfly = (nps: number, cls: number) => at(BFLY[cls], nps)?.[1]
 /**
- * Bolting for one flanged joint. Lengths follow the B16.5 method (2 × (flange + 0.12 in tolerance + heavy nut) + gasket
- * + 0.06 in), the RF pair lengths are the published B16.5 table.
- * - 'lj-pair': two lap-joint flanges and two stub-end laps (default STD wall laps, 1/8 in gasket; pass the actual lap
- *   wall and gasket thickness in mm), rounded to the nearest 1/4 in like B16.5.
- * - 'lug-valve-side': lug bolts for ONE side of a lug butterfly valve: the B16.5 pair computation less 1/2 in, capped at
- *   one flange, gasket and nut plus half the lug body and 1/4 in projection, rounded up to 1/4 in. Reproduces the
- *   production reference (Class 150: NPS 2 = 2-3/4 in, NPS 3 = 3-1/4 in).
- * - 'wafer-valve': through studs spanning both flanges, gaskets and the valve body, rounded up to 1/4 in.
+ * The API 609 category of a lug or wafer butterfly valve at a class: as given, else the only one the class has
+ * (Category B above Class 150), else Category A assumed at Class 150.
  */
-export function bolting(nps: number, rating: string | number | undefined, face: 'RF' | 'FF', makeup: BoltMakeup, opts: { lap?: number; gasket?: number } = {}): Bolting | undefined {
+export function butterflyCategory(cls: number, given?: ButterflyCategory): Resolved<ButterflyCategory> | undefined {
+  if (given) return given === 'A' && cls !== 150 ? undefined : { value: given, source: `API 609 Category ${given}` }
+  if (cls !== 150) return API609_B[cls] ? { value: 'B', source: `API 609 Category B (the only category for Class ${cls})` } : undefined
+  return { value: 'A', source: 'API 609 Category A', assumed: 'API 609 Category A (concentric) butterfly valve assumed because no category was given (Category B bodies are longer)' }
+}
+/** API 609 lug/wafer face-to-face (mm) for a category and class. */
+export const butterflyLength = (nps: number, cls: number, category: ButterflyCategory) =>
+  at(category === 'A' ? (cls === 150 ? API609_A : undefined) : API609_B[cls], nps)?.[1]
+/**
+ * Bolting for one flanged joint, inch sizes converted to mm. Flange-pair studs and machine bolts are the published
+ * B16.5 table lengths. The other makeups use the B16.5 bolt-length method: per flange its thickness C at the gasket
+ * face plus the thickness tolerance T (0.12 in to NPS 18, 0.19 in above) and one heavy nut (height = bolt diameter
+ * d), plus the gaskets (default allowance g = 0.12 in each, or `gasket`) and the point projection n = 0.06 in.
+ * - 'lj-pair': two lap-joint flanges and two stub-end laps; `lap` is the lap thickness (mm). Rounded to the nearest
+ *   1/4 in as B16.5 rounds its table. Without `lap` the STD wall is assumed and stated.
+ * - 'lug-valve-side': lug bolts for ONE side of a lug body. No ASME or API table gives lug-bolt lengths, so this is
+ *   Spoolyard's lug-body convention, and every result says so in `assumed`: the pair method (two flanges, nuts and T,
+ *   the 0.12 in gasket allowance, n) less 1/2 in, limited to C + T + one nut + 0.12 in + half the lug body + n + 1/4 in,
+ *   rounded up to the next 1/4 in. Into a tapped body of unknown length (`tapped`): C (with any `lap`) + T + nut +
+ *   gasket + one bolt diameter engaged + n. A specification lug-bolt row, or the valve maker's bolting chart, governs.
+ * - 'wafer-valve': through studs spanning both flanges, both gaskets and the wafer body, rounded up to 1/4 in.
+ * The body length is `body` (the valve's own face-to-face), else the API 609 length of `category`, stated.
+ */
+/** Said of every lug-bolt length worked out here: no standard gives one. */
+export const LUG_CONVENTION = 'lug-bolt lengths follow Spoolyard\'s lug-body convention because no ASME or API table gives them: confirm them against the valve maker\'s bolting chart or add a lug-bolt row to the specification'
+export function bolting(nps: number, rating: string | number | undefined, face: FlangeFace, makeup: BoltMakeup, opts: BoltingOptions = {}): Bolting | undefined {
   const cls = flangeClass(rating), r = cls ? at(B165[cls], nps) : undefined
   if (!cls || !r) return undefined
-  const [, c, , , , , count, d, stud] = r.slice(1), low = cls <= 300
+  const [, c, , , , , count, d, stud, machine] = r.slice(1), low = cls <= 300
   if (face === 'FF' && !low && makeup !== 'lj-pair') return undefined
-  const diameter = mm(d), t = nps <= 18 ? 0.12 : 0.19, n = 0.06, g = 0.12, tf = c + (low ? 0 : 0.25)
-  if (makeup === 'flange-pair') return { count, diameter, length: mm(stud), kind: 'stud' }
-  if (makeup === 'lj-pair') {
-    const lap = (opts.lap ?? pipeWall(nps, 'STD') ?? 0) / 25.4, gasket = opts.gasket != null ? opts.gasket / 25.4 : g
-    return { count, diameter, length: mm(quarter(2 * ((low ? c - 1 / 16 : c) + t + d) + 2 * lap + gasket + n)), kind: 'stud' }
+  const diameter = mm(d), t = nps <= 18 ? 0.12 : 0.19, n = 0.06, tf = c + (low ? 0 : 0.25)
+  const g = opts.gasket != null ? opts.gasket / 25.4 : 0.12, gasketNote = opts.gasket != null ? `${r2(opts.gasket)} mm gaskets` : '0.12 in gasket allowance'
+  if (makeup === 'flange-pair') {
+    if (opts.type === 'machine')
+      return machine ? { count, diameter, length: mm(machine), kind: 'machine', source: `ASME B16.5 Class ${cls} machine-bolt length` } : undefined
+    return { count, diameter, length: mm(stud), kind: 'stud', source: `ASME B16.5 Class ${cls} stud-bolt length` }
   }
-  const body = butterfly(nps, cls)
+  if (makeup === 'lj-pair') {
+    const std = pipeWall(nps, 'STD') ?? 0, lap = (opts.lap ?? std) / 25.4
+    return {
+      count, diameter, length: mm(quarter(2 * ((low ? c - 1 / 16 : c) + t + d) + 2 * lap + g + n)), kind: 'stud',
+      source: `ASME B16.5 bolt-length method: two lap-joint flanges and nuts, two stub-end laps, ${gasketNote}, rounded to 1/4 in`,
+      ...(opts.lap == null || opts.type === 'machine' ? {
+        assumed: [opts.lap == null ? 'lap-joint studs assume STD-wall stub-end laps because no lap thickness was given' : '',
+          opts.type === 'machine' ? 'stud bolts are sized for lap-joint pairs because B16.5 tabulates machine bolts for weld-neck pairs only' : ''].filter(Boolean).join('; ')
+      } : {})
+    }
+  }
+  // A lap-joint flange (no raised face) clamps its stub-end lap: both are in the grip.
+  const grip = opts.lap != null ? (low ? c - 1 / 16 : c) + opts.lap / 25.4 : tf
+  const lapNote = opts.lap != null ? ' (lap-joint flange and stub-end lap)' : ''
+  // Into a lug a stud takes one nut, on the flange side, and projects n beyond it; a cap screw's head bears on the
+  // flange, so it has neither.
+  const screws = makeup === 'lug-valve-side' && opts.type === 'machine', nut = screws ? 0 : d + n
+  const fastener = screws ? 'hex-head cap screws (no nut)' : 'one nut'
+  if (makeup === 'lug-valve-side' && opts.tapped && opts.body == null)
+    return {
+      count, diameter, length: mm(upQuarter(grip + t + g + d + nut)), kind: 'lug', ...(screws ? { capScrews: true } : {}),
+      source: `lug-body convention (no ASME or API table gives lug-bolt lengths): one flange${lapNote} and ${fastener} by the ASME B16.5 bolt-length method, ${gasketNote}, one bolt diameter engaged in the tapped body, rounded up to 1/4 in`,
+      assumed: LUG_CONVENTION
+    }
+  const cat = opts.body == null ? butterflyCategory(cls, opts.category) : undefined
+  const body = opts.body ?? (cat ? butterflyLength(nps, cls, cat.value) : undefined)
   if (body == null) return undefined
-  const f = body / 25.4
-  if (makeup === 'wafer-valve') return { count, diameter, length: mm(upQuarter(2 * (tf + t + d) + 2 * g + f + n)), kind: 'stud' }
-  const side = Math.min(2 * (tf + t + d) + g + n - 0.5, tf + t + g + f / 2 + d + n + 0.25)
-  return { count, diameter, length: mm(upQuarter(side)), kind: 'lug' }
+  const f = body / 25.4, assumed = cat?.assumed
+  const bodyNote = opts.body != null ? `the valve's ${r2(body)} mm body` : `the ${cat!.source} ${body} mm body`
+  if (makeup === 'wafer-valve')
+    return {
+      count, diameter, length: mm(upQuarter(2 * (grip + t + d) + 2 * g + f + n)), kind: 'stud',
+      source: `ASME B16.5 bolt-length method through both flanges${lapNote}, ${gasketNote} and ${bodyNote}, rounded up to 1/4 in`, ...(assumed ? { assumed } : {})
+    }
+  // No ASME or API table gives lug-bolt lengths; this is a convention, stated as such. One side is the B16.5 pair
+  // method (flange thickness C, tolerance T and a nut per flange, the table's 0.12 in gasket allowance, n) less 1/2 in,
+  // limited to one flange, nut and gasket allowance plus half the lug body and a 1/4 in projection; rounded up to 1/4 in.
+  // On the B16.5 basis like the pair table, so it does not move with the gasket or lap: 2-3/4 in at NPS 2 and 3-1/4 in
+  // at NPS 3, Class 150.
+  // Cap screws are the stud length less its nut and projection.
+  const side = Math.min(2 * (tf + t + d) + 0.12 + n - 0.5, tf + t + 0.12 + f / 2 + d + n + 0.25) - (d + n - nut)
+  return {
+    count, diameter, length: mm(upQuarter(side)), kind: 'lug', ...(screws ? { capScrews: true } : {}),
+    source: `lug-body convention (no ASME or API table gives lug-bolt lengths): the ASME B16.5 pair length less 1/2 in, at most one flange and ${fastener}, the 0.12 in gasket allowance, half of ${bodyNote} and 1/4 in${screws ? ', less the nut and projection a stud takes' : ''}, rounded up to 1/4 in`,
+    assumed: [assumed, LUG_CONVENTION].filter(Boolean).join('; ')
+  }
 }
 // ---- ASME B16.9 butt-weld fittings (in): [nps, LR 90 A, SR 90 A, LR 45 B, tee C, cap E, reducer H, stub end long F, stub end MSS SP-43 short F, lap OD G]
 const BW = [
@@ -333,10 +503,32 @@ const BW = [
   [22, 33, 22, 13.5, 16.5, 10, 20, 12, 6, 25.25],
   [24, 36, 24, 15, 17, 10.5, 20, 12, 6, 27.25]
 ]
-/** Smallest outlet of B16.9 reducers / reducing elbows (extended to the manufacturer pairs carried by the library specs). */
+/** Smallest small end of ASME B16.9 concentric and eccentric reducers (in). */
 const REDUCER_MIN = [
-  [0.5, 0.25], [0.75, 0.375], [1, 0.5], [1.25, 0.5], [1.5, 0.5], [2, 0.75], [2.5, 1], [3, 1], [3.5, 1.25], [4, 1],
-  [5, 1.5], [6, 2], [8, 3], [10, 3], [12, 4], [14, 6], [16, 6], [18, 8], [20, 8], [22, 10], [24, 10]
+  [0.5, 0.25], [0.75, 0.375], [1, 0.5], [1.25, 0.5], [1.5, 0.5], [2, 0.75], [2.5, 1], [3, 1.25], [3.5, 1.25], [4, 1.5],
+  [5, 2], [6, 2.5], [8, 3.5], [10, 4], [12, 5], [14, 6], [16, 6], [18, 8], [20, 8], [22, 10], [24, 10]
+]
+/** Smallest small end of ASME B16.9 long-radius reducing elbows (in). */
+const REDELL_MIN = [
+  [2, 1.25], [2.5, 1.25], [3, 1.5], [3.5, 2], [4, 2], [5, 2.5], [6, 3], [8, 4], [10, 5], [12, 6], [14, 8], [16, 10], [18, 10], [20, 10], [24, 12]
+]
+/** ASME B16.9 180° returns (in): [nps, LR centre-to-centre O, LR back-to-face K, SR O, SR K]; 0 = not made. */
+const RETURN = [
+  [0.5, 3, 1.88, 0, 0], [0.75, 2.25, 1.69, 0, 0], [1, 3, 2.19, 2, 1.62], [1.25, 3.75, 2.75, 2.5, 2.06], [1.5, 4.5, 3.25, 3, 2.44],
+  [2, 6, 4.19, 4, 3.19], [2.5, 7.5, 5.19, 5, 3.94], [3, 9, 6.25, 6, 4.75], [3.5, 10.5, 7.25, 7, 5.5], [4, 12, 8.25, 8, 6.25],
+  [5, 15, 10.31, 10, 7.75], [6, 18, 12.31, 12, 9.31], [8, 24, 16.31, 16, 12.31], [10, 30, 20.38, 20, 15.38], [12, 36, 24.38, 24, 18.38],
+  [14, 42, 28, 28, 21], [16, 48, 32, 32, 24], [18, 54, 36, 36, 27], [20, 60, 40, 40, 30], [22, 66, 44, 44, 33], [24, 72, 48, 48, 36]
+]
+/** ASME B16.9 180° return (mm): centre-to-centre O, back-to-face K and the bend radius (O/2) one 90° half takes out. */
+export function returnBend(nps: number, radius: 'LR' | 'SR'): { centreToCentre: number; backToFace: number; radius: number; source: string } | undefined {
+  const r = at(RETURN, nps), o = r?.[radius === 'LR' ? 1 : 3], k = r?.[radius === 'LR' ? 2 : 4]
+  return o && k ? { centreToCentre: mm(o), backToFace: mm(k), radius: mm(o / 2), source: `ASME B16.9 ${radius === 'LR' ? 'long' : 'short'}-radius 180° return: centre-to-centre O, back-to-face K` } : undefined
+}
+/** ASME B16.9 cap (in): [nps, limiting wall for length E, E1 for heavier walls]. The limiting wall is the XS wall. */
+const CAP_E1 = [
+  [0.5, 0.18, 1], [0.75, 0.15, 1], [1, 0.18, 1.5], [1.25, 0.19, 1.5], [1.5, 0.2, 1.5], [2, 0.22, 1.75], [2.5, 0.28, 2], [3, 0.3, 2.5],
+  [3.5, 0.32, 3], [4, 0.34, 3], [5, 0.38, 3.5], [6, 0.43, 4], [8, 0.5, 5], [10, 0.5, 6], [12, 0.5, 7], [14, 0.5, 7.5], [16, 0.5, 8],
+  [18, 0.5, 9], [20, 0.5, 10], [22, 0.5, 10.5], [24, 0.5, 10.5]
 ]
 /** B16.9 reducing-outlet tee/cross centre-to-end of outlet M (in), keyed by run size: [outlet, M]. */
 const TEE_M: Record<string, number[][]> = {
@@ -362,11 +554,12 @@ const TEE_M: Record<string, number[][]> = {
   22: [[20, 16], [18, 15.5], [16, 15], [14, 15], [12, 14.62], [10, 14.12]],
   24: [[22, 17], [20, 17], [18, 16.5], [16, 16], [14, 16], [12, 15.62], [10, 15.12]]
 }
-/** 45° laterals as catalogued (Bonney Forge, matching the library specs): [nps, short-side C-E, long-side and branch C-E] (in). */
+/** 45° butt-weld laterals, manufacturer data (no ASME table): [nps, short-side C-E, long-side and branch C-E] (in). */
 const LATERAL = [[1, 2.5, 6.5], [1.25, 2.75, 7], [1.5, 3, 8], [2, 4, 8.5], [2.5, 4.5, 10], [3, 5, 11], [3.5, 5.5, 12], [4, 6, 13], [5, 7, 14.5], [6, 8, 16.5], [8, 10, 20], [10, 12, 23], [12, 13, 27], [14, 14, 30], [16, 16, 33], [18, 17, 36]]
 /**
- * MSS SP-97 branch outlets as catalogued (Bonney Forge): height A from the outlet end to the run pipe's outside at the
- * branch centreline (in). [nps, weldolet STD, weldolet XS, sockolet/thredolet 3000, 6000]; 0 = not made.
+ * MSS SP-97 integrally reinforced branch outlets, manufacturer heights (MSS SP-97 fixes the outlet ends, not the
+ * height): height A from the outlet end to the run pipe's outside at the branch centreline (in).
+ * [nps, weldolet STD, weldolet XS, sockolet/thredolet 3000, 6000]; 0 = not made.
  */
 const OLET = [
   [0.5, 0.75, 0.75, 1, 1.25], [0.75, 0.88, 0.88, 1.06, 1.44], [1, 1.06, 1.06, 1.31, 1.56], [1.25, 1.25, 1.25, 1.31, 1.62],
@@ -428,19 +621,22 @@ const B1610: Record<number, number[][]> = {
   900: one([[0.5, 8.5], [0.75, 9], [1, 10], [1.25, 11], [1.5, 12], [2, 14.5], [2.5, 16.5], [3, 15], [4, 18], [5, 22], [6, 24], [8, 29], [10, 33], [12, 38], [14, 40.5], [16, 44.5], [18, 48], [20, 52], [24, 61]]),
   1500: one([[0.5, 8.5], [0.75, 9], [1, 10], [1.25, 11], [1.5, 12], [2, 14.5], [2.5, 16.5], [3, 18.5], [4, 21.5], [5, 26.5], [6, 27.75], [8, 32.75], [10, 39], [12, 44.5], [14, 49.5], [16, 54.5], [18, 60.5], [20, 65.5], [24, 76.5]])
 }
-at(B1610[600], 24)![3] = 55.5 // Class 600 NPS 24 swing check, as in the library specs.
-const VALVE: Record<string, [number[], string]> = {
-  'GATE-FL': [[1], 'GATE VALVE, FLANGED'],
-  'GLOBE-FL': [[2], 'GLOBE VALVE, FLANGED'],
-  'CHECK-FL': [[3], 'SWING CHECK VALVE, FLANGED'],
-  'BALL-FL': [[4, 5], 'BALL VALVE, FLANGED'],
-  'BALL-FL-LONG': [[4], 'BALL VALVE, FLANGED, LONG PATTERN'],
-  'BALL-FL-SHORT': [[5], 'BALL VALVE, FLANGED, SHORT PATTERN'],
-  'PLUG-FL': [[7, 6], 'PLUG VALVE, FLANGED'],
-  'PLUG-FL-SHORT': [[6], 'PLUG VALVE, FLANGED, SHORT PATTERN'],
-  'PLUG-FL-REGULAR': [[7], 'PLUG VALVE, FLANGED, REGULAR PATTERN'],
-  'GATE-BW': [[8], 'GATE VALVE, BUTT-WELD'],
-  'GLOBE-BW': [[9], 'GLOBE VALVE, BUTT-WELD']
+/**
+ * B16.10 column of each valve code. A code with more than one pattern (BALL-FL, PLUG-FL) takes the pattern the row or
+ * specification names; where the patterns differ at a size and none is named, the first is assumed and stated.
+ */
+const VALVE: Record<string, { patterns: Partial<Record<ValvePattern, number>>; column?: number; name: string }> = {
+  'GATE-FL': { patterns: {}, column: 1, name: 'GATE VALVE, FLANGED' },
+  'GLOBE-FL': { patterns: {}, column: 2, name: 'GLOBE VALVE, FLANGED' },
+  'CHECK-FL': { patterns: {}, column: 3, name: 'SWING CHECK VALVE, FLANGED' },
+  'BALL-FL': { patterns: { long: 4, short: 5 }, name: 'BALL VALVE, FLANGED' },
+  'BALL-FL-LONG': { patterns: { long: 4 }, name: 'BALL VALVE, FLANGED' },
+  'BALL-FL-SHORT': { patterns: { short: 5 }, name: 'BALL VALVE, FLANGED' },
+  'PLUG-FL': { patterns: { regular: 7, short: 6 }, name: 'PLUG VALVE, FLANGED' },
+  'PLUG-FL-SHORT': { patterns: { short: 6 }, name: 'PLUG VALVE, FLANGED' },
+  'PLUG-FL-REGULAR': { patterns: { regular: 7 }, name: 'PLUG VALVE, FLANGED' },
+  'GATE-BW': { patterns: {}, column: 8, name: 'GATE VALVE, BUTT-WELD' },
+  'GLOBE-BW': { patterns: {}, column: 9, name: 'GLOBE VALVE, BUTT-WELD' }
 }
 // ---- ASME B16.11 forged fittings.
 /** Socket-weld centre to socket bottom (in): [nps, 90/tee 3000, 90/tee 6000, 45 3000, 45 6000]. */
@@ -450,11 +646,13 @@ const SW = [
   [1.25, 1.06, 1.25, 0.69, 0.81], [1.5, 1.25, 1.5, 0.81, 1], [2, 1.5, 1.62, 1, 1.12],
   [2.5, 1.62, 0, 1.12, 0], [3, 2.25, 0, 1.25, 0], [4, 2.62, 0, 1.62, 0]
 ]
-/** B16.11 minimum socket depth J (in). */
-const minSocket = (nps: number) => mm(nps <= 0.5 ? 0.375 : nps <= 1.5 ? 0.5 : nps <= 3 ? 0.625 : 0.75)
-/** Socket depth of forged fittings as made (Bonney Forge, as in the library specs; deeper than the B16.11 minimum J). */
+/**
+ * Socket depth of forged socket-weld items as made, manufacturer data (B16.11 fixes only a minimum J, which these
+ * exceed). One table serves every socket-weld item, so derived takeouts (sockolet, union, reducing outlet) agree.
+ */
 const FORGED_SOCKET = [[0.125, 0.375], [0.25, 0.375], [0.375, 0.4375], [0.5, 0.5], [0.75, 0.5625], [1, 0.625], [1.25, 0.6875], [1.5, 0.75], [2, 0.875], [2.5, 0.875], [3, 1], [4, 1.125]]
-const socketDepth = (nps: number) => (v => (v ? mm(v) : minSocket(nps)))(at(FORGED_SOCKET, nps)?.[1])
+const socketDepth = (nps: number) => (v => (v ? mm(v) : undefined))(at(FORGED_SOCKET, nps)?.[1])
+const SOCKET_SOURCE = `socket depth J as made, ${VENDOR}`
 /** B16.11 socket-weld coupling laying length E between socket bottoms (in). */
 const swCouplingGap = (nps: number) => mm(nps <= 0.375 ? 0.25 : nps <= 0.75 ? 0.375 : nps <= 1.5 ? 0.5 : 0.75)
 /** Threaded centre-to-end (mm): [nps, 90/tee 2000, 3000, 6000, 45 2000, 3000, 6000]. */
@@ -466,82 +664,158 @@ const THD = [
 ]
 /** Threaded coupling length W (mm), Class 3000 and 6000. */
 const THD_COUPLING = [[0.125, 32], [0.25, 35], [0.375, 38], [0.5, 48], [0.75, 51], [1, 60], [1.25, 67], [1.5, 79], [2, 86], [2.5, 92], [3, 108], [4, 121]]
-/** MSS SP-83 union laying length (in) as catalogued: [nps, 3000, 6000]. */
+/** MSS SP-83 union laying length (in), manufacturer data (MSS SP-83 fixes the ends and strength, not the length): [nps, 3000, 6000]. */
 const UNION = [[0.375, 2, 0], [0.5, 2.125, 2.875], [0.75, 2.3125, 3.375], [1, 2.5, 3.625], [1.25, 2.8125, 3.875], [1.5, 3.125, 4.1875], [2, 3.5, 4.625]]
 /** Cap end beyond the pipe end (in), manufacturer lengths (B16.11 fixes only the minimum end wall): [nps, SW 3000, SW 6000, THD 3000, THD 6000]. */
 const CAP = [[0.5, 0.375, 0.5, 0.375, 0.5], [0.75, 0.4375, 0.5, 0.4375, 0.5], [1, 0.4375, 0.625, 0.375, 0.5625], [1.25, 0.5, 0.625, 0.5, 0.625], [1.5, 0.5, 0.625, 0.5625, 0.6875], [2, 0.625, 0.75, 0.75, 0.875], [2.5, 0.625, 0, 0.5625, 0], [3, 0.75, 0, 0.75, 0], [4, 0.75, 0, 0.75, 0]]
 /** B16.11 square-head plug thread length (in). */
 const PLUG = [[0.125, 0.38], [0.25, 0.44], [0.375, 0.5], [0.5, 0.56], [0.75, 0.62], [1, 0.75], [1.25, 0.81], [1.5, 0.81], [2, 0.88], [2.5, 1.06], [3, 1.12], [4, 1.25]]
-/** Forged-fitting class for a rating: 2000 (threaded only), 3000 or 6000; flange classes map 150–600 → 3000, 900+ → 6000. */
-const forgedClass = (cls: number | undefined, threaded: boolean) =>
-  cls === 2000 ? (threaded ? 2000 : 3000) : cls === 3000 || cls === 6000 ? cls : cls === 9000 ? undefined : cls && cls >= 900 ? 6000 : 3000
+const FORGED_CLASSES = [2000, 3000, 6000, 9000]
+/** ASME B16.11 Table 2: the pipe wall each class of fitting is rated against, socket-weld and threaded. */
+const B1611_WALL: Record<'SW' | 'THD', Array<[number, string]>> = {
+  SW: [[3000, 'XS'], [6000, '160'], [9000, 'XXS']],
+  THD: [[2000, 'XS'], [3000, '160'], [6000, 'XXS']]
+}
+/**
+ * The lightest ASME B16.11 class whose Table 2 correlated wall is at least the pipe's wall; undefined when the
+ * schedule is not listed or the wall is heavier than the heaviest class.
+ */
+export function forgedClassForWall(nps: number, schedule: string | undefined, threaded: boolean): number | undefined {
+  const wall = schedule ? pipeWall(nps, schedule) : undefined
+  if (wall == null) return undefined
+  return B1611_WALL[threaded ? 'THD' : 'SW'].find(([, s]) => (v => v != null && wall <= v + 0.01)(pipeWall(nps, s)))?.[0]
+}
 const B169 = 'ASME B16.9'
 const row = (kind: Kind, nps: number, takeout: number, description: string, source: string, extra: Partial<StandardRow> = {}): StandardRow =>
   ({ kind, nps, takeout: r2(takeout), description, source, ...extra })
-const reducing = (nps: number, small: number | undefined) => {
-  const min = at(REDUCER_MIN, nps)?.[1]
+const reducing = (nps: number, small: number | undefined, table = REDUCER_MIN) => {
+  const min = at(table, nps)?.[1]
   return small != null && min != null && isNps(small) && small < nps - 1e-6 && small >= min - 1e-6
 }
 const FLANGE_NAMES: Record<string, string> = { WN: 'WELD NECK', SO: 'SLIP-ON', SW: 'SOCKET-WELD', SC: 'THREADED', BL: 'BLIND', LJ: 'LAP-JOINT' }
+/** Butterfly valve codes and the body type each fixes; the generic BFLY takes its body from the row or specification. */
+export const BUTTERFLY_BODY: Readonly<Record<string, ButterflyBody | undefined>> = { BFLY: undefined, 'BFLY-LUG': 'lug', 'BFLY-WAFER': 'wafer' }
 /**
- * Standard dimensions (mm) for a component code at a size and class; undefined where the standard does not define the size.
- * `schedule` (optional) selects the pipe wall for slip-on set-back and stub-end lap thickness (default STD; 10S for MSS SP-43 stub ends).
- * A rating without a pressure class ('Project specified') is read as Class 150 for flanged items and Class 3000 for forged fittings.
+ * ASME B31.3 Fig. 328.5.2B sizes a double-welded slip-on flange's face-side (bore) fillet weld at the lesser of the
+ * pipe wall T and 6 mm (1/4 in), and its hub weld at the lesser of 1.4 T and the hub thickness. The pipe end is set
+ * back from the flange face by that face-side weld so the weld does not stand proud of the face.
+ */
+const SO_SETBACK_MAX = mm(1 / 4)
+/** Shop clearance added to the slip-on set-back so the bore fillet weld stays clear of the gasket face (a convention, not a code value). */
+export const SLIP_ON_CLEARANCE = mm(1 / 16)
+/**
+ * Standard dimensions (mm) for a component code at a size and class; undefined where the standard does not define the
+ * size or the class is unknown. `rating` is the B16.5 flange class (a rating without one gives no class-dependent
+ * row: the caller assumes a class and passes `options.ratingAssumed`). `schedule` is the pipe wall at this size: it
+ * fixes the slip-on set-back, stub-end lap, cap length E or E1, weldolet weight and (failing `options.forgedClass`)
+ * the forged class by ASME B16.11 Table 2. Whatever had to be assumed is listed in the row's `assumed`.
  * Lap-joint flanges (FLG-RFLJ / FLG-FFLJ) have takeout 0: the stub end carries the length to the lap face.
  */
-export function standardRow(code: string, nps: number, rating?: string | number, smallerNps?: number, schedule?: string): StandardRow | undefined {
-  const c = code.toUpperCase(), cls = ratingClass(rating), b = at(BW, nps)
+export function standardRow(code: string, nps: number, rating?: string | number, smallerNps?: number, schedule?: string, options: StandardOptions = {}): StandardRow | undefined {
+  const notes: string[] = []
+  const r = standard(code.toUpperCase(), nps, rating, smallerNps, schedule, options, notes)
+  return r && notes.length ? { ...r, assumed: [...new Set(notes)].join('; ') } : r
+}
+function standard(c: string, nps: number, rating: string | number | undefined, smallerNps: number | undefined, schedule: string | undefined, o: StandardOptions, notes: string[]): StandardRow | undefined {
+  const b = at(BW, nps)
   const small = smallerNps != null && !same(smallerNps, nps) ? smallerNps : undefined
   const sized = small != null ? { smallerNps: small } : {}
+  const note = (text: string | undefined) => { if (text) notes.push(text) }
+  // A class-dependent row uses the class; when the caller assumed it, that is this row's assumption too.
+  const flangeCls = () => {
+    const v = flangeClass(rating)
+    if (v) note(o.ratingAssumed)
+    return v
+  }
   const flg = /^FLG-(RF|FF)(WN|SO|SW|SC|BL|LJ)$/.exec(c)
   if (flg) {
-    const f = flange(nps, rating)
+    const fc = flangeCls(), f = fc ? flange(nps, fc) : undefined
     if (!f || (flg[1] === 'FF' && f.rating > 300)) return undefined
     // A lap-joint flange is flat: its face is the stub end's lap.
     const type = flg[2], name = type === 'LJ' ? `FLANGE, LAP-JOINT, CLASS ${f.rating}, ASME B16.5` : `FLANGE ${flg[1]} ${FLANGE_NAMES[type]}, CLASS ${f.rating}`
     const base = { flangeThickness: f.thickness, boltCount: f.boltCount, boltDiameter: f.boltDiameter, boltLength: f.studLength }
     if (type === 'WN') return row('flange', nps, f.wnLength, name, `${B165_SOURCE}; takeout = length through hub Y`, { ...base, lengthThroughHub: f.wnLength })
     if (type === 'BL') return row('flange', nps, f.thickness, name, `${B165_SOURCE}; blind flange: takeout = thickness`, { ...base, thickness: f.thickness })
-    if (type === 'LJ')
+    if (type === 'LJ') {
+      const lap = wallFor(nps, schedule, 'STD', 'the lap-joint stud length')
+      note(lap.assumed)
       return row('flange', nps, 0, name, 'ASME B16.5 lapped flange (no raised face); takeout 0 because the stub end carries the length to the lap face', {
-        ...base, flangeThickness: f.ljThickness, lengthThroughHub: f.ljLength, boltLength: bolting(nps, f.rating, 'FF', 'lj-pair')?.length
+        ...base, flangeThickness: f.ljThickness, lengthThroughHub: f.ljLength, boltLength: bolting(nps, f.rating, 'FF', 'lj-pair', { lap: lap.wall })?.length
       })
+    }
     if (!f.soLength) return undefined
     if (type === 'SO') {
-      const wall = pipeWall(nps, schedule ?? 'STD') ?? pipeWall(nps)
-      // The pipe end stands back a wall and 1/16 in so the bore fillet weld stays clear of the face (B31.3 Fig. 328.5.2B).
-      return wall == null ? undefined : row('flange', nps, wall + mm(1 / 16), name, `${B165_SOURCE}; slip-on: pipe end set back from the face by the pipe wall plus 1/16 in`, { ...base, lengthThroughHub: f.soLength })
+      const { wall, assumed } = wallFor(nps, schedule, 'STD', 'the slip-on set-back')
+      if (wall == null) return undefined
+      note(assumed)
+      return row('flange', nps, Math.min(wall, SO_SETBACK_MAX) + SLIP_ON_CLEARANCE, name,
+        `${B165_SOURCE}; slip-on: pipe end set back by the face-side fillet weld, the lesser of the pipe wall and 1/4 in (ASME B31.3 Fig. 328.5.2B), plus 1/16 in shop clearance so the weld stays below the face`,
+        { ...base, lengthThroughHub: f.soLength })
     }
     if (type === 'SW')
       return f.socketDepth == null ? undefined : row('flange', nps, f.soLength - f.socketDepth, name, `${B165_SOURCE}; socket-weld: effective takeout = hub length less socket depth D`, { ...base, lengthThroughHub: f.soLength, socketDepth: f.socketDepth })
     const e = engagement(nps)
     return !f.threaded || e == null ? undefined : row('flange', nps, f.soLength - mm(e), name, `${B165_SOURCE}; threaded: effective takeout = hub length less NPT make-up engagement`, { ...base, lengthThroughHub: f.soLength, threadEngagement: mm(e) })
   }
-  if (VALVE[c]) {
-    const vc = flangeClass(rating), v = vc ? at(B1610[vc], nps) : undefined
-    const len = v && VALVE[c][0].map(i => v[i]).find(x => x > 0)
+  const valve = VALVE[c]
+  if (valve) {
+    const vc = flangeCls(), v = vc ? at(B1610[vc], nps) : undefined
+    if (!vc || !v) return undefined
+    const names = Object.keys(valve.patterns) as ValvePattern[], length = (p: ValvePattern) => v[valve.patterns[p]!]
+    let column = valve.column, pattern: ValvePattern | undefined
+    if (names.length) {
+      if (o.valvePattern && names.includes(o.valvePattern)) pattern = o.valvePattern
+      else if (o.valvePattern && names.length > 1) return undefined // a pattern B16.10 does not give for this valve (a venturi plug)
+      else {
+        const listed = names.filter(p => length(p) > 0)
+        pattern = listed[0] ?? names[0]
+        if (listed.length > 1 && new Set(listed.map(length)).size > 1)
+          note(`the ASME B16.10 ${pattern} pattern is assumed for a ${valve.name.toLowerCase()} because no valve pattern was given (the patterns differ in length)`)
+      }
+      column = valve.patterns[pattern]
+    }
+    const len = column ? v[column] : 0
     if (!len) return undefined
     const f2f = mm(len)
-    return row('valve', nps, f2f / 2, `${VALVE[c][1]}, CLASS ${vc}`, `ASME B16.10 Class ${vc} ${/-BW$/.test(c) ? 'end-to-end' : 'face-to-face'}; takeout = half length`, { faceToFace: f2f })
+    return row('valve', nps, f2f / 2, `${valve.name}${pattern ? `, ${pattern.toUpperCase()} PATTERN` : ''}, CLASS ${vc}`,
+      `ASME B16.10 Class ${vc} ${/-BW$/.test(c) ? 'end-to-end' : 'face-to-face'}${pattern ? `, ${pattern} pattern` : ''}; takeout = half length`,
+      { faceToFace: f2f, ...(pattern ? { valvePattern: pattern } : {}) })
   }
-  if (c === 'BFLY' || c === 'BFLY-LUG' || c === 'BFLY-WAFER') {
-    const fc = flangeClass(rating), body = fc ? butterfly(nps, fc) : undefined
-    if (!fc || body == null) return undefined
-    const wafer = c === 'BFLY-WAFER', bolts = bolting(nps, fc, 'RF', wafer ? 'wafer-valve' : 'lug-valve-side')
-    return row('valve', nps, body / 2, `BUTTERFLY VALVE, ${wafer ? 'WAFER' : 'LUG'}, CLASS ${fc}`, `API 609 Category ${fc === 150 ? 'A' : 'B'} face-to-face; takeout = half length${wafer ? '; bolting = through studs' : '; bolting = lug bolts per side'}`, {
-      faceToFace: body, boltCount: bolts?.count, boltDiameter: bolts?.diameter, boltLength: bolts?.length
-    })
+  if (c in BUTTERFLY_BODY) {
+    const fc = flangeCls()
+    if (!fc) return undefined
+    let body = BUTTERFLY_BODY[c] ?? o.butterflyBody
+    if (!body) {
+      body = 'lug'
+      note('a lug-body butterfly valve is assumed because no body type (wafer, lug or double-flanged) was given')
+    }
+    // API 609 tabulates lug and wafer bodies only: a double-flanged body's length comes from its own data sheet.
+    if (body === 'double-flanged') return undefined
+    const cat = butterflyCategory(fc, o.butterflyCategory), len = cat ? butterflyLength(nps, fc, cat.value) : undefined
+    if (!cat || len == null) return undefined
+    note(cat.assumed)
+    const wafer = body === 'wafer', bolts = bolting(nps, fc, 'RF', wafer ? 'wafer-valve' : 'lug-valve-side', { body: len, gasket: o.gasketThickness })
+    return row('valve', nps, len / 2, `BUTTERFLY VALVE, ${wafer ? 'WAFER' : 'LUG'} TYPE, API 609 CATEGORY ${cat.value}, CLASS ${fc}`,
+      `API 609 Category ${cat.value} ${body}-body face-to-face; takeout = half length; bolting = ${wafer ? 'through studs' : 'lug bolts per side'}`, {
+        faceToFace: len, bodyType: body, valveCategory: cat.value, boltCount: bolts?.count, boltDiameter: bolts?.diameter, boltLength: bolts?.length
+      })
   }
   if (c === 'GASK-RF' || c === 'GASK-FF') {
-    const fc = flangeClass(rating)
-    if (!fc || !at(B165[fc], nps) || (c === 'GASK-FF' && fc > 300)) return undefined
-    const t = c === 'GASK-RF' ? 3.3 : mm(1 / 8)
-    return row('gasket', nps, t / 2, c === 'GASK-RF' ? `GASKET, SPIRAL WOUND, CLASS ${fc}` : `GASKET, FULL FACE 1/8 IN, CLASS ${fc}`,
-      c === 'GASK-RF' ? 'ASME B16.20 spiral-wound, 3.3 mm compressed; takeout = half thickness' : 'ASME B16.21 non-metallic 1/8 in (1/16 in via gasketThickness); takeout = half thickness', { thickness: t })
+    const fc = flangeCls(), rf = c === 'GASK-RF'
+    if (!fc || !at(B165[fc], nps) || (!rf && fc > 300)) return undefined
+    const given = o.gasketThickness
+    if (given)
+      return row('gasket', nps, given / 2, `GASKET, ${rf ? 'RAISED FACE' : 'FULL FACE'}, ${r2(given)} MM THK, CLASS ${fc}`, 'specification gasket thickness; takeout = half thickness', { thickness: given })
+    const t = rf ? GASKET_THICKNESS.spiralWoundCompressed : GASKET_THICKNESS.sheet18
+    note(rf ? 'an ASME B16.20 spiral-wound gasket (3.3 mm compressed) is assumed because the specification names no gasket'
+      : 'a 1/8 in ASME B16.21 sheet gasket is assumed because the specification names no gasket')
+    return row('gasket', nps, t / 2, rf ? `GASKET, SPIRAL WOUND, CLASS ${fc}` : `GASKET, FULL FACE 1/8 IN, CLASS ${fc}`,
+      rf ? 'ASME B16.20 spiral-wound, 4.5 mm winding compressed to 3.3 mm; takeout = half thickness' : 'ASME B16.21 non-metallic sheet 1/8 in; takeout = half thickness', { thickness: t })
   }
   if (c === 'BOLT-RF' || c === 'BOLT-FF') {
-    const bolt = bolting(nps, rating, c === 'BOLT-FF' ? 'FF' : 'RF', 'flange-pair')
-    return bolt && row('bolt', nps, 0, `STUD BOLT C/W 2 HEAVY HEX NUTS, CLASS ${flangeClass(rating)}`, 'ASME B16.5 stud bolts for one flange pair', { boltCount: bolt.count, boltDiameter: bolt.diameter, boltLength: bolt.length })
+    const fc = flangeCls(), bolt = fc ? bolting(nps, fc, c === 'BOLT-FF' ? 'FF' : 'RF', 'flange-pair', { type: o.boltType }) : undefined
+    return bolt && row('bolt', nps, 0, bolt.kind === 'machine' ? `MACHINE BOLT C/W HEAVY HEX NUT, CLASS ${fc}` : `STUD BOLT C/W 2 HEAVY HEX NUTS, CLASS ${fc}`,
+      `${bolt.source} for one flange pair`, { boltCount: bolt.count, boltDiameter: bolt.diameter, boltLength: bolt.length })
   }
   if (b) {
     const [, lr, sr, lr45, tee, cap, red] = b
@@ -551,9 +825,13 @@ export function standardRow(code: string, nps: number, rating?: string | number,
       case 'W-3D90EL': return nps >= 0.75 ? row('elbow90', nps, mmx(3 * nps), 'ELBOW 90 3D BW', `${B169} 3D elbow (R = 3 x NPS); takeout = centre-to-end`) : undefined
       case 'W-45ELL': return row('elbow45', nps, mm(lr45), 'ELBOW 45 LR BW', `${B169} long radius; takeout = centre-to-end B`)
       case 'W-3D45ELL': return nps >= 0.75 ? row('elbow45', nps, mm(1.25 * nps), 'ELBOW 45 3D BW', `${B169} 3D 45° elbow B (R tan 22.5° rounded, 1.25 x NPS)`) : undefined
-      case 'LR180R': return row('elbow90', nps, mm(lr), `RETURN 180 LR BW, CENTRE-TO-CENTRE ${mm(2 * lr)} MM`, `${B169} long-radius return; takeout = bend radius (model as two 90° halves)`)
-      case 'SR180R': return sr ? row('elbow90', nps, mm(sr), `RETURN 180 SR BW, CENTRE-TO-CENTRE ${mm(2 * sr)} MM`, `${B169} short-radius return; takeout = bend radius (model as two 90° halves)`) : undefined
-      case 'REDELL': return reducing(nps, small) ? row('elbow90', nps, mm(lr), 'ELBOW 90 LR REDUCING BW', `${B169} reducing elbow; centre-to-end = large-end LR elbow`, sized) : undefined
+      case 'LR180R':
+      case 'SR180R': {
+        const ret = returnBend(nps, c === 'LR180R' ? 'LR' : 'SR')
+        return ret && row('elbow90', nps, ret.radius, `RETURN 180 ${c === 'LR180R' ? 'LR' : 'SR'} BW, CENTRE-TO-CENTRE ${ret.centreToCentre} MM`,
+          `${ret.source}; takeout = O/2 from the bend centre to each end`, { centreToCentre: ret.centreToCentre, backToFace: ret.backToFace })
+      }
+      case 'REDELL': return reducing(nps, small, REDELL_MIN) ? row('elbow90', nps, mm(lr), 'ELBOW 90 LR REDUCING BW', `${B169} reducing elbow; centre-to-end = large-end LR elbow`, sized) : undefined
       case 'W-TEE':
       case 'W-CRS': return row('tee', nps, mm(tee), c === 'W-TEE' ? 'TEE BW' : 'CROSS BW', `${B169}; takeout = run and branch centre-to-end C`, { branchTakeout: mm(tee) })
       case 'W-RTEE':
@@ -565,16 +843,25 @@ export function standardRow(code: string, nps: number, rating?: string | number,
       case 'W-RLAT': {
         const l = at(LATERAL, nps)
         if (!l || (c === 'W-RLAT' && (small == null || small > nps))) return undefined
-        return row('tee', nps, mm(l[1]), c === 'W-LAT' ? 'LATERAL 45 BW' : 'REDUCING LATERAL 45 BW', '45° lateral as catalogued (Bonney Forge); takeout = short-side C-E, branch and long side keyed by run size', { ...sized, branchTakeout: mm(l[2]) })
+        if (c === 'W-RLAT') note('a reducing lateral takes the straight lateral of its run size because no reducing-lateral table is held; confirm the branch length with the maker')
+        return row('tee', nps, mm(l[1]), c === 'W-LAT' ? 'LATERAL 45 BW' : 'REDUCING LATERAL 45 BW', `45° lateral, ${VENDOR}; takeout = short-side C-E, branch and long side the long C-E`, { ...sized, branchTakeout: mm(l[2]) })
       }
       case 'C-RED':
       case 'E-RED': return reducing(nps, small) ? row('reducer', nps, mm(red) / 2, c === 'C-RED' ? 'REDUCER CONC BW' : 'REDUCER ECC BW', `${B169} reducer length H; takeout = H/2 from the centre node`, { ...sized, faceToFace: mm(red) }) : undefined
-      case 'W-CAP': return row('cap', nps, mm(cap), 'CAP BW', `${B169} cap height E; node at the outer end, takeout = E`)
+      case 'W-CAP': {
+        const limit = at(CAP_E1, nps), wall = schedule ? pipeWall(nps, schedule) : undefined
+        if (wall == null) note(schedule ? `the cap length E for walls up to XS is assumed because schedule ${schedule} has no ASME B36.10M wall at this size`
+          : 'the cap length E for walls up to XS is assumed because no pipe schedule was given')
+        const heavy = wall != null && !!limit && wall > mmx(limit[1]) + 0.01
+        return row('cap', nps, mm(heavy ? limit![2] : cap), 'CAP BW', `${B169} cap ${heavy ? 'length E1 (wall heavier than the limiting wall)' : 'length E'}; node at the outer end, takeout = cap length`)
+      }
       case 'STUB-END':
       case 'STUB-END-SHORT': {
-        const st = stubEnd(nps, c === 'STUB-END-SHORT', schedule)!
+        const st = stubEnd(nps, c === 'STUB-END-SHORT', schedule)
+        if (!st) return undefined
+        note(st.assumed)
         return row('flange', nps, st.length, `STUB END, ${st.short ? 'SHORT PATTERN, MSS SP-43 TYPE A' : 'LONG PATTERN, ASME B16.9'}, BE`,
-          `${st.short ? 'MSS SP-43 short pattern (type A)' : 'ASME B16.9 long pattern'} length F; takeout = F from the lap face; lap thickness = ${schedule ?? (st.short ? 'Sch 10S' : 'STD')} pipe wall`, { thickness: st.lapThickness })
+          `${st.short ? 'MSS SP-43 short pattern (type A)' : 'ASME B16.9 long pattern'} length F; takeout = F from the lap face; lap thickness = ${st.schedule} pipe wall`, { thickness: st.lapThickness })
       }
     }
   }
@@ -582,26 +869,55 @@ export function standardRow(code: string, nps: number, rating?: string | number,
     const l = at(SWAGE, nps)?.[1]
     return l && small != null && small < nps && isNps(small) ? row('reducer', nps, mm(l) / 2, c.startsWith('C') ? 'SWAGE CONC' : 'SWAGE ECC', 'MSS SP-95 swage length; takeout = half length', { ...sized, faceToFace: mm(l) }) : undefined
   }
+  // ---- Forged (ASME B16.11 / MSS SP-97 / MSS SP-83) items: the class is given, else follows the pipe wall by B16.11 Table 2.
+  const forged = (threaded: boolean): number | undefined => {
+    const own = ratingClass(rating), given = o.forgedClass ?? (own && FORGED_CLASSES.includes(own) ? own : undefined)
+    if (given) return given
+    const derived = forgedClassForWall(nps, schedule, threaded)
+    note(derived ? `Class ${derived} forged fittings are assumed from the ASME B16.11 Table 2 correlation with the pipe wall because no forged class was given` : undefined)
+    return derived
+  }
+  // Caps, couplings, unions and thredolets are not made in Class 2000: the next class up is used and said.
+  const atLeast3000 = (fc: number, what: string) => {
+    if (fc !== 2000) return fc
+    note(`Class 3000 ${what} are used where Class 2000 is specified because they are not made in Class 2000`)
+    return 3000
+  }
   if (c === 'WOL' || c === 'SOL' || c === 'TOL') {
     // Measured from the run pipe's outside: the pipe stops at the bevel, the socket bottom or the thread make-up.
-    const o = at(OLET, nps), fc = c === 'WOL' ? undefined : forgedClass(cls, c === 'TOL')
-    // An extra-strong weldolet suits any branch wall heavier than standard.
-    const heavy = (pipeWall(nps, schedule) ?? 0) > (pipeWall(nps) ?? Infinity) + 0.01
-    const a = o?.[c === 'WOL' ? (heavy ? 2 : 1) : fc === 6000 ? 4 : 3]
-    if (!a || (c !== 'WOL' && !fc)) return undefined
-    const h = mm(a), j = c === 'SOL' ? minSocket(nps) : undefined, e = c === 'TOL' ? engagement(nps) : undefined
-    if (c === 'TOL' && e == null) return undefined
-    const name = { WOL: `WELDOLET, ${heavy ? 'XS' : 'STD'}`, SOL: `SOCKOLET, CLASS ${fc}`, TOL: `THREDOLET, CLASS ${fc === 6000 ? 6000 : 3000}` }[c]
-    return row('olet', nps, h - (j ?? 0) - (e == null ? 0 : mm(e)), `${name}, MSS SP-97`,
-      `MSS SP-97 as catalogued (Bonney Forge): height A from the run pipe outside; takeout = A${c === 'SOL' ? ' less B16.11 socket depth J' : c === 'TOL' ? ' less NPT make-up engagement' : ''}`,
+    const ol = at(OLET, nps)
+    if (c === 'WOL') {
+      const named = o.oletSchedule?.toUpperCase().replace(/\.$/, '')
+      let weight: 'STD' | 'XS' | undefined = named === 'XS' || named === 'XH' ? 'XS' : named === 'STD' ? 'STD' : undefined
+      if (!weight) {
+        // A weldolet matches its branch wall: standard weight up to STD, extra-strong up to XS.
+        const wall = schedule ? pipeWall(nps, schedule) : undefined, std = pipeWall(nps, 'STD'), xs = pipeWall(nps, 'XS')
+        if (wall == null) note('a standard-weight weldolet is assumed because the branch wall is not known')
+        weight = wall == null || (std != null && wall <= std + 0.01) ? 'STD' : xs != null && wall <= xs + 0.01 ? 'XS' : undefined
+      }
+      const a = weight && ol?.[weight === 'XS' ? 2 : 1]
+      if (!a) return undefined
+      const h = mm(a)
+      return row('olet', nps, h, `WELDOLET, ${weight}, MSS SP-97`, `MSS SP-97 weldolet, height A: ${VENDOR}; takeout = A from the run pipe outside`, { height: h, takeoutReference: 'header-outside' })
+    }
+    const fc0 = forged(c === 'TOL')
+    if (!fc0 || fc0 === 9000 || (c === 'SOL' && fc0 === 2000)) return undefined
+    const fc = c === 'TOL' ? atLeast3000(fc0, 'thredolets') : fc0, a = ol?.[fc === 6000 ? 4 : 3]
+    if (!a) return undefined
+    const h = mm(a), j = c === 'SOL' ? socketDepth(nps) : undefined, e = c === 'TOL' ? engagement(nps) : undefined
+    if ((c === 'SOL' && j == null) || (c === 'TOL' && e == null)) return undefined
+    return row('olet', nps, h - (j ?? 0) - (e == null ? 0 : mm(e)), `${c === 'SOL' ? 'SOCKOLET' : 'THREDOLET'}, CLASS ${fc}, MSS SP-97`,
+      `MSS SP-97 ${c === 'SOL' ? 'sockolet' : 'thredolet'}, height A: ${VENDOR}; takeout = A from the run pipe outside${c === 'SOL' ? ` less the socket depth J (${SOCKET_SOURCE})` : ' less NPT make-up engagement'}`,
       { height: h, takeoutReference: 'header-outside', ...(j != null ? { socketDepth: j } : {}), ...(e != null ? { threadEngagement: mm(e) } : {}) })
   }
   const sw = c.startsWith('SW-') || /SW$/.test(c), thd = c.startsWith('SC-') || /SC$/.test(c) || c === 'PLUG'
   if (!sw && !thd) return undefined
-  const fc = forgedClass(cls, thd)
-  if (!fc) return undefined
-  const label = `${fc}#`, j = socketDepth(nps), e = engagement(nps), eng = e == null ? undefined : mm(e)
-  const swSource = `ASME B16.11 Class ${fc} socket-weld; effective takeout = centre to socket bottom (pipe bottomed)`
+  const fc = forged(thd)
+  // B16.11 has no Class 2000 socket-weld fittings, and these tables stop at Class 6000.
+  if (!fc || fc === 9000 || (sw && fc === 2000)) return undefined
+  const label = `${fc}#`, j = sw ? socketDepth(nps) : undefined, e = engagement(nps), eng = e == null ? undefined : mm(e)
+  if (sw && j == null) return undefined
+  const swSource = `ASME B16.11 Class ${fc} socket-weld; effective takeout = centre to socket bottom (pipe bottomed); ${SOCKET_SOURCE}`
   const thdSource = `ASME B16.11 Class ${fc} threaded; effective takeout = centre-to-end less NPT make-up engagement`
   const s = at(SW, nps), t = at(THD, nps), col = fc === 6000 ? 2 : 1
   const runSw = s?.[col] ? mm(s[col]) : undefined, run45 = s?.[col + 2] ? mm(s[col + 2]) : undefined
@@ -612,10 +928,12 @@ export function standardRow(code: string, nps: number, rating?: string | number,
     case 'SW-TEE':
     case 'SW-CRS': return runSw ? row('tee', nps, runSw, `${c === 'SW-TEE' ? 'TEE' : 'CROSS'} SW ${label}`, swSource, { branchTakeout: runSw, socketDepth: j }) : undefined
     case 'SW-RTEE':
-    case 'SW-RCRS':
-      return runSw && small != null && small < nps && isNps(small)
-        ? row('tee', nps, runSw, `REDUCING ${c === 'SW-RTEE' ? 'TEE' : 'CROSS'} SW ${label}`, `${swSource}; reducing outlet bored in the run-size body: branch = A + socket depth(run) - socket depth(outlet)`, { ...sized, branchTakeout: r2(runSw + j - socketDepth(small)), socketDepth: j })
+    case 'SW-RCRS': {
+      const jb = small != null ? socketDepth(small) : undefined
+      return runSw && small != null && small < nps && isNps(small) && jb != null
+        ? row('tee', nps, runSw, `REDUCING ${c === 'SW-RTEE' ? 'TEE' : 'CROSS'} SW ${label}`, `${swSource}; reducing outlet bored in the run-size body: branch = A + socket depth(run) - socket depth(outlet)`, { ...sized, branchTakeout: r2(runSw + j! - jb), socketDepth: j })
         : undefined
+    }
     case 'SC-90ELL': return runThd && eng ? row('elbow90', nps, runThd - eng, `ELBOW 90 THD ${label}`, thdSource, { threadEngagement: eng }) : undefined
     case 'SC-45ELL': return thd45 && eng ? row('elbow45', nps, thd45 - eng, `ELBOW 45 THD ${label}`, thdSource, { threadEngagement: eng }) : undefined
     case 'SC-TEE':
@@ -627,40 +945,54 @@ export function standardRow(code: string, nps: number, rating?: string | number,
     }
     case 'SW-CAP':
     case 'SC-CAP': {
-      const k = at(CAP, nps)?.[(c === 'SW-CAP' ? 1 : 3) + (fc === 6000 ? 1 : 0)]
-      return k ? row('cap', nps, mm(k), `CAP ${c === 'SW-CAP' ? 'SW' : 'THD'} ${fc === 2000 ? '3000#' : label}`, `ASME B16.11 Class ${fc === 6000 ? 6000 : 3000} cap; takeout = cap end beyond the pipe end (manufacturer length, Bonney Forge)`, c === 'SW-CAP' ? { socketDepth: j } : { threadEngagement: eng }) : undefined
+      const cc = atLeast3000(fc, 'caps'), k = at(CAP, nps)?.[(c === 'SW-CAP' ? 1 : 3) + (cc === 6000 ? 1 : 0)]
+      if (!k || (c === 'SC-CAP' && !eng)) return undefined
+      return row('cap', nps, mm(k), `CAP ${c === 'SW-CAP' ? 'SW' : 'THD'} ${cc}#`, `ASME B16.11 Class ${cc} cap; takeout = cap end beyond the pipe end, ${VENDOR}`, c === 'SW-CAP' ? { socketDepth: j } : { threadEngagement: eng })
     }
     case 'PLUG': {
       const p = at(PLUG, nps)?.[1]
       return p ? row('cap', nps, mm(p), 'PLUG, SQUARE HEAD, THD', 'ASME B16.11 square-head plug; takeout = thread length A (thread engagement)', { threadEngagement: mm(p) }) : undefined
     }
     case 'F-CPLGSW':
-    case 'H-CPLGSW':
-      return s && (fc === 3000 || s[2])
-        ? row(c === 'F-CPLGSW' ? 'valve' : 'olet', nps, swCouplingGap(nps) / 2, `${c === 'F-CPLGSW' ? 'FULL' : 'HALF'} COUPLING SW ${label}`, `${swSource}; coupling: takeout = half the laying length E between socket bottoms${c === 'H-CPLGSW' ? ', measured from the header outside' : ''}`, { socketDepth: j })
-        : undefined
+    case 'H-CPLGSW': {
+      if (!s || !(fc === 3000 || s[2])) return undefined
+      const gap = swCouplingGap(nps), half = c === 'H-CPLGSW'
+      // A half coupling is half a full coupling: its socket bottom stands E/2 off the header, its end E/2 + J.
+      return row(half ? 'olet' : 'valve', nps, gap / 2, `${half ? 'HALF' : 'FULL'} COUPLING SW ${label}`,
+        `${swSource}; coupling: takeout = half the laying length E between socket bottoms${half ? ', measured from the header outside (half of a full coupling)' : ''}`,
+        half ? { socketDepth: j, height: r2(gap / 2 + j!), takeoutReference: 'header-outside' } : { socketDepth: j })
+    }
     case 'F-CPLGSC':
     case 'H-CPLGSC': {
-      const w = at(THD_COUPLING, nps)?.[1]
-      return w && eng && fc !== 2000 ? row(c === 'F-CPLGSC' ? 'valve' : 'olet', nps, w / 2 - eng, `${c === 'F-CPLGSC' ? 'FULL' : 'HALF'} COUPLING THD ${label}`, `${thdSource}; coupling length W${c === 'H-CPLGSC' ? ' (half coupling W/2, from the header outside)' : ''}`, c === 'F-CPLGSC' ? { faceToFace: w, threadEngagement: eng } : { threadEngagement: eng }) : undefined
+      const w = at(THD_COUPLING, nps)?.[1], half = c === 'H-CPLGSC'
+      if (!w || !eng) return undefined
+      const cc = atLeast3000(fc, 'couplings')
+      return row(half ? 'olet' : 'valve', nps, w / 2 - eng, `${half ? 'HALF' : 'FULL'} COUPLING THD ${cc}#`,
+        `ASME B16.11 Class ${cc} threaded coupling length W; effective takeout = W/2 less NPT make-up engagement${half ? ', measured from the header outside (half coupling W/2)' : ''}`,
+        half ? { threadEngagement: eng, height: r2(w / 2), takeoutReference: 'header-outside' } : { faceToFace: w, threadEngagement: eng })
     }
     case 'UNION-SW':
     case 'UNION-SC': {
-      const u = at(UNION, nps)?.[fc === 6000 ? 2 : 1]
+      const uc = atLeast3000(fc, 'unions'), u = at(UNION, nps)?.[uc === 6000 ? 2 : 1]
       if (!u) return undefined
-      const l = mm(u), end = c === 'UNION-SW' ? minSocket(nps) : eng
-      return end == null ? undefined : row('valve', nps, (l - 2 * end) / 2, `UNION ${c === 'UNION-SW' ? 'SW' : 'THD'} ${fc === 2000 ? '3000#' : label}`, `MSS SP-83 Class ${fc === 6000 ? 6000 : 3000} union, laying length as catalogued; effective takeout = half the length less ${c === 'UNION-SW' ? 'B16.11 socket depth J' : 'thread engagement'}`, c === 'UNION-SW' ? { faceToFace: l, socketDepth: end } : { faceToFace: l, threadEngagement: end })
+      const l = mm(u), end = c === 'UNION-SW' ? j : eng
+      return end == null ? undefined : row('valve', nps, (l - 2 * end) / 2, `UNION ${c === 'UNION-SW' ? 'SW' : 'THD'} ${uc}#`,
+        `MSS SP-83 Class ${uc} union, laying length: ${VENDOR}; effective takeout = half the length less ${c === 'UNION-SW' ? `the socket depth J (${SOCKET_SOURCE})` : 'thread engagement'}`,
+        c === 'UNION-SW' ? { faceToFace: l, socketDepth: end } : { faceToFace: l, threadEngagement: end })
     }
   }
   return undefined
 }
-/** Stub end (mm): length F (B16.9 long or MSS SP-43 short pattern), lap OD G and lap thickness (pipe wall, Sch 10S for MSS SP-43 / STD for B16.9 unless `schedule`). */
-export function stubEnd(nps: number, short: boolean, schedule?: string): { length: number; lapOd: number; lapThickness: number; short: boolean } | undefined {
-  const b = at(BW, nps)
-  const lapThickness = pipeWall(nps, schedule ?? (short ? '10S' : 'STD')) ?? pipeWall(nps, short ? '10S' : 'STD')
-  return b && lapThickness != null ? { length: mm(short ? b[8] : b[7]), lapOd: mm(b[9]), lapThickness, short } : undefined
+/**
+ * Stub end (mm): length F (B16.9 long or MSS SP-43 short pattern), lap OD G and lap thickness: the wall of `schedule`,
+ * else Sch 10S for MSS SP-43 and STD for B16.9, with that assumption stated.
+ */
+export function stubEnd(nps: number, short: boolean, schedule?: string): { length: number; lapOd: number; lapThickness: number; short: boolean; schedule: string; assumed?: string } | undefined {
+  const b = at(BW, nps), fallback = short ? '10S' : 'STD'
+  const { wall, assumed } = wallFor(nps, schedule, fallback, 'the stub-end lap')
+  return b && wall != null ? { length: mm(short ? b[8] : b[7]), lapOd: mm(b[9]), lapThickness: wall, short, schedule: assumed ? fallback : schedule!, ...(assumed ? { assumed } : {}) } : undefined
 }
 /** Gasket thickness (mm): ASME B16.20 spiral-wound (compressed) or ASME B16.21 non-metallic sheet. */
 export function gasketThickness(type: 'spiral-wound' | 'sheet-1/16' | 'sheet-1/8'): number {
-  return type === 'spiral-wound' ? 3.3 : type === 'sheet-1/16' ? mm(1 / 16) : mm(1 / 8)
+  return type === 'spiral-wound' ? GASKET_THICKNESS.spiralWoundCompressed : type === 'sheet-1/16' ? GASKET_THICKNESS.sheet116 : GASKET_THICKNESS.sheet18
 }

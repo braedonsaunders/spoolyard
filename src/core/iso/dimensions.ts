@@ -1,30 +1,55 @@
 import type { Point } from '../drawing'
 import { draftLength, angleText } from '../format'
-import { connected, distance, getNode, length, runResult, sub, takeout, type DimensionAnchor, type PipeNode, type PipeRun, type Vec3 } from '../model'
-import { continuationPoint, nodeCode } from '../joints'
-import { SIZE, emitters, fittingTakeoutOnPaper, type IsoContext } from './context'
-import { CAD_STROKE_WIDTH, measureText } from '../stroke-font'
-import {flangedGeometry} from './valve-conventions'
+import { feetThreshold } from '../profile'
+import { connected, distance, getNode, length, portPoint, runResult, sub, takeout, type DimensionAnchor, type PipeNode, type PipeRun, type Vec3 } from '../model'
+import { continuationPoint } from '../joints'
+import { emitters, faceOnPaper, sizeOf, type IsoContext } from './context'
+import { measureText } from '../stroke-font'
+import { drafting as componentDrafting, flangedGeometry, valveBodyOnSheet } from './valve-conventions'
 import { segmentPoly, textPoly, type Poly } from './placement'
 import { add2, dot2, isAxial, len2, lerp2, planeText, scale2, sub2, unit2, unit3, uprightOf } from './plane'
 
 /** A point a leg is measured to; `along` is its distance from the leg's first node, `of` the valve whose face it is. */
-interface Station { model: Vec3; page: Point; along: number; node?: string; end?: boolean; of?: string }
+interface Station {
+  model: Vec3; page: Point; along: number; node?: string; end?: boolean; of?: string
+  /** A component whose drawn outline the station is on: its extension line starts clear of the outline. */
+  outline?: string
+}
 interface Span { a: Station; b: Station; mm: number; approximate?: boolean }
 /** Overlap costs for lettering that must not overprint other lettering. */
 const LETTERED = { text: 1000, tag: 1000 }
 interface Leg { runs: PipeRun[]; nodes: string[]; dir3: Vec3; dir: Point }
 
+/**
+ * Lettering turned into a plane, kept readable: where the view sees the plane edge-on its uprights would lie along
+ * the baseline (an oblique near 90°, sheared without end), so it stands upright on its baseline instead.
+ */
+export function readable<T extends { oblique: number }>(t: T): T {
+  if (!(Math.abs(t.oblique) <= 80)) t.oblique = 0
+  return t
+}
+/** Each context's legs, with the geometry they were found from; nothing moves a pipe while a sheet is drawn. */
+const legsOf = new WeakMap<IsoContext, { geometry: IsoContext['geometry']; legs: Leg[] }>()
 /** Straight legs of the sheet: in-line pipes joined through valves, flanges, reducers and welds. */
 export function sheetLegs(ctx: IsoContext): Leg[] {
+  const known = legsOf.get(ctx)
+  if (known && known.geometry === ctx.geometry) return known.legs
+  const legs = findLegs(ctx)
+  legsOf.set(ctx, { geometry: ctx.geometry, legs })
+  return legs
+}
+function findLegs(ctx: IsoContext): Leg[] {
   const seen = new Set<string>(), legs: Leg[] = []
   // A leg runs through in-line components, fittings joined without pipe, and the run of a tee.
+  // Directions run between the pipes' centreline points, so the small end of an eccentric reducer, offset across the
+  // axis toward its flat, still continues the leg.
+  const axis = (r: PipeRun) => runAxis(ctx, r)
   const straightThrough = (node: PipeNode, from: PipeRun) => {
     if (node.kind === 'end' || node.kind.startsWith('elbow')) return undefined
-    const a = ctx.geometry.get(from.id)!
+    const a = axis(from)
     return connected(ctx.doc, node.id).filter(r => r.id !== from.id && ctx.geometry.has(r.id)).find(r => {
-      const b = ctx.geometry.get(r.id)!
-      return Math.abs(Math.abs(a.dir3[0] * b.dir3[0] + a.dir3[1] * b.dir3[1] + a.dir3[2] * b.dir3[2]) - 1) < 1e-4
+      const b = axis(r)
+      return Math.abs(Math.abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) - 1) < 1e-4
     })
   }
   for (const g of ctx.geometry.values()) {
@@ -38,17 +63,51 @@ export function sheetLegs(ctx: IsoContext): Leg[] {
       seen.add(r.id); runs.push(r); at = r.from === at ? r.to : r.from; nodes.push(at)
     }
     const a = ctx.pos.get(nodes[0])!, b = ctx.pos.get(nodes.at(-1)!)!
-    const pa = getNode(ctx.doc, nodes[0]).position, pb = getNode(ctx.doc, nodes.at(-1)!).position
-    legs.push({ runs, nodes, dir3: unit3(sub(pb, pa)), dir: unit2(sub2(b, a)) })
+    const first = axis(runs[0]), forward = runs[0].from === nodes[0] ? 1 : -1
+    legs.push({ runs, nodes, dir3: first.map(v => v * forward) as Vec3, dir: unit2(sub2(b, a)) })
   }
   return legs
 }
 
+/** Where a model point on a pipe is drawn: along the pipe as drawn, in proportion to how far along it it is. */
+function onPipe(ctx: IsoContext, run: PipeRun, p: Vec3): Point {
+  const g = ctx.geometry.get(run.id)!, a = getNode(ctx.doc, run.from).position, d = sub(getNode(ctx.doc, run.to).position, a)
+  const l2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2], t = l2 > 1e-12 ? ((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1] + (p[2] - a[2]) * d[2]) / l2 : 0
+  return lerp2(g.a, g.b, t)
+}
+/** A pipe's model direction from its `from` end, between its centreline points at each end. */
+function runAxis(ctx: IsoContext, run: PipeRun): Vec3 {
+  const a = getNode(ctx.doc, run.from), b = getNode(ctx.doc, run.to)
+  return unit3(sub(portPoint(ctx.doc, b, run.id), portPoint(ctx.doc, a, run.id)))
+}
+
+/** The drafting resolution lengths are lettered to: whole millimetres, or sixteenths of an inch. */
+export const dimensionQuantum = (units: 'mm' | 'imperial') => units === 'mm' ? 1 : 25.4 / 16
+
 /**
- * Dimension tiers stand off the pipe along their extension lines by these sheet units (850 = 11 in), measured on the
- * issued sheets: the first 0.56 in out, each further tier 0.37 in beyond it.
+ * Extension direction (model vector) for an offset's true length: square to the pipe in the plane of a plane offset;
+ * for a rolling offset, in the vertical plane containing the pipe (horizontally across a vertical one). The dimension
+ * then lies in a plane through the pipe, so its extension lines run along a projected plant direction.
  */
-const TIER = 43.5, TIER_STEP = 29
+export function offsetExtension(d: Vec3): Vec3 {
+  const u = unit3(d), comps = [0, 1, 2].filter(i => Math.abs(u[i]) > 1e-4)
+  const cross = (a: Vec3, b: Vec3): Vec3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+  if (comps.length === 2) {
+    const normal: Vec3 = [0, 0, 0]
+    normal[[0, 1, 2].find(i => !comps.includes(i))!] = 1
+    return unit3(cross(normal, u))
+  }
+  // The vertical plane through the pipe: the vertical, less its part along the pipe.
+  const up: Vec3 = [-u[2] * u[0], -u[2] * u[1], 1 - u[2] * u[2]]
+  return Math.hypot(...up) > 1e-6 ? unit3(up) : [1, 0, 0]
+}
+
+/**
+ * The offset construction's proportions, in lettering heights: the first hatch line off the apex and the spacing of
+ * the rest, the right-angle mark, the angle arc's largest radius (a rolling offset's plan arc stands `nested` outside
+ * its rise arc) and the roll arc's.
+ */
+const HATCH = { start: 2, spacing: 1.15, square: 0.9, arc: 5.2, nested: 2.5, roll: 3.6 }
 
 /** Offset angles in whole degrees, but the half degree of a 22 1/2° or 67 1/2° offset made with standard fittings. */
 const degrees = (a: number) => [22.5, 67.5].find(h => Math.abs(a - h) < 0.15) ?? Math.round(a)
@@ -98,6 +157,14 @@ function ventOlets(ctx: IsoContext, legs: Leg[]): Set<string> {
   return out
 }
 
+/** Stations closer than this (mm) are one point: below the drafting resolution of either unit system. */
+const MERGE = 0.5
+/** The thickest gasket in a leg's joints (mm): faces closer than it are one bolted joint. */
+function legGasket(ctx: IsoContext, leg: Leg): number {
+  const nodes = new Set(leg.nodes)
+  return Math.max(0, ...ctx.joints.filter(j => nodes.has(j.nodeId)).map(j => j.gasket?.thickness ?? 0))
+}
+
 /** Distance along a leg from its first node. */
 function measureAlong(ctx: IsoContext, leg: Leg) {
   const origin = getNode(ctx.doc, leg.nodes[0]).position
@@ -117,7 +184,6 @@ function stations(ctx: IsoContext, leg: Leg, vents: Set<string>, bodyFaces = fal
     let end = i === 0 || i === leg.nodes.length - 1
     if (!end && (bodyFaces ? node.dimensionChain === 'mate' : node.dimensionChain === 'body')) return
     if (!end && node.kind === 'gasket') return
-    const code = nodeCode(ctx.doc, node) ?? ''
     // A flange pair welded directly to a fitting is located at that fitting-side face. Its gasket belongs in the
     // following pipe's span, rather than putting a half gasket into both rounded chain dimensions.
     const pair = ctx.joints.find(j => j.nodeId === id && j.kind === 'flange-pair')
@@ -126,14 +192,14 @@ function stations(ctx: IsoContext, leg: Leg, vents: Set<string>, bodyFaces = fal
       const far = getNode(ctx.doc, connector.from === id ? connector.to : connector.from)
       const out = unit3(sub(far.position, node.position)), g = ctx.geometry.get(connector.id)!
       const dir = connector.from === id ? g.dir : scale2(g.dir, -1), gap = (pair.gasket?.thickness ?? 0) / 2
-      at(node.position.map((v,k)=>v+out[k]*gap) as Vec3, add2(page,scale2(dir,SIZE.flangeThickness/2)), id, end)
+      at(node.position.map((v,k)=>v+out[k]*gap) as Vec3, add2(page,scale2(dir,sizeOf(ctx).flangeThickness/2)), id, end)
       return
     }
     // A branch standing on a part screwed into an olet is measured from the pipe's centreline, at the olet.
     const olet = end ? oletUnder(ctx, node) : undefined, base = olet && ctx.pos.get(olet.id)
     if (olet && base) { at(olet.position, base, olet.id, true); end = false }
     // Nipples, couplings, unions and regulators only join the pieces either side: the dimensions run through them.
-    if (!end && /NIPPLE|UNION|CPLG|REGUL|CAMLOCK|CHICAGO/.test(code)) return
+    if (!end && componentDrafting(ctx.doc, node).dimensionThrough) return
     const joints = ctx.joints.filter(j => j.nodeId === id && j.kind === 'component-port' && own.has(j.runIds[0]))
     const e = ctx.extent.get(id) ?? 0
     if (!end && joints.length) {
@@ -148,7 +214,7 @@ function stations(ctx: IsoContext, leg: Leg, vents: Set<string>, bodyFaces = fal
         const face: Vec3 = [0, 1, 2].map(k => j.position[k] + out3[k] / l * gap) as Vec3
         const dir = run.from === id ? g.dir : scale2(g.dir, -1)
         const axial=Math.hypot(...ctx.direction(g.dir3))
-        const reach=flangedGeometry(ctx.doc,node)[bodyFaces?'body':'mate']*axial
+        const reach=flangedGeometry(ctx.doc,node,valveBodyOnSheet(ctx,node))[bodyFaces?'body':'mate']*axial
         at(face, add2(page, scale2(dir, reach)), undefined, false, id)
       }
       return
@@ -158,10 +224,10 @@ function stations(ctx: IsoContext, leg: Leg, vents: Set<string>, bodyFaces = fal
       const gap = joint?.supplied.gasket && node.jointSupply?.measuredTo !== 'mate' ? joint.gasket?.thickness ?? 0 : 0
       const far = getNode(ctx.doc, leg.nodes[i === 0 ? 1 : i - 1]).position
       const out3 = unit3(sub(node.position, far)), dir = i === 0 ? scale2(leg.dir, -1) : leg.dir
-      at(node.position.map((v, k) => v + out3[k] * gap) as Vec3, add2(page, scale2(dir, gap ? SIZE.flangeThickness : 0)), id, true)
+      at(node.position.map((v, k) => v + out3[k] * gap) as Vec3, add2(page, scale2(dir, gap ? sizeOf(ctx).flangeThickness : 0)), id, true)
       return
     }
-    if (!end && node.kind === 'reducer' && !/CPLG/.test(code)) {
+    if (!end && node.kind === 'reducer') {
       // A reducer is dimensioned to both its ends, except where it is welded straight onto the elbow or tee it reduces
       // from: that make-up is measured from the fitting's work point to the reducer's far end.
       const runs = connected(ctx.doc, id).filter(r => own.has(r.id) && ctx.geometry.has(r.id)), large = Math.max(...runs.map(r => r.nps))
@@ -172,6 +238,7 @@ function stations(ctx: IsoContext, leg: Leg, vents: Set<string>, bodyFaces = fal
         const out3 = sub(across.position, node.position), l = length(out3) || 1
         const dir = run.from === id ? g.dir : scale2(g.dir, -1)
         at([0, 1, 2].map(k => node.position[k] + out3[k] / l * t) as Vec3, add2(page, scale2(dir, e)))
+        out[out.length - 1].outline = id
       }
       return
     }
@@ -183,19 +250,19 @@ function stations(ctx: IsoContext, leg: Leg, vents: Set<string>, bodyFaces = fal
     if (n.kind === 'olet' && page && n.associatedRunId && own.has(n.associatedRunId) && !vents.has(n.id)) at(n.position, page, n.id)
   }
   out.sort((a, b) => a.along - b.along)
-  // Faces closer than a gasket are one station (a flange pair at a break), measured at the face on the pipe, so the
+  // Faces closer than the leg's gaskets are one station (a flange pair at a break), measured at the face on the pipe, so the
   // gasket goes with a stub end welded to a fitting; at the end of a leg the gasket is dimensioned.
   const onPipe = (s: Station) => !!s.node && connected(ctx.doc, s.node).some(r => own.has(r.id) && !r.connector)
-  const kept: Station[] = []
+  const kept: Station[] = [], gasket = legGasket(ctx, leg) + MERGE
   for (const s of out) {
     const last = kept.at(-1), gap = last ? s.along - last.along : Infinity
     // Two explicitly drawn flange faces are one bolted joint even at the end of a leg. Use the face on the pipe.
     const flangeGap = last?.node && s.node && getNode(ctx.doc, last.node).kind === 'flange' && getNode(ctx.doc, s.node).kind === 'flange'
-    if (flangeGap && gap <= 3.2) {
+    if (flangeGap && gap <= gasket) {
       if (onPipe(s) && !onPipe(last!)) kept[kept.length - 1] = s
       continue
     }
-    if (gap > 3.2 || ((s.end || last!.end) && gap > 0.5)) kept.push(s)
+    if (gap > gasket || ((s.end || last!.end) && gap > MERGE)) kept.push(s)
     else if (s.end || (!last!.end && onPipe(s) && !onPipe(last!))) kept[kept.length - 1] = s
   }
   return kept
@@ -262,11 +329,11 @@ function pack(spans: Span[]): Span[][] {
 
 export function drawDimensions(ctx: IsoContext) {
   const { line, poly, arrow } = emitters(ctx)
-  const units = ctx.doc.units
+  const units = ctx.doc.units, size = sizeOf(ctx), T = size.text, feet = feetThreshold(ctx.doc, 'dimensions')
   let dimensionIndex = 0
   const handle = (key: string, at: Point) => ({ key, at: [...at] as Point, spool: ctx.spool })
   // Chains are measured between rounded station positions, so the pieces always add up to the rounded whole.
-  const quantum = units === 'mm' ? 1 : 25.4 / 16
+  const quantum = dimensionQuantum(units)
   const snap = (mm: number) => Math.round(mm / quantum) * quantum
   const measure = (a: Station, b: Station) => ctx.style.dimensionRounding === 'individual'
     ? snap(Math.abs(b.along - a.along)) : Math.abs(snap(b.along) - snap(a.along))
@@ -290,13 +357,13 @@ export function drawDimensions(ctx: IsoContext) {
         const side = a.face === 'body' ? 1 : -1, half = (pair.gasket?.thickness ?? 0) / 2
         const dir = run.from === n.id ? g.dir : scale2(g.dir,-1)
         return { model:n.position.map((v,k)=>v+out[k]*half*side) as Vec3,
-          page:add2(page,scale2(dir,SIZE.flangeThickness/2*side)),along:0,node:n.id }
+          page:add2(page,scale2(dir,size.flangeThickness/2*side)),along:0,node:n.id }
       }
       if (n.kind === 'flange' && connected(ctx.doc, n.id).length === 1) {
         const model = continuationPoint(ctx.doc, { ...n, continuation: { text: '', coordinateFace: a.face === 'mate' ? 'mate' : 'flange' } })
         const dir = run.from === n.id ? g.dir : scale2(g.dir, -1), delta = sub(model, n.position)
         const shift = delta.reduce((s, v, i) => s + v * out[i], 0)
-        return { model, page: add2(page, scale2(dir, Math.sign(shift) * Math.min(SIZE.flangeThickness, Math.abs(shift)))), along: 0, node: n.id }
+        return { model, page: add2(page, scale2(dir, Math.sign(shift) * Math.min(size.flangeThickness, Math.abs(shift)))), along: 0, node: n.id }
       }
       const joint = ctx.joints.find(j => j.nodeId === n.id && j.kind === 'component-port' && j.runIds.includes(run.id))
       const body = joint?.position ?? n.position.map((v, i) => v + out[i] * (n.kind === 'flange' || n.kind === 'end' ? 0 : takeout(ctx.doc, n, run.id) ?? 0)) as Vec3
@@ -304,12 +371,12 @@ export function drawDimensions(ctx: IsoContext) {
       const model = body.map((v, i) => v + out[i] * gap) as Vec3
       const dir = run.from === n.id ? g.dir : scale2(g.dir, -1)
       if(!joint && workPoint(n)) {
-        const point=ctx.schematic ? add2(page,scale2(dir,Math.min(fittingTakeoutOnPaper(ctx,n,run),g.length*.45))) : ctx.project(body)
+        const point=ctx.schematic ? add2(page,scale2(dir,faceOnPaper(ctx,n,run))) : onPipe(ctx, run, body)
         return {model,page:point,along:0,of:n.id}
       }
       const extent = ctx.extent.get(n.id) ?? 0
-      const inset = joint ? (SIZE.flangeThickness + 0.4 + (a.face === 'body' && joint.gasket ? SIZE.flangeThickness : 0))*Math.hypot(...ctx.direction(g.dir3)) : 0
-      const reach=joint ? flangedGeometry(ctx.doc,n)[a.face==='body'?'body':'mate']*Math.hypot(...ctx.direction(g.dir3)) : Math.max(0,extent-inset)
+      const inset = joint ? (size.flangeThickness + size.thin + (a.face === 'body' && joint.gasket ? size.flangeThickness : 0))*Math.hypot(...ctx.direction(g.dir3)) : 0
+      const reach=joint ? flangedGeometry(ctx.doc,n,valveBodyOnSheet(ctx,n))[a.face==='body'?'body':'mate']*Math.hypot(...ctx.direction(g.dir3)) : Math.max(0,extent-inset)
       return { model, page: add2(page, scale2(dir, reach)), along: 0, of: n.id }
     }
     for (const [i, d] of drafted.entries()) {
@@ -328,9 +395,11 @@ export function drawDimensions(ctx: IsoContext) {
     // A purchased flexible hose's catalogue length locates its ends; a hanging paper route is not a fabrication chain.
     if(leg.runs.every(r=>r.connector)&&leg.nodes.some(id=>node(id).hosePath?.length))continue
     const origin = node(leg.nodes[0]).position, span = distance(origin, node(leg.nodes.at(-1)!).position)
+    // A drafted dimension may run to a face beyond the leg's end node, by at most the gasket there.
+    const beyond = legGasket(ctx, leg) + MERGE
     const onLeg = (p: Vec3) => {
       const delta = sub(p, origin), along = delta.reduce((sum, v, i) => sum + v * leg.dir3[i], 0)
-      return along >= -20 && along <= span + 20 && length(delta.map((v, i) => v - along * leg.dir3[i]) as Vec3) < 0.01
+      return along >= -beyond && along <= span + beyond && length(delta.map((v, i) => v - along * leg.dir3[i]) as Vec3) < 0.01
     }
     const replacement = replaced.find(({ from, to }) => onLeg(from) && onLeg(to))
     // A capped vent or drain stub takes no dimensions: its parts give its length.
@@ -355,8 +424,8 @@ export function drawDimensions(ctx: IsoContext) {
       })
       if(reference){
         const far=reference.atNodeId===leg.nodes[0]?points.at(-1)!:points[0],point:Station={model:reference.model,page:reference.page,along:0,end:true}
-        const ext:Point=Math.abs(leg.dir[0])>.2?[0,-1]:[1,0]
-        dimension(far,point,snap(distance(far.model,point.model)),ext,TIER,undefined,leg.runs[0].id)
+        const ext=offsetSide(sub(points.at(-1)!.model, points[0].model))
+        dimension(far,point,snap(distance(far.model,point.model)),ext,size.tier,undefined,leg.runs[0].id)
         offset(leg,points,ext)
       }else offset(leg, points)
       continue
@@ -408,7 +477,7 @@ export function drawDimensions(ctx: IsoContext) {
       if (Math.abs(dot2(ext, leg.dir)) > 0.95) continue
       let cost = penalty
       tiers.forEach((tier, t) => {
-        const off = TIER + t * TIER_STEP
+        const off = size.tier + t * size.tierStep
         for (const s of tier) {
           const a = add2(s.a.page, scale2(ext, off)), b = add2(s.b.page, scale2(ext, off))
           // A dimension line may cross a pipe; its lettering may not.
@@ -426,7 +495,7 @@ export function drawDimensions(ctx: IsoContext) {
     const heldExt = heldAxis && unit2(ctx.axis(heldAxis))
     const ext = heldExt && Math.hypot(...heldExt) > 0.1 && Math.abs(dot2(heldExt, leg.dir)) < 0.95 ? heldExt : best.ext
     tiers.forEach((tier, t) => {
-      const off = TIER + t * TIER_STEP
+      const off = size.tier + t * size.tierStep
       // Neighbouring pieces of a chain are no place for a short dimension's text.
       const spans = tier.map(s => [s.a.page, s.b.page] as [Point, Point])
       for (const s of tier) dimension(s.a, s.b, s.mm, ext, off, runBetween(leg, s), ownerOf(leg, s), spans.filter(([a]) => a !== s.a.page), s.approximate, undefined, leg.runs.some(r=>r.dimensionReverse))
@@ -434,9 +503,17 @@ export function drawDimensions(ctx: IsoContext) {
     // The overall of a skewed leg is its true length; the construction goes on the other side.
     if (skewed) offset(leg, points, ext)
   }
+  /** Page extension direction of an offset's true length along model vector `d` (see `offsetExtension`). */
+  function offsetSide(d: Vec3): Point {
+    const ext = ctx.axis(offsetExtension(d))
+    if (Math.hypot(...ext) >= 0.2) return unit2(ext)
+    const normal: Vec3 = [0, 0, 0]
+    normal[[0, 1, 2].reduce((a, b) => Math.abs(d[b]) < Math.abs(d[a]) ? b : a)] = 1
+    return unit2(ctx.axis(normal))
+  }
   /** A dimension's lettering: the length, marked "(±)" where the location is approximate. */
   function valueOf(s: { mm: number; approximate?: boolean },format?:'feet'|'inches'|'feet-short') {
-    const value=draftLength(s.mm, units,format==='feet'||format==='feet-short'?12:format==='inches'?Infinity:24)
+    const value=draftLength(s.mm, units,format==='feet'||format==='feet-short'?12:format==='inches'?Infinity:feet)
     return (format==='feet-short'?value.replace(/'-0"$/,"'"):value) + (s.approximate ? '(±)' : '')
   }
   /** The pipe a dimension measures node to node, so its length can be edited in place. */
@@ -448,8 +525,24 @@ export function drawDimensions(ctx: IsoContext) {
     return run?.id ?? leg.runs[0].id
   }
   function labelPoly(value: string, a: Point, b: Point, ext: Point) {
-    const along = unit2(sub2(b, a)), t = planeText(along, ext)
-    return textPoly(add2(lerp2(a, b, 0.5), scale2(uprightOf(t), 2)), value, SIZE.text, t.rotation, t.oblique, 'middle', 1)
+    const along = unit2(sub2(b, a)), t = readable(planeText(along, ext))
+    return textPoly(add2(lerp2(a, b, 0.5), scale2(uprightOf(t), 0.3 * T)), value, T, t.rotation, t.oblique, 'middle', 1)
+  }
+  /**
+   * How far along an extension line (in its own lengths) a station's component outline reaches: a reducer's end drawn
+   * along the extension line would otherwise run on into it, and the two read as one tall edge of the symbol.
+   */
+  function clearOf(station: Station, ext: Point): number {
+    const l = len2(ext)
+    if (!station.outline || l < 1e-9) return 0
+    const u = scale2(ext, 1 / l)
+    let reach = 0
+    for (const p of ctx.out) if (p.owner === station.outline && p.layer === 'SYMBOL' && p.type === 'polyline')
+      for (const v of p.points) {
+        const d = sub2(v, station.page)
+        if (Math.abs(d[0] * u[1] - d[1] * u[0]) < 0.05 * T) reach = Math.max(reach, dot2(d, u))
+      }
+    return reach / l
   }
   /** One dimension: extension lines from both points, a dimension line with arrowheads, and iso-plane text. */
   function dimension(pa: Station, pb: Station, mm: number, ext: Point, offset: number, editable?: PipeRun, owner?: string,
@@ -463,59 +556,59 @@ export function drawDimensions(ctx: IsoContext) {
     format=layout?.format ?? format
     const a = add2(pa.page, scale2(ext, offset)), b = add2(pb.page, scale2(ext, offset))
     const along = unit2(sub2(b, a)), span = Math.hypot(...sub2(b, a))
-    const value = valueOf({ mm, approximate },format), t = planeText(along, ext)
+    const value = valueOf({ mm, approximate },format), t = readable(planeText(along, ext))
     if (reverseText) t.rotation = (t.rotation + 360) % 360 - 180
     const up = uprightOf(t)
-    const width = measureText(value, SIZE.text)
-    const short = span < SIZE.arrow * 2.2
+    const width = measureText(value, T)
+    const short = span < size.arrow * 2.2
     // Text stands on its reading side of the line; when that is taken it moves beyond an end or to the other side.
     // It is placed before its own lines are drawn, so only other work can push it away.
-    const mid = lerp2(a, b, 0.5), reach = span / 2 + SIZE.arrow * (short ? 2 : 0) + width / 2 + 3
-    const spots: Point[] = short || span < width + 6
-      ? [add2(add2(mid, scale2(along, reach)), scale2(up, 2)), add2(add2(mid, scale2(along, -reach)), scale2(up, 2)), add2(mid, scale2(up, 2)), add2(mid, scale2(up, -SIZE.text - 2))]
-      : [add2(mid, scale2(up, 2)), add2(mid, scale2(up, -SIZE.text - 2)), add2(add2(mid, scale2(along, reach)), scale2(up, 2)), add2(add2(mid, scale2(along, -reach)), scale2(up, 2))]
+    const mid = lerp2(a, b, 0.5), reach = span / 2 + size.arrow * (short ? 2 : 0) + width / 2 + 0.45 * T, lift = 0.3 * T
+    const spots: Point[] = short || span < width + 0.9 * T
+      ? [add2(add2(mid, scale2(along, reach)), scale2(up, lift)), add2(add2(mid, scale2(along, -reach)), scale2(up, lift)), add2(mid, scale2(up, lift)), add2(mid, scale2(up, -T - lift))]
+      : [add2(mid, scale2(up, lift)), add2(mid, scale2(up, -T - lift)), add2(add2(mid, scale2(along, reach)), scale2(up, lift)), add2(add2(mid, scale2(along, -reach)), scale2(up, lift))]
     // When every spot by the line is taken, the text stands clear with a leader back to the line.
     const away = unit2(sub2(mid, lerp2(pa.page, pb.page, 0.5)))
     for (const k of [1, 2, 3]) for (const side of [0, 1, -1])
-      spots.push(add2(add2(mid, scale2(away, (SIZE.text + 6) * k + 4)), scale2(along, side * (width / 2 + 6))))
+      spots.push(add2(add2(mid, scale2(away, 1.9 * T * k + 0.6 * T)), scale2(along, side * (width / 2 + 0.9 * T))))
     // Measured back along the extension lines to the pipe, so the offset's slant does not shift it.
     const within = (p: Point) => others.some(([x, y]) => {
       const q = sub2(p, scale2(ext, offset)), u = sub2(y, x), l = Math.hypot(...u) || 1, s = dot2(sub2(q, x), u) / l
-      return s > 0 && s < l && Math.abs(dot2(sub2(q, x), [u[1] / l, -u[0] / l])) < SIZE.text * 3
+      return s > 0 && s < l && Math.abs(dot2(sub2(q, x), [u[1] / l, -u[0] / l])) < T * 3
     })
     const choice = spots.reduce((best, p, i) => {
-      const c = ctx.place.cost(textPoly(p, value, SIZE.text, t.rotation, t.oblique, 'middle', 1)) + i * 4 + (within(p) ? 40 : 0)
+      const c = ctx.place.cost(textPoly(p, value, T, t.rotation, t.oblique, 'middle', 1)) + i * 4 + (within(p) ? 40 : 0)
       return c < best.c ? { p, c, i } : best
     }, { p: spots[0], c: Infinity, i: 0 })
     const at = held ?? choice.p
-    for (const [from, to] of [[pa.page, a], [pb.page, b]] as Array<[Point, Point]>)
-      line(add2(from, scale2(ext, SIZE.extGap)), add2(to, scale2(ext, SIZE.extOver)), 'DIM', owner)
+    for (const [from, to, station] of [[pa.page, a, pa], [pb.page, b, pb]] as Array<[Point, Point, Station]>)
+      line(add2(from, scale2(ext, size.extGap + clearOf(station, ext))), add2(to, scale2(ext, size.extOver)), 'DIM', owner)
     if (short) {
       // Too short for arrows inside: arrows point in from outside.
-      line(sub2(a, scale2(along, SIZE.arrow * 2)), add2(b, scale2(along, SIZE.arrow * 2)), 'DIM', owner)
+      line(sub2(a, scale2(along, size.arrow * 2)), add2(b, scale2(along, size.arrow * 2)), 'DIM', owner)
       arrow(a, along, 'DIM', owner); arrow(b, scale2(along, -1), 'DIM', owner)
     } else {
       line(a, b, 'DIM', owner)
       arrow(a, scale2(along, -1), 'DIM', owner); arrow(b, along, 'DIM', owner)
     }
     const normal:Point=[along[1],-along[0]]
-    if (held ? Math.abs(dot2(sub2(at, mid), normal) - 2*dot2(up,normal)) > SIZE.text * 2 : choice.i >= 4)
-      line(mid, add2(at, scale2(away, -SIZE.text * 0.6)), 'LEADER', owner)
+    if (held ? Math.abs(dot2(sub2(at, mid), normal) - lift*dot2(up,normal)) > T * 2 : choice.i >= 4)
+      line(mid, add2(at, scale2(away, -T * 0.6)), 'LEADER', owner)
     // A label moved beyond the end of a short dimension is joined to it.
-    const offLine = choice.i < 4 && Math.abs(dot2(sub2(at, mid), along)) > span / 2 + 2
+    const offLine = choice.i < 4 && Math.abs(dot2(sub2(at, mid), along)) > span / 2 + lift
     if (offLine) {
       const end = dot2(sub2(at, mid), along) > 0 ? b : a, toward = dot2(sub2(at, mid), along) > 0 ? along : scale2(along, -1)
-      line(end, add2(end, scale2(toward, Math.max(0, Math.abs(dot2(sub2(at, mid), along)) - span / 2 - width / 2 - 1))), 'DIM', owner)
+      line(end, add2(end, scale2(toward, Math.max(0, Math.abs(dot2(sub2(at, mid), along)) - span / 2 - width / 2 - 0.15 * T))), 'DIM', owner)
     }
     const mode = ctx.doc.dimensionMode, cut = editable ? runResult(ctx.doc, editable).cut : NaN
     if (editable && mode === 'cut') {
-      emitters(ctx).text(at, 'CUT ' + valueOf({mm:cut},format), SIZE.text, 'DIM', editable.id, { rotation: t.rotation, oblique: t.oblique, anchor: 'middle', role: 'cut', label: {...handle(key, at),dimension:{axis:ext,offset}} })
+      emitters(ctx).text(at, 'CUT ' + valueOf({mm:cut},format), T, 'DIM', editable.id, { rotation: t.rotation, oblique: t.oblique, anchor: 'middle', role: 'cut', label: {...handle(key, at),dimension:{axis:ext,offset}} })
       return
     }
-    emitters(ctx).text(at, value, SIZE.text, 'DIM', editable?.id ?? owner, { rotation: t.rotation, oblique: t.oblique, anchor: 'middle', label: {...handle(key, at),dimension:{axis:ext,offset}}, ...(editable ? { role: 'overall' as const } : {}) })
+    emitters(ctx).text(at, value, T, 'DIM', editable?.id ?? owner, { rotation: t.rotation, oblique: t.oblique, anchor: 'middle', label: {...handle(key, at),dimension:{axis:ext,offset}}, ...(editable ? { role: 'overall' as const } : {}) })
     // Drawings set to show both put the cut length under the line, opposite the centreline length.
     if (editable && mode === 'both' && Number.isFinite(cut) && Math.abs(cut - mm) > 0.5)
-      emitters(ctx).text(add2(lerp2(a, b, 0.5), scale2(up, -(SIZE.text * 0.8 + 2.5))), 'CUT ' + valueOf({mm:cut},format), SIZE.text * 0.8, 'DIM', editable.id,
+      emitters(ctx).text(add2(lerp2(a, b, 0.5), scale2(up, -(T * 0.8 + 0.38 * T))), 'CUT ' + valueOf({mm:cut},format), T * 0.8, 'DIM', editable.id,
         { rotation: t.rotation, oblique: t.oblique, anchor: 'middle', role: 'cut' })
   }
   /** Where the legs along axes `p` then `q` of the model vector `d` meet, splitting the drawn line from `a` to `b`. */
@@ -609,24 +702,25 @@ export function drawDimensions(ctx: IsoContext) {
     for (const t of triangles) Object.assign(t, { apex: s(t.apex), leg: s(t.leg), far: s(t.far) })
     const corner = legs[0][1]
     for (const [a, b] of legs) line(a, b, 'DIM', owner)
-    for (const [a, b] of thin) line(s(a), s(b), 'DIM', owner, 0.4)
+    for (const [a, b] of thin) line(s(a), s(b), 'DIM', owner, size.thin * 0.8)
     const angleLabels: Array<() => void> = []
     for (const t of triangles) {
       // Hatching fills the acute corner between the pipe and the leg; a square marks the right angle. Hatching breaks
       // around lettering, so it is thin work for placing text, like a dimension line.
       for (let i = 0; i < (drafting?.hatchCount ?? 4); i++) {
         if(drafting?.hatchPlane && drafting.hatchPlane!==t.plane)continue
-        const length=len2(sub2(t.far,t.apex))
-        const f=drafting?.hatchSpacing!=null ? ((drafting.hatchStart ?? drafting.hatchSpacing)+(i*drafting.hatchSpacing))/Math.max(length,1) : .135+i*.075
+        // Hatch lines stand a constant paper distance apart along the pipe, from a little off the apex.
+        const length=len2(sub2(t.far,t.apex)), spacing=drafting?.hatchSpacing ?? HATCH.spacing*T, first=drafting?.hatchStart ?? (drafting?.hatchSpacing ?? HATCH.start*T)
+        const f=(first+i*spacing)/Math.max(length,1)
         if(f>=1)break
         const apex=drafting?.hatchFrom==='end'?t.far:t.apex,far=drafting?.hatchFrom==='end'?t.apex:t.far
         const a=lerp2(apex,t.leg,f), edge=lerp2(apex,far,f), span=len2(sub2(edge,a)), gap=drafting?.hatchGap ?? 0
         if(span<=gap)continue
         const b=lerp2(a,edge,1-gap/span)
-        line(a, b, 'HATCH', owner, CAD_STROKE_WIDTH, false)
+        line(a, b, 'HATCH', owner, size.thin, false)
         ctx.place.addSegment(a, b, 'line', owner, 0.8)
       }
-      const u1 = unit2(sub2(t.apex, t.leg)), u2 = unit2(sub2(t.far, t.leg)), m = drafting?.rightAngleSize ?? 6
+      const u1 = unit2(sub2(t.apex, t.leg)), u2 = unit2(sub2(t.far, t.leg)), m = drafting?.rightAngleSize ?? HATCH.square * T
       if(m>0)poly([add2(t.leg, scale2(u1, m)), add2(add2(t.leg, scale2(u1, m)), scale2(u2, m)), add2(t.leg, scale2(u2, m))], 'DIM', owner)
       // Angle arc at the apex, from the leg to the hypotenuse, with the angle and plane beside it.
       const angular=drafting?.[t.plane==='H'?'angleFromH':'angleFromV']==='end'?{...t,apex:t.far,far:t.apex,angle:90-t.angle}:t
@@ -634,9 +728,11 @@ export function drawDimensions(ctx: IsoContext) {
       let sweep = a2 - a1
       if (sweep > Math.PI) sweep -= 2 * Math.PI
       if (sweep < -Math.PI) sweep += 2 * Math.PI
-      const r = drafting?.[t.plane==='H'?'angleRadiusH':'angleRadiusV'] ?? Math.min(34, Math.hypot(...sub2(angular.leg, angular.apex)) * 0.45) * (t.plane === 'H' && triangles.length > 1 ? 1.7 : 1)
+      // A rolling offset's two arcs share their apex: the plan arc stands outside the rise arc.
+      const radius = Math.min(HATCH.arc * T, Math.hypot(...sub2(angular.leg, angular.apex)) * 0.45)
+      const r = drafting?.[t.plane==='H'?'angleRadiusH':'angleRadiusV'] ?? radius + (t.plane === 'H' && triangles.length > 1 ? HATCH.nested * T : 0)
       const outward=drafting?.[t.plane==='H'?'angleOutwardH':'angleOutwardV']
-      const tail=drafting?.angleArrows&&!outward?SIZE.arrow*2/Math.max(r,1)*Math.sign(sweep):0
+      const tail=drafting?.angleArrows&&!outward?size.arrow*2/Math.max(r,1)*Math.sign(sweep):0
       const arc=Array.from({length:65},(_,i)=>add2(angular.apex,[Math.cos(a1-tail+(sweep+2*tail)*i/64)*r,Math.sin(a1-tail+(sweep+2*tail)*i/64)*r] as Point))
       for(let i=1;i<arc.length;i++)line(arc[i-1],arc[i],'DIM',owner)
       if(drafting?.angleArrows)for(const [angle,side] of [[a1,1],[a1+sweep,-1]]){
@@ -645,73 +741,76 @@ export function drawDimensions(ctx: IsoContext) {
       // Angle labels are lettered after the leg values, which have nowhere else to go: beside the arc first, then further
       // out along the bisector, then anywhere round the apex.
       angleLabels.push(() => {
-        const mid = a1 + sweep / 2, label = angleText(degrees(angular.angle), t.plane), w = measureText(label, SIZE.text)
+        const mid = a1 + sweep / 2, label = angleText(degrees(angular.angle), t.plane), w = measureText(label, T)
         const radial = (at: number): Point => add2(angular.apex, [Math.cos(mid) * at, Math.sin(mid) * at])
-        const spots = [r + 4, r + 16, r + 28, r + 42, r + 58].flatMap(at => [radial(at), add2(radial(at), [w / 2 + 2, 0]), add2(radial(at), [-w / 2 - 2, 0])])
-          .concat([r + 10, r + 24].flatMap(at => Array.from({ length: 12 }, (_, i): Point => add2(angular.apex, [Math.cos(i * Math.PI / 6) * (at + w / 2), Math.sin(i * Math.PI / 6) * at]))))
-        const auto = clearest(spots, q => textPoly([q[0], q[1] + SIZE.text / 2], label, SIZE.text, 0, 0, 'middle', 1))
-        const key = `offset-angle:${owner}:${t.plane}`, at = ctx.labelPositions?.[key] ?? [auto[0], auto[1] + SIZE.text / 2] as Point
-        emitters(ctx).text(at, label, SIZE.text, 'DIM', owner, { anchor: 'middle', label: handle(key, at) })
+        const spots = [0.6, 2.4, 4.2, 6.4, 8.8].map(k => r + k * T).flatMap(at => [radial(at), add2(radial(at), [w / 2 + 0.3 * T, 0]), add2(radial(at), [-w / 2 - 0.3 * T, 0])])
+          .concat([r + 1.5 * T, r + 3.6 * T].flatMap(at => Array.from({ length: 12 }, (_, i): Point => add2(angular.apex, [Math.cos(i * Math.PI / 6) * (at + w / 2), Math.sin(i * Math.PI / 6) * at]))))
+        const auto = clearest(spots, q => textPoly([q[0], q[1] + T / 2], label, T, 0, 0, 'middle', 1))
+        const key = `offset-angle:${owner}:${t.plane}`, at = ctx.labelPositions?.[key] ?? [auto[0], auto[1] + T / 2] as Point
+        emitters(ctx).text(at, label, T, 'DIM', owner, { anchor: 'middle', label: handle(key, at) })
       })
     }
     // The true length is dimensioned along the pipe, on the side away from the construction, unless the chain
     // along the pipe already gives it.
     if (comps.length === 3 && !chainExt && drafting?.showTrueLength!==false) {
       const along = unit2(sub2(end.page, start.page)), mid = lerp2(start.page, end.page, 0.5)
-      let ext: Point = [along[1], -along[0]]
+      let ext = unit2(ctx.axis(offsetExtension(d)))
+      if (Math.abs(dot2(ext, along)) > 0.95) ext = unit2(ctx.axis([0, 0, 1]))
       const bulk = legs.reduce<Point>((sum, [a, b]) => add2(sum, sub2(lerp2(a, b, 0.5), mid)), [0, 0])
       if (dot2(ext, bulk) > 0) ext = scale2(ext, -1)
-      dimension(start, end, total, ext, drafting?.trueLengthOffset ?? TIER, leg.runs.length === 1 ? leg.runs[0] : undefined, owner, [], false, undefined, leg.runs.some(r=>r.dimensionReverse))
+      dimension(start, end, total, ext, drafting?.trueLengthOffset ?? size.tier, leg.runs.length === 1 ? leg.runs[0] : undefined, owner, [], false, undefined, leg.runs.some(r=>r.dimensionReverse))
     }
     if (comps.length === 2 && !chainExt && drafting?.showTrueLength!==false) {
       const normal: Vec3 = [0, 0, 0]
       normal[[0, 1, 2].find(i => !comps.includes(i)) ?? 2] = 1
-      const dir3 = unit3(d), across3: Vec3 = [normal[1] * dir3[2] - normal[2] * dir3[1], normal[2] * dir3[0] - normal[0] * dir3[2], normal[0] * dir3[1] - normal[1] * dir3[0]]
-      const along = unit2(sub2(end.page, start.page))
+      const across3 = offsetExtension(d)
+      // A plane seen edge on gives no extension across the pipe in it: the plane's own normal axis is used.
       let ext = unit2(ctx.axis(across3))
-      if (Math.hypot(...ctx.axis(across3)) < 0.2) ext = [along[1], -along[0]]
+      if (Math.hypot(...ctx.axis(across3)) < 0.2) ext = unit2(ctx.axis(normal))
       if (dot2(ext, sub2(corner, lerp2(start.page, end.page, 0.5))) > 0) ext = scale2(ext, -1)
-      dimension(start, end, total, ext, drafting?.trueLengthOffset ?? TIER, leg.runs.length === 1 ? leg.runs[0] : undefined, owner, [], false, undefined, leg.runs.some(r=>r.dimensionReverse))
+      dimension(start, end, total, ext, drafting?.trueLengthOffset ?? size.tier, leg.runs.length === 1 ? leg.runs[0] : undefined, owner, [], false, undefined, leg.runs.some(r=>r.dimensionReverse))
     }
     const ends = legs.flatMap(([a, b]) => [a, b]), centre = scale2(ends.reduce(add2, [0, 0]), 1 / ends.length)
     for (const [i, [p, q, mm, standing]] of legs.entries()) {
       if (drafting?.showLegValues === false) continue
+      // A leg the view looks along is not drawn, so it is not lettered.
+      if (len2(sub2(q, p)) < 1e-6) continue
       const dir = unit2(sub2(q, p))
       const out = dot2(unitAxis(standing), sub2(lerp2(p, q, 0.5), centre)) >= 0 ? unitAxis(standing) : scale2(unitAxis(standing), -1)
-      const t = planeText(dir, drafting?.legPlane==='vertical'&&Math.abs(dir[0])>.1?[0,-1]:out), up = uprightOf(t)
+      const t = readable(planeText(dir, drafting?.legPlane==='vertical'&&Math.abs(dir[0])>.1?[0,-1]:out)), up = uprightOf(t)
       if (drafting?.dimensionLegs) {
-        dimension({model:start.model,page:p,along:0},{model:end.model,page:q,along:mm},mm,out,TIER,undefined,owner,[],false,`offset-leg:${owner}:${i}`)
+        dimension({model:start.model,page:p,along:0},{model:end.model,page:q,along:mm},mm,out,size.tier,undefined,owner,[],false,`offset-leg:${owner}:${i}`)
         continue
       }
       // Leg text goes outside the triangle when its reading side faces in, and slides along the leg or further out when
       // that is taken, so leg values never overprint other lettering.
-      const value = draftLength(mm, units, 24), outside = dot2(up, out) >= 0 ? 2 : -(SIZE.text + 2), inside = dot2(up, out) >= 0 ? -(SIZE.text + 2) : 2
+      const gap = 0.3 * T, value = draftLength(mm, units, feet), outside = dot2(up, out) >= 0 ? gap : -(T + gap), inside = dot2(up, out) >= 0 ? -(T + gap) : gap
       const spots = [0.5, 0.32, 0.68, 0.18, 0.82].flatMap(f => [add2(lerp2(p, q, f), scale2(up, outside)), add2(lerp2(p, q, f), scale2(up, inside))])
-        .concat([1, 2, 3].flatMap(k => [0.5, 0.32, 0.68].map(f => add2(lerp2(p, q, f), scale2(up, outside + Math.sign(outside) * (SIZE.text + 4) * k)))))
-      const key = `offset-leg:${owner}:${i}`, at = ctx.labelPositions?.[key] ?? clearest(spots, c => textPoly(c, value, SIZE.text, t.rotation, t.oblique, 'middle', 1))
-      emitters(ctx).text(at, value, SIZE.text, 'DIM', owner, { rotation: t.rotation, oblique: t.oblique, anchor: 'middle', label: handle(key, at) })
+        .concat([1, 2, 3].flatMap(k => [0.5, 0.32, 0.68].map(f => add2(lerp2(p, q, f), scale2(up, outside + Math.sign(outside) * 1.6 * T * k)))))
+      const key = `offset-leg:${owner}:${i}`, at = ctx.labelPositions?.[key] ?? clearest(spots, c => textPoly(c, value, T, t.rotation, t.oblique, 'middle', 1))
+      emitters(ctx).text(at, value, T, 'DIM', owner, { rotation: t.rotation, oblique: t.oblique, anchor: 'middle', label: handle(key, at) })
     }
     if (run !== undefined && drafting?.setAndRoll) {
       // A rolling offset's set is its true offset across the run: the diagonal of the roll and the rise (in plan when
       // the run is vertical), turned out of the plane by the roll angle.
       const across = [0, 1, 2].filter(i => i !== run), set = Math.hypot(d[across[0]], d[across[1]])
       const [p, q] = run === 2 ? [legs[0][0], legs[1][1]] : [legs[1][0], legs[2][1]]
-      if (run !== 2) line(p, q, 'DIM', owner, 0.4)
-      const dir = unit2(sub2(q, p)), t = planeText(dir, unitAxis(run)), up = uprightOf(t), value = 'SET ' + draftLength(set, units, 24)
-      const spots = [0.5, 0.35, 0.65].flatMap(f => [add2(lerp2(p, q, f), scale2(up, 2)), add2(lerp2(p, q, f), scale2(up, -SIZE.text - 2))])
-      emitters(ctx).text(clearest(spots, c => textPoly(c, value, SIZE.text, t.rotation, t.oblique, 'middle', 1)), value, SIZE.text, 'DIM', owner,
+      if (run !== 2) line(p, q, 'DIM', owner, size.thin * 0.8)
+      const dir = unit2(sub2(q, p)), t = readable(planeText(dir, unitAxis(run))), up = uprightOf(t), value = 'SET ' + draftLength(set, units, feet)
+      const spots = [0.5, 0.35, 0.65].flatMap(f => [add2(lerp2(p, q, f), scale2(up, 0.3 * T)), add2(lerp2(p, q, f), scale2(up, -1.3 * T))])
+      emitters(ctx).text(clearest(spots, c => textPoly(c, value, T, t.rotation, t.oblique, 'middle', 1)), value, T, 'DIM', owner,
         { rotation: t.rotation, oblique: t.oblique, anchor: 'middle' })
       if (run !== 2) {
         const plan = legs[1][1], b1 = Math.atan2(plan[1] - p[1], plan[0] - p[0]), b2 = Math.atan2(q[1] - p[1], q[0] - p[0])
         let sweep = b2 - b1
         if (sweep > Math.PI) sweep -= 2 * Math.PI
         if (sweep < -Math.PI) sweep += 2 * Math.PI
-        const r = Math.min(24, Math.hypot(...sub2(plan, p)) * 0.45), mid = b1 + sweep / 2
+        const r = Math.min(HATCH.roll * T, Math.hypot(...sub2(plan, p)) * 0.45), mid = b1 + sweep / 2
         poly(Array.from({ length: 9 }, (_, i) => add2(p, [Math.cos(b1 + sweep * i / 8) * r, Math.sin(b1 + sweep * i / 8) * r] as Point)), 'DIM', owner)
         const label = `${degrees(Math.atan2(Math.abs(d[2]), Math.abs(d[horizontal[1]])) * 180 / Math.PI)}° ROLL`
-        const spots = [r + 4, r + 16, r + 28].map(at => add2(p, [Math.cos(mid) * at, Math.sin(mid) * at] as Point))
-        const at = clearest(spots, c => textPoly([c[0], c[1] + SIZE.text / 2], label, SIZE.text, 0, 0, 'middle', 1))
-        emitters(ctx).text([at[0], at[1] + SIZE.text / 2], label, SIZE.text, 'DIM', owner, { anchor: 'middle' })
+        const spots = [0.6, 2.4, 4.2].map(k => r + k * T).map(at => add2(p, [Math.cos(mid) * at, Math.sin(mid) * at] as Point))
+        const at = clearest(spots, c => textPoly([c[0], c[1] + T / 2], label, T, 0, 0, 'middle', 1))
+        emitters(ctx).text([at[0], at[1] + T / 2], label, T, 'DIM', owner, { anchor: 'middle' })
       }
     }
     for (const label of angleLabels) label()

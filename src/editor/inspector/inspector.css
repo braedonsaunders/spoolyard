@@ -1,0 +1,443 @@
+/* Properties panel. One grammar throughout: identity header, key lengths, tabs, sections of label/control rows. */
+.iso-editor .insp {
+  --insp-accent: #0a8fae;
+  --insp-accent-soft: color-mix(in srgb, #0a8fae 12%, transparent);
+  --insp-muted: color-mix(in srgb, rgb(var(--ch-fg)) 58%, transparent);
+  --insp-line: rgb(var(--ch-border));
+  --insp-field: rgb(var(--ch-bg));
+  --insp-pad: 14px;
+  container-type: inline-size;
+  container-name: insp;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
+  width: 320px;
+  min-width: 240px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  font-size: 12px;
+}
+.iso-editor .insp.is-hidden { display: none; }
+
+/* Header */
+.insp-header {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px var(--insp-pad) 0;
+  background: rgb(var(--ch-surface));
+  border-bottom: 1px solid var(--insp-line);
+}
+.insp-identity { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.insp-glyph {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  background: var(--insp-accent-soft);
+  color: var(--insp-accent);
+}
+.insp-name { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.insp-name strong { font-size: 13.5px; font-weight: 600; line-height: 1.25; overflow-wrap: anywhere; }
+.insp-name small { font-size: 11px; color: var(--insp-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.iso-editor .insp-icon { padding: 6px; border-radius: 6px; color: var(--insp-muted); flex-shrink: 0; }
+.iso-editor .insp-icon:hover { color: rgb(var(--ch-fg)); }
+.insp-commands { display: flex; flex-wrap: wrap; gap: 6px; }
+.iso-editor .insp-commands button {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--insp-line);
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 500;
+}
+.iso-editor .insp-commands button.is-primary { border-color: transparent; background: var(--insp-accent); color: #fff; }
+.iso-editor .insp-commands button.is-primary:hover { background: color-mix(in srgb, var(--insp-accent) 88%, #000); }
+.iso-editor .insp-commands button.is-danger { margin-left: auto; color: #c8364a; }
+.iso-editor .insp-commands button.is-danger:hover { background: #c8364a14; }
+
+/* Tabs and the property filter share one strip, so the header stays the same height. */
+.insp-tabbar { display: flex; align-items: center; gap: 4px; height: 36px; margin-top: -2px; }
+.insp-tabs { display: flex; align-self: stretch; gap: 14px; flex: 1; }
+.iso-editor .insp-tabs button {
+  position: relative;
+  align-self: stretch;
+  padding: 0 1px;
+  border-radius: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--insp-muted);
+}
+.iso-editor .insp-tabs button:hover { background: none; color: rgb(var(--ch-fg)); }
+.iso-editor .insp-tabs button.is-on { color: rgb(var(--ch-fg)); }
+.iso-editor .insp-tabs button.is-on::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--insp-accent);
+}
+.insp-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  height: 28px;
+  padding-left: 8px;
+  border: 1px solid var(--insp-accent);
+  border-radius: 6px;
+  background: var(--insp-field);
+  color: var(--insp-muted);
+}
+.iso-editor .insp-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: none; color: rgb(var(--ch-fg)); font-size: 12px; }
+.iso-editor .insp-search input::-webkit-search-cancel-button { display: none; }
+
+/* Body */
+.insp-body { display: flex; flex-direction: column; flex: 1; padding-bottom: 8px; }
+.insp-panel { display: flex; flex-direction: column; }
+.insp-panel[hidden] { display: none; }
+.insp-panel-title {
+  padding: 12px var(--insp-pad) 2px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--insp-muted);
+}
+.insp-no-match { padding: 18px var(--insp-pad); color: var(--insp-muted); font-size: 11.5px; }
+.insp-body:not(:has(.insp-row, .insp-toggle, .insp-note, .insp-actions)) .insp-no-match { display: block; }
+.insp-body:has(.insp-row, .insp-toggle, .insp-note, .insp-actions) .insp-no-match { display: none; }
+
+/* Key lengths */
+.insp-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 8px;
+  padding: 12px var(--insp-pad);
+  border-bottom: 1px solid var(--insp-line);
+}
+.insp-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px 10px 6px;
+  border: 1px solid var(--insp-line);
+  border-radius: 8px;
+  background: var(--insp-field);
+  cursor: text;
+  transition: border-color .12s;
+}
+.insp-metric:hover { border-color: color-mix(in srgb, var(--insp-accent) 45%, var(--insp-line)); }
+.insp-metric:focus-within { border-color: var(--insp-accent); box-shadow: 0 0 0 3px var(--insp-accent-soft); }
+.insp-metric > span { display: flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--insp-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.iso-editor .insp-metric input {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: none;
+  color: rgb(var(--ch-fg));
+  font-size: 16px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+}
+.iso-editor .insp-metric input:focus-visible { outline: 0; }
+.insp-metric input::placeholder { color: var(--insp-muted); font-weight: 500; }
+
+/* Sections */
+.insp-section { border-bottom: 1px solid var(--insp-line); }
+.iso-editor .insp-section-head {
+  display: flex;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-height: 40px;
+  padding: 0 var(--insp-pad) 0 10px;
+  border-radius: 0;
+  text-align: left;
+}
+.iso-editor .insp-section-head:hover { background: color-mix(in srgb, currentColor 4%, transparent); }
+.iso-editor .insp-section-head:disabled { opacity: 1; cursor: default; }
+.iso-editor .insp-section-head:focus-visible { outline-offset: -2px; }
+.insp-chevron { flex-shrink: 0; color: var(--insp-muted); transition: transform .14s ease; }
+.insp-section.is-open .insp-chevron { transform: rotate(90deg); }
+.insp-section-title { font-size: 12px; font-weight: 600; white-space: nowrap; }
+.insp-section-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--insp-muted);
+}
+.insp-section.is-open .insp-section-summary { display: none; }
+.insp-section-body { display: flex; flex-direction: column; gap: 4px; padding: 0 var(--insp-pad) 14px; }
+.insp-section-body[hidden] { display: none; }
+.insp-body.is-filtering .insp-section:not(:has(.insp-row, .insp-toggle, .insp-note, .insp-actions)) { display: none; }
+.insp-body.is-filtering .insp-panel:not(:has(.insp-row, .insp-toggle, .insp-note, .insp-actions)) { display: none; }
+
+.insp-group { display: flex; flex-direction: column; gap: 4px; padding-top: 8px; }
+.insp-group + .insp-group, .insp-row + .insp-group, .insp-toggle + .insp-group { margin-top: 4px; border-top: 1px dashed var(--insp-line); }
+.insp-group-title {
+  padding-bottom: 2px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: var(--insp-muted);
+}
+.insp-body.is-filtering .insp-group:not(:has(.insp-row, .insp-toggle, .insp-note, .insp-actions)) { display: none; }
+
+/* Rows: label left, control right; stacked when the panel is narrow or the control is long. */
+.insp-row {
+  display: grid;
+  grid-template-columns: minmax(84px, 40%) minmax(0, 1fr);
+  align-items: center;
+  column-gap: 10px;
+  row-gap: 4px;
+  min-height: 32px;
+}
+.insp-row.stack { grid-template-columns: minmax(0, 1fr); align-items: start; padding-top: 4px; }
+.insp-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  font-size: 11.5px;
+  line-height: 1.3;
+  color: color-mix(in srgb, rgb(var(--ch-fg)) 78%, transparent);
+}
+.insp-modified { width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; background: var(--insp-accent); }
+.insp-control { position: relative; display: flex; align-items: center; gap: 4px; min-width: 0; }
+.insp-hint { grid-column: 1 / -1; font-size: 10.5px; line-height: 1.45; color: var(--insp-muted); }
+.iso-editor .insp :is(.insp-control, .insp-form) :is(input:not([type="checkbox"]), select, textarea) {
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: var(--insp-field);
+  color: rgb(var(--ch-fg));
+  font-size: 12px;
+  outline: 0;
+  transition: border-color .12s, box-shadow .12s;
+}
+.iso-editor .insp .insp-control select { padding-right: 4px; text-overflow: ellipsis; }
+.iso-editor .insp .insp-control textarea { height: auto; min-height: 64px; padding: 6px 8px; line-height: 1.45; resize: vertical; }
+.iso-editor .insp :is(.insp-control, .insp-form) :is(input, select, textarea):hover { border-color: var(--insp-line); }
+.iso-editor .insp :is(.insp-control, .insp-form) :is(input, select, textarea):focus,
+.iso-editor .insp :is(.insp-control, .insp-form) :is(input, select, textarea):focus-visible {
+  border-color: var(--insp-accent);
+  box-shadow: 0 0 0 3px var(--insp-accent-soft);
+  outline: 0;
+}
+.insp :is(input, textarea)::placeholder { color: var(--insp-muted); opacity: .8; }
+.insp-input-unit { position: relative; display: flex; flex: 1; min-width: 0; }
+.iso-editor .insp .insp-input-unit input { padding-right: 26px; }
+.insp-unit { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-size: 11px; color: var(--insp-muted); pointer-events: none; }
+.iso-editor .insp-reset { padding: 5px; border-radius: 5px; color: var(--insp-muted); flex-shrink: 0; }
+.iso-editor .insp-reset:hover { color: var(--insp-accent); }
+
+/* Choices */
+.insp-segmented {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  padding: 2px;
+  gap: 2px;
+  border-radius: 7px;
+  background: var(--insp-field);
+}
+.iso-editor .insp-segmented button {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 5px;
+  font-size: 11.5px;
+  color: var(--insp-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.iso-editor .insp-segmented button:hover { background: color-mix(in srgb, currentColor 6%, transparent); color: rgb(var(--ch-fg)); }
+.iso-editor .insp-segmented button.is-on {
+  background: rgb(var(--ch-surface));
+  color: rgb(var(--ch-fg));
+  font-weight: 600;
+  box-shadow: 0 0 0 1px var(--insp-line), 0 1px 2px #0000001a;
+}
+
+/* Switch rows */
+.insp-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 32px;
+  cursor: pointer;
+  font-size: 11.5px;
+  color: color-mix(in srgb, rgb(var(--ch-fg)) 78%, transparent);
+}
+.insp-toggle > span { display: flex; flex-direction: column; gap: 2px; min-width: 0; line-height: 1.35; }
+.insp-toggle small { font-size: 10.5px; color: var(--insp-muted); }
+
+.insp-note { margin: 2px 0; font-size: 11px; line-height: 1.5; color: var(--insp-muted); }
+.insp-note.is-warn {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #e6a92314;
+  color: color-mix(in srgb, #9a6700 85%, rgb(var(--ch-fg)));
+}
+.dark .insp-note.is-warn { color: #e8c06a; }
+.insp-actions { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 6px; }
+.iso-editor .insp-actions button {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--insp-line);
+  border-radius: 6px;
+  font-size: 11.5px;
+}
+.iso-editor .insp-actions button.is-primary { border-color: transparent; background: var(--insp-accent); color: #fff; }
+.iso-editor .insp-actions button.is-danger { color: #c8364a; }
+.insp-form { display: flex; flex-direction: column; gap: 4px; }
+
+/* Fabrication checks: one line, opened on demand. */
+.insp-checks {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  margin-top: auto;
+  border-top: 1px solid var(--insp-line);
+  background: rgb(var(--ch-surface));
+}
+.iso-editor .insp-checks > button {
+  display: flex;
+  justify-content: flex-start;
+  width: 100%;
+  min-height: 36px;
+  padding: 0 var(--insp-pad);
+  border-radius: 0;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.iso-editor .insp-checks > button:disabled { opacity: 1; cursor: default; }
+.insp-checks > button > span { flex: 1; text-align: left; }
+.insp-checks.is-ok > button { color: #198562; }
+.insp-checks.is-warn > button { color: #a86b00; }
+.dark .insp-checks.is-warn > button { color: #e8b04a; }
+.insp-checks.is-empty > button { color: var(--insp-muted); font-weight: 500; }
+.insp-checks-chevron { transition: transform .14s; }
+.insp-checks > button[aria-expanded="true"] .insp-checks-chevron { transform: rotate(180deg); }
+.insp-checks ul { display: flex; flex-direction: column; gap: 6px; max-height: 40vh; overflow-y: auto; margin: 0; padding: 0 var(--insp-pad) 12px 34px; font-size: 11px; line-height: 1.45; }
+.insp-checks li.insp-more { list-style: none; color: var(--insp-muted); }
+
+/* Drawing setup keeps its own sections; they read as this panel's sections. */
+.insp .iso-sheet-settings { padding: 0; }
+.insp .insp-body > .iso-sheet-settings > .iso-sheet-section { border-top: 0; border-bottom: 1px solid var(--insp-line); }
+.insp .iso-sheet-section > summary {
+  min-height: 40px;
+  padding: 0 var(--insp-pad) 0 12px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.insp .iso-sheet-section > summary:hover { background: color-mix(in srgb, currentColor 4%, transparent); }
+.insp .iso-sheet-section > summary small { font-size: 11px; font-weight: 400; opacity: 1; color: var(--insp-muted); }
+.insp .iso-sheet-section-body { padding: 0 var(--insp-pad) 14px; }
+.insp .iso-sheet-settings .iso-field > span { font-size: 11.5px; opacity: 1; color: color-mix(in srgb, rgb(var(--ch-fg)) 78%, transparent); }
+
+@container insp (max-width: 270px) {
+  .insp-row:not(.stack) { grid-template-columns: minmax(0, 1fr); row-gap: 3px; padding: 3px 0; }
+  .insp-metrics { grid-template-columns: minmax(0, 1fr); }
+}
+@container iso (max-width: 1180px) { .iso-editor .insp { width: 296px; } }
+@media (max-width: 720px) { .iso-editor .insp { width: 256px; min-width: 220px; } }
+
+/* Paired rows: one control per column, e.g. a pipe's start and end. */
+.insp-control.is-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px; }
+.insp-pair-head { min-height: 20px; }
+.insp-pair-head .insp-control > span { font-size: 10px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--insp-muted); padding-left: 2px; }
+.insp-switch { display: flex; align-items: center; height: 28px; padding-left: 2px; }
+.insp-switch input, .insp-toggle input {
+  appearance: none;
+  position: relative;
+  width: 28px;
+  height: 16px;
+  flex-shrink: 0;
+  margin: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, rgb(var(--ch-fg)) 22%, transparent);
+  cursor: pointer;
+  transition: background .14s;
+}
+.insp-switch input::after, .insp-toggle input::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px #0003;
+  transition: transform .14s;
+}
+.insp-switch input:checked, .insp-toggle input:checked { background: var(--insp-accent); }
+.insp-switch input:checked::after, .insp-toggle input:checked::after { transform: translateX(12px); }
+.insp-switch input:focus-visible, .insp-toggle input:focus-visible { outline: 2px solid var(--insp-accent); outline-offset: 2px; }
+.insp-metric-value { display: flex; align-items: baseline; gap: 4px; min-width: 0; }
+.insp-metric-value em { font-style: normal; font-size: 11px; color: var(--insp-muted); }
+.iso-editor .insp-icon.is-danger:hover { color: #c8364a; background: #c8364a14; }
+.iso-editor .insp-search input:focus-visible { outline: 0; }
+
+/* Drawing setup's grids and cards in the panel's grammar. */
+.insp .iso-sheet-settings { display: flex; flex-direction: column; }
+.insp .iso-sheet-grid .insp-row { grid-template-columns: minmax(0, 1fr); align-items: start; row-gap: 3px; padding: 2px 0; }
+.insp .iso-sheet-grid { gap: 6px 8px; }
+.iso-editor .insp .iso-sheet-settings :is(textarea, input:not([type]), input[type="text"], input[type="number"], select) {
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: var(--insp-field);
+  font-size: 12px;
+}
+.iso-editor .insp .iso-sheet-settings :is(textarea, input, select):hover { border-color: var(--insp-line); }
+.iso-editor .insp .iso-sheet-settings :is(textarea, input, select):focus { border-color: var(--insp-accent); box-shadow: 0 0 0 3px var(--insp-accent-soft); outline: 0; }
+.iso-editor .insp .iso-sheet-settings .iso-help { font-size: 11px; line-height: 1.5; opacity: 1; color: var(--insp-muted); }
+.iso-editor .insp .iso-sheet-settings details > summary { padding: 6px 0; font-size: 11.5px; font-weight: 600; cursor: pointer; }
+.iso-editor .insp .iso-sheet-card { border: 1px solid var(--insp-line); border-radius: 8px; padding: 10px; }
+.iso-editor .insp button.iso-primary { height: 28px; border-radius: 6px; background: var(--insp-accent); font-size: 11.5px; }
+.insp-header:not(:has(.insp-tabbar)) { padding-bottom: 12px; }
+.iso-editor .insp textarea { font: inherit; font-size: 12px; }
+.insp-body > .insp-note { padding: 10px var(--insp-pad); }
+.insp-value { font-size: 12px; color: rgb(var(--ch-fg)); }
+.iso-editor .insp-actions button:disabled { opacity: .45; }
+
+/* Checks: errors stop the cut list; warnings are assumptions to confirm. */
+.insp-checks.is-error > button { color: #b9493a; }
+.insp-checks-list { max-height: 40vh; overflow: auto; padding: 0 var(--insp-pad) 10px; }
+.insp-checks-group h4 { margin: 8px 0 4px; font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; }
+.insp-checks-group.is-error h4 { color: #b9493a; }
+.insp-checks-group.is-warning h4 { color: #a86b00; }
+.insp-checks-group.is-notice h4 { color: var(--insp-muted); }
+.dark .insp-checks-group.is-warning h4 { color: #e8b04a; }
+.insp-checks-group ul { margin: 0; padding-left: 16px; font-size: 11px; line-height: 1.45; }
+.iso-editor .insp-issue { padding: 0; min-width: 0; text-align: left; color: inherit; text-decoration: underline dotted; }

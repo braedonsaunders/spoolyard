@@ -12,6 +12,7 @@ import {
   takeout,
   connected,
 } from "../core/model";
+import { valveOperatorOf } from "../core/iso/valve-conventions";
 
 /** Physical pipe and fitting envelopes for spatial review; dimensions remain governed by the piping model. */
 export function mountPreview3d(container: HTMLElement, doc: IsoDocument, spool = ""): () => void {
@@ -148,9 +149,17 @@ export function mountPreview3d(container: HTMLElement, doc: IsoDocument, spool =
       const up = Math.abs(axis.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
       const stem = up.addScaledVector(axis, -up.dot(axis)).normalize(),
         tip = center.clone().addScaledVector(stem, radius * 4.5);
-      cylinder(center, tip, radius * 0.12);
-      const wheel = mesh(new THREE.TorusGeometry(radius * 1.6, radius * 0.15, 8, 28), tip);
-      wheel.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), stem);
+      // The operator the sheet draws (its own, its specification row's, else its type's).
+      const operator = valveOperatorOf(doc, n);
+      if (operator !== "none") cylinder(center, tip, radius * 0.12);
+      if (operator === "handwheel") {
+        const wheel = mesh(new THREE.TorusGeometry(radius * 1.6, radius * 0.15, 8, 28), tip);
+        wheel.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), stem);
+      } else if (operator === "lever") cylinder(tip, tip.clone().addScaledVector(axis, radius * 3.5), radius * 0.15);
+      else if (operator === "actuator" || operator === "box") {
+        const body = mesh(operator === "box" ? new THREE.BoxGeometry(radius * 2.4, radius * 1.6, radius * 2.4) : new THREE.CylinderGeometry(radius * 1.4, radius * 1.4, radius * 1.6, 24), tip);
+        body.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), stem);
+      }
     } else if (n.kind === "flange" || n.kind === "gasket") {
       const axis = (
         ports[0]?.point.clone().sub(center) ??

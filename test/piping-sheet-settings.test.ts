@@ -232,11 +232,11 @@ test('the settings panel renders every section for a multi-sheet drawing', () =>
     doc: d, commit: () => true, onError: () => {}, spool: 'SP-002', selectedNodeId: d.nodes[0].id
   }));
   for (const text of ['Sheet', 'Sheets', 'Title block', 'Revisions', 'Logos', 'Plant coordinates', 'General notes',
-    'Centreline lengths', 'Not to scale (production)', 'CAD (ROMANS)', 'Weld numbers on sheet', 'Press. (kPa)',
-    'Company logo', 'Client logo', 'Set from selected point', 'Long notes continue above the title block.'])
+    'Centreline lengths', 'Not to scale (NTS)', 'CAD (ROMANS)', 'Weld numbers on the sheet', 'Press. (kPa)',
+    'Company logo', 'Client logo', 'Set from the selected TP-1', 'Long notes continue above the title block.', 'Overrides (advanced)'])
     assert.ok(html.includes(text), text);
   assert.ok(html.includes('placeholder="ISO-7-2"'));
-  assert.match(html, /iso-sheet-card current" aria-current="true"><div class="iso-sheet-card-head"><strong>SP-002/);
+  assert.ok(html.includes('SP-002 · shown'), 'the shown sheet is marked');
   assert.equal((html.match(/<img /g) ?? []).length, 1);
   assert.ok(html.includes('accept="image/png,image/jpeg,image/svg+xml"'));
   const imperial = renderToStaticMarkup(createElement(SheetSettings, {
@@ -244,5 +244,5 @@ test('the settings panel renders every section for a multi-sheet drawing', () =>
   }));
   assert.ok(imperial.includes('Press. (psig)') && imperial.includes('Temp. (°F)'));
   assert.ok(imperial.includes('Revision B'));
-  assert.ok(!imperial.includes('Set from selected point'));
+  assert.ok(!imperial.includes('Set from the selected'));
 });

@@ -53,8 +53,12 @@ test('PCF olets sit on the header centreline at its bore, with the outlet clear 
   // The outlet stands its height plus the root gap under it off the header outside.
   const pcf = exportPcf(doc), reach = 168.3 / 2 + doc.specs[0].rootGap + 27;
   const block = pcf.split(/\n(?=\S)/).find(b => b.startsWith('OLET'))!;
-  assert.match(block, /\n {4}CENTRE-POINT 1000\.0000 0\.0000 0\.0000 6 /);
+  // Nominal bores in the drawing's size notation: NPS by default, DN where the drawing lists DN.
+  assert.match(block, /\n {4}CENTRE-POINT 1000\.0000 0\.0000 0\.0000 6\n/);
   assert.match(block, new RegExp(`\\n {4}BRANCH1-POINT 1000\\.0000 0\\.0000 ${reach.toFixed(4).replace('.', '\\.')} 1 SW`));
+  doc.profile = { ...doc.profile, sizeNotation: 'DN' };
+  assert.match(exportPcf(doc), /\n {4}CENTRE-POINT 1000\.0000 0\.0000 0\.0000 150\n {4}BRANCH1-POINT [\d.]+ [\d.]+ [\d.]+ 25 SW/);
+  delete doc.profile;
   assert.doesNotMatch(block, /END-POINT/);
   // The branch pipe starts at the outlet.
   assert.ok(pcf.includes(`END-POINT 1000.0000 0.0000 ${reach.toFixed(4)} 1 SW`));
@@ -66,5 +70,5 @@ test('PCF olets sit on the header centreline at its bore, with the outlet clear 
   assert.ok(Math.abs(takeout(back, restored, branch[0].id)! - reach) < 1e-6);
   // A takeout the drafter entered is from the header centreline already.
   olet.takeout = 120;
-  assert.match(exportPcf(doc), /BRANCH1-POINT 1000\.0000 0\.0000 120\.0000 1 SW/);
+  assert.match(exportPcf(doc, { boreUnits: 'INCH' }), /BRANCH1-POINT 1000\.0000 0\.0000 120\.0000 1 SW/);
 });

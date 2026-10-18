@@ -6,6 +6,8 @@ export interface StoredDrawing {
   updatedAt: number;
   /** Native desktop location, retained when reopening a drawing from Recent. */
   path?: string;
+  /** This copy has edits its file on disk does not: a recovery copy, offered as unsaved when reopened. */
+  unsaved?: boolean;
 }
 
 const open = () =>

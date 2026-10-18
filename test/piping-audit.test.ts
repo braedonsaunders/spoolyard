@@ -3,10 +3,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   newIso, appendRun, applyComponent, attachComponent, insertComponent,
-  setAutoFitting, resizeRun, validateIso, runResult, welds, bom,
+  setAutoFitting, resizeRun, validateIso, runResult, welds, bom, getNode,
   parseLength, formatLength, parseIsoJson, preferredFitting, defaultEndPrep,
 } from '../src/core/model.ts';
-import { exportPcf, importPcf } from '../src/core/pcf.ts';
+import { exportPcf, exportPcfPackage, importPcf } from '../src/core/pcf.ts';
+/** A PCF read back with the .piping sidecar it was exported with. */
+const pcfRoundTrip = (doc: Parameters<typeof exportPcf>[0]) => { const pkg = exportPcfPackage(doc); return importPcf(pkg.pcf, { sidecar: pkg.sidecar }); };
 import { createDrawing } from '../src/core/drawing.ts';
 import { isometricDxf, readIsometric } from '../src/core/document.ts';
 import { namespaceSpec } from '../src/editor/library.ts';
@@ -29,7 +31,9 @@ test('signed metric and imperial offsets keep direction and accept common trade 
   assert.equal(parseLength('−2\'-3 1/2"', 'imperial', true), -698.5);
   assert.ok(Math.abs(parseLength('1-1/2"', 'mm') - 38.1) < 1e-9);
   assert.equal(parseLength('.5', 'mm'), .5);
-  assert.equal(parseLength('1/2', 'mm'), .5);
+  // A bare fraction has no millimetre meaning: on a metric drawing it needs its unit.
+  assert.throws(() => parseLength('1/2', 'mm'), /unit/);
+  assert.ok(Math.abs(parseLength('1/2"', 'mm') - 12.7) < 1e-9);
   assert.equal(parseLength('1.2 M', 'mm'), 1200);
   assert.throws(() => parseLength('-100', 'mm'), /positive/);
   assert.throws(() => parseLength('9'.repeat(400), 'mm'), /finite/);
@@ -153,7 +157,7 @@ test('a weld-neck flange inserted in a pipe is a bolted pair with one gasket and
   const expected = 1000 - 2 * (63.5 + 3.17 / 2) - 6;
   assert.ok(Math.abs(doc.runs.reduce((sum, r) => sum + runResult(doc, r).cut, 0) - expected) < 1e-9);
   assert.equal(welds(doc).length, 2);
-  const restored = importPcf(exportPcf(doc)).doc;
+  const restored = pcfRoundTrip(doc).doc;
   assert.ok(Math.abs(restored.runs.reduce((sum, r) => sum + runResult(restored, r).cut, 0) - expected) < 1e-6);
 });
 
@@ -203,7 +207,7 @@ test('PCF round trip retains the catalogue, measured fabrication values and draw
   appendRun(doc, j.id, [0, 1000, 0], 'CS40', 2, 'SP', 'L');
   j.heat = 'ELBOW-HEAT'; j.unitCost = 12; j.laborHours = .5;
   doc.title = 'Pump tie-in'; doc.customer = 'Customer'; doc.units = 'imperial'; doc.weldNumbering = 'alphabetic';
-  const restored = importPcf(exportPcf(doc)).doc;
+  const restored = pcfRoundTrip(doc).doc;
   const bend = restored.nodes.find(n => n.kind === 'elbow90')!;
   assert.equal(bend.catalogId, j.catalogId);
   assert.equal(bend.heat, j.heat);
@@ -222,12 +226,18 @@ test('PCF cannot silently turn a missing fitting dimension into zero', () => {
   assert.throws(() => exportPcf(doc), /missing fitting takeouts/);
 });
 
-test('direct fitting connectors consume no pipe root gap', () => {
+test('fittings welded face to face share one root gap, and must stand that gap apart', () => {
   const doc = newIso(); appendRun(doc, null, [200, 0, 0], 'CS40', 2, 'SP', '');
   doc.nodes.forEach(n => { n.kind = 'valve'; n.takeout = 100; });
   doc.runs[0].connector = true;
-  assert.deepEqual(runResult(doc, doc.runs[0]).gaps, [0, 0]);
+  // The 3 mm root gap is split between the two faces, so faces touching leave the joint 3 mm short.
+  assert.deepEqual(runResult(doc, doc.runs[0]).gaps, [1.5, 1.5]);
+  assert.equal(runResult(doc, doc.runs[0]).cut, -3);
+  assert.match(validateIso(doc).join(), /welded face to face.*3 mm apart \(the root gap\)/);
+  getNode(doc, doc.runs[0].to).position = [203, 0, 0];
   assert.equal(runResult(doc, doc.runs[0]).cut, 0);
+  assert.doesNotMatch(validateIso(doc).join(), /face to face/);
+  assert.equal(welds(doc).length, 1);
 });
 
 test('pipe material schedules use the size-specific schedule and grade', () => {

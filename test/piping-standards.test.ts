@@ -25,7 +25,11 @@ const DELIBERATE: Array<{ key: RegExp; nps?: number[]; reason: string }> = [
   { key: /\/SC-R?CRS\/(takeout|branchTakeout)$/, reason: 'library threaded crosses are shorter than its own tees; B16.11 crosses share the tee centre-to-end' },
   { key: /\/[FH]-CPLGSC\/(takeout|faceToFace)$/, reason: 'library threaded couplings reuse the socket-weld coupling length; B16.11 threaded coupling length W (48 mm at NPS 1/2) gives a longer effective takeout' },
   { key: /^d1\/CHECK-FL\/(takeout|faceToFace)$/, reason: 'spec D1 lists manufacturer check-valve lengths (its duplicate rows disagree with each other); B16.10 Class 900 check valves take the gate length' },
-  { key: /^d1\/WOL\/takeout$/, nps: [6, 8, 10, 12], reason: 'spec D1 lists standard-weight weldolets on its Schedule 80 branches; an extra-strong weldolet suits a wall heavier than standard' }
+  { key: /^d1\/WOL\/takeout$/, nps: [6, 8, 10, 12], reason: 'spec D1 lists standard-weight weldolets on its Schedule 80 branches; an extra-strong weldolet suits a wall heavier than standard' },
+  { key: /\/(SOL|UNION-SW)\/(takeout|socketDepth)$/, reason: 'library sockolets and socket-weld unions take the B16.11 minimum socket depth J while its socket-weld fittings take the deeper as-made depth; one as-made depth is used for every socket-weld item so derived takeouts agree' },
+  { key: /\/FLG-RFSO\/takeout$/, reason: 'library slip-on set-backs are the full pipe wall plus 1/16 in on heavy walls; ASME B31.3 Fig. 328.5.2B limits the set-back to the lesser of the wall and 1/4 in' },
+  { key: /^(c|d1)\/W-CAP\/takeout$/, reason: 'library caps keep length E on walls heavier than the B16.9 limiting (XS) wall; ASME B16.9 gives the longer E1 there' },
+  { key: /^c\/CHECK-FL\/(takeout|faceToFace)$/, nps: [24], reason: 'spec C lists a 55-1/2 in Class 600 NPS 24 swing check (a manufacturer length); ASME B16.10 gives 55 in' }
 ];
 
 test('rating classes parse from every spec spelling', () => {
@@ -36,7 +40,8 @@ test('rating classes parse from every spec spelling', () => {
   assert.equal(ratingClass(900), 900);
 });
 
-test('production reference bolting anchors', () => {
+// The lug-bolt anchors used to be fitted to one client's sheets (a -1/2 in fudge): they now follow the stated method.
+test('pair studs are the B16.5 table; lap-joint, lug and wafer bolting follow the stated B16.5 bolt-length method', () => {
   const b = (nps: number, makeup: Parameters<typeof bolting>[3], opts?: Parameters<typeof bolting>[4]) => {
     const r = bolting(nps, '150#', makeup === 'flange-pair' ? 'RF' : 'FF', makeup, opts)!;
     return [r.count, inch(r.diameter), inch(r.length), r.kind];
@@ -44,15 +49,26 @@ test('production reference bolting anchors', () => {
   assert.deepEqual(b(2, 'flange-pair'), [4, 0.625, 3.25, 'stud']);
   assert.deepEqual(b(3, 'flange-pair'), [4, 0.625, 3.5, 'stud']);
   assert.deepEqual(b(2, 'lj-pair'), [4, 0.625, 3.25, 'stud']);
-  // Production set: Sch 10S stub-end laps with 1/16 in PTFE gaskets keep NPS 3 LJ pairs at 3-1/2 in.
+  assert.match(bolting(2, '150#', 'FF', 'lj-pair')!.assumed!, /STD-wall stub-end laps/);
+  // Sch 10S stub-end laps with 1/16 in gaskets keep NPS 3 LJ pairs at 3-1/2 in.
   assert.deepEqual(b(3, 'lj-pair', { lap: pipeWall(3, '10S'), gasket: gasketThickness('sheet-1/16') }), [4, 0.625, 3.5, 'stud']);
+  assert.equal(bolting(3, '150#', 'FF', 'lj-pair', { lap: pipeWall(3, '10S') })!.assumed, undefined);
+  // One side of a lug body: the pair method less 1/2 in, at most one flange, nut and the 0.12 in gasket allowance plus
+  // half the API 609 body and 1/4 in; up to the next 1/4 in. 2-3/4 in at NPS 2 and 3-1/4 in at NPS 3 are the lengths
+  // issued Class 150 sets buy; on the B16.5 basis, neither the gasket nor a lap moves them.
+  const up = (v: number) => Math.ceil(v * 4 - 1e-9) / 4;
+  assert.deepEqual(b(2, 'lug-valve-side'), [4, 0.625, up(Math.min(2 * (0.75 + 0.12 + 0.625) + 0.12 + 0.06 - 0.5, 0.75 + 0.12 + 0.12 + 43 / 50.8 + 0.625 + 0.06 + 0.25)), 'lug']);
   assert.deepEqual(b(2, 'lug-valve-side'), [4, 0.625, 2.75, 'lug']);
   assert.deepEqual(b(3, 'lug-valve-side'), [4, 0.625, 3.25, 'lug']);
+  assert.deepEqual(b(3, 'lug-valve-side', { body: 47, gasket: gasketThickness('sheet-1/16'), lap: pipeWall(3, '10S') }), [4, 0.625, 3.25, 'lug']);
+  assert.equal(inch(bolting(2, '150#', 'RF', 'lug-valve-side')!.length), 2.75);
+  assert.match(bolting(2, '150#', 'RF', 'lug-valve-side')!.source, /lug-body convention/);
   assert.equal(bolting(2, '150#', 'RF', 'wafer-valve')!.count, 4);
   assert.ok(bolting(2, '150#', 'RF', 'wafer-valve')!.length > bolting(2, '150#', 'RF', 'flange-pair')!.length);
   assert.equal(bolting(2, '600#', 'FF', 'flange-pair'), undefined);
   assert.equal(bolting(2, '2500#', 'RF', 'flange-pair'), undefined);
-  assert.equal(bolting(2, 'Project specified', 'RF', 'flange-pair')!.length, 82.55, 'no class in the spec means Class 150');
+  // Previously a rating without a class silently meant Class 150.
+  assert.equal(bolting(2, 'Project specified', 'RF', 'flange-pair'), undefined, 'no class, no standard bolting');
 });
 
 test('lug bolts are shorter than a flange-pair stud yet engage the lug by at least one diameter; wafer studs span the valve', () => {
@@ -91,9 +107,14 @@ test('standard rows cover every class and the common codes, and unknown sizes st
   assert.equal(standardRow('GATE-FL', 2, '150#')!.takeout, 88.9);
   assert.equal(standardRow('BFLY', 2, '150#')!.faceToFace, standardRow('BFLY-WAFER', 2, '150#')!.faceToFace);
   // Effective small-bore takeouts: socket bottom, or centre-to-end less thread engagement.
-  near(standardRow('SW-90ELL', 1, '150#')!.takeout, 22.22);
+  near(standardRow('SW-90ELL', 1, undefined, undefined, undefined, { forgedClass: 3000 })!.takeout, 22.22);
   near(standardRow('SC-90ELL', 1, '3000#')!.takeout, 44 - 17.46);
-  assert.equal(standardRow('SW-90ELL', 1, '900#')!.description, 'ELBOW 90 SW 6000#');
+  // The forged class is no longer guessed from the flange class (900# used to mean 6000#): it is given, or follows the
+  // pipe wall by ASME B16.11 Table 2 with the assumption stated.
+  assert.equal(standardRow('SW-90ELL', 1, '900#'), undefined);
+  const heavy = standardRow('SW-90ELL', 1, '900#', undefined, 'SCH 160')!;
+  assert.equal(heavy.description, 'ELBOW 90 SW 6000#');
+  assert.match(heavy.assumed!, /B16\.11 Table 2/);
 });
 
 test('every standard component code resolves at NPS 2 Class 150 with the catalogue kind', () => {
@@ -107,8 +128,10 @@ test('every standard component code resolves at NPS 2 Class 150 with the catalog
     ['PLUG-FL'], ['BFLY'], ['BFLY-LUG'], ['BFLY-WAFER'], ['STUB-END'], ['STUB-END-SHORT']
   ];
   for (const [code, small] of codes) {
-    const row = standardRow(code, 2, '150#', small);
+    // XS pipe: Class 3000 socket-weld and Class 2000 threaded fittings by ASME B16.11 Table 2.
+    const row = standardRow(code, 2, '150#', small, 'XS');
     assert.ok(row && Number.isFinite(row.takeout) && row.takeout >= 0 && row.source, code);
+    assert.ok(row.assumed == null || typeof row.assumed === 'string', code);
     const type = COMPONENT_TYPE_BY_CODE[code];
     if (type) assert.equal(row.kind, type.kind, code);
     if (small) assert.equal(row.smallerNps, small, code);
@@ -150,7 +173,8 @@ test('valve, fitting and small-bore spot values', () => {
   assert.equal(standardRow('W-RTEE', 24, undefined, 20)!.branchTakeout, 431.8);
   assert.equal(standardRow('W-3D45ELL', 4)!.takeout, 127);
   assert.equal(standardRow('LR180R', 4)!.takeout, 152.4);
-  assert.deepEqual(stubEnd(2, true), { length: 63.5, lapOd: 92.07, lapThickness: 2.77, short: true });
+  assert.deepEqual(stubEnd(2, true), { length: 63.5, lapOd: 92.07, lapThickness: 2.77, short: true, schedule: '10S', assumed: 'the stub-end lap uses the 10S wall because no pipe schedule was given' });
+  assert.deepEqual(stubEnd(2, true, '10S'), { length: 63.5, lapOd: 92.07, lapThickness: 2.77, short: true, schedule: '10S' });
   assert.equal(stubEnd(2, false, 'XS')!.lapThickness, 5.54);
   assert.equal(pipeWall(2, 'SCH.80'), 5.54);
   assert.equal(pipeWall(12, 'SCH 40'), 10.31);
@@ -159,7 +183,8 @@ test('valve, fitting and small-bore spot values', () => {
   near(standardRow('SW-90ELL', 0.5, '6000#')!.takeout, 19.05);
   near(standardRow('SC-90ELL', 0.5, '2000#')!.takeout, 28 - 12.7);
   near(standardRow('SW-RTEE', 1.5, '3000#', 0.75)!.branchTakeout!, 36.51);
-  near(standardRow('UNION-SW', 0.5, '3000#')!.takeout, 17.46);
+  // Union laying length less two as-made socket depths (the same depth every socket-weld item uses).
+  near(standardRow('UNION-SW', 0.5, '3000#')!.takeout, (53.98 - 2 * 12.7) / 2);
   near(standardRow('F-CPLGSW', 0.5, '3000#')!.takeout, 4.76);
   assert.equal(gasketThickness('sheet-1/16'), 1.59);
   assert.equal(standardRow('GASK-FF', 2, '600#'), undefined, 'no full-face flanges above Class 300');
