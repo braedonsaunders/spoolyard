@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { budget } from './perf-budget';
 import { createDrawing, type Drawing } from '../src/core/drawing';
 import { forgetEarlierDrawings } from '../src/core/iso/render';
 import { appendRun, applyComponent, attachComponent, clone, insertComponent, newIso, type IsoDocument } from '../src/core/model';
@@ -79,8 +80,8 @@ test('moving a label on a crowded sheet does not lay it out again', () => {
   }
   const nudge = Math.min(...times);
   // About 200 ms drawn from nothing and 70 ms a nudge on a 2024 laptop.
-  assert.ok(fresh < 3000, `drawn from nothing in ${fresh.toFixed(0)} ms`);
-  assert.ok(nudge < 1000, `a nudge redrawn in ${nudge.toFixed(0)} ms`);
+  assert.ok(fresh < budget(3000), `drawn from nothing in ${fresh.toFixed(0)} ms`);
+  assert.ok(nudge < budget(1000), `a nudge redrawn in ${nudge.toFixed(0)} ms`);
   assert.ok(nudge < fresh * 0.8, `a nudge (${nudge.toFixed(0)} ms) redraws faster than a drawing from nothing (${fresh.toFixed(0)} ms)`);
 });
 
@@ -96,5 +97,5 @@ test('a hundred-pipe sheet redraws an edit within the editing budget', () => {
     times.push(performance.now() - t);
   }
   // About 230 ms on a 2024 laptop: a hundred pipes on one tabloid sheet, crowded past legibility.
-  assert.ok(Math.min(...times) < 3000, `${Math.min(...times).toFixed(0)} ms`);
+  assert.ok(Math.min(...times) < budget(3000), `${Math.min(...times).toFixed(0)} ms`);
 });

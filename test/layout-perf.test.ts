@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { budget } from './perf-budget';
 import { createDrawing } from '../src/core/drawing';
 import { appendRun, attachComponent, insertComponent, newIso } from '../src/core/model';
 
@@ -36,8 +37,8 @@ test('a 300-pipe job draws every sheet promptly', () => {
   }
   const total = times.reduce((a, b) => a + b, 0);
   // About 75 ms a sheet (a fifth of it the whole job's weld numbering) on a 2024 laptop.
-  assert.ok(total < 4000, `all sheets in ${total.toFixed(0)} ms`);
-  assert.ok(Math.max(...times) < 600, `slowest sheet ${Math.max(...times).toFixed(0)} ms`);
+  assert.ok(total < budget(4000), `all sheets in ${total.toFixed(0)} ms`);
+  assert.ok(Math.max(...times) < budget(600), `slowest sheet ${Math.max(...times).toFixed(0)} ms`);
 });
 
 test('a sheet of thirty pipes redraws at interactive speed', () => {
@@ -47,7 +48,7 @@ test('a sheet of thirty pipes redraws at interactive speed', () => {
   for (let i = 0; i < 5; i++) createDrawing(doc, 'S0');
   const ms = (performance.now() - t) / 5;
   // About 30 ms on a 2024 laptop.
-  assert.ok(ms < 250, `${ms.toFixed(0)} ms a redraw`);
+  assert.ok(ms < budget(250), `${ms.toFixed(0)} ms a redraw`);
 });
 
 test('three hundred pipes on one sheet, crowded past legibility, still draw in seconds', () => {
@@ -55,7 +56,7 @@ test('three hundred pipes on one sheet, crowded past legibility, still draw in s
   const t = performance.now(), d = createDrawing(doc, 'S0'), ms = performance.now() - t;
   assert.ok(d.notices?.some(n => n.kind === 'crowded'), 'reported crowded');
   // About 2 s on a 2024 laptop; a sheet this crowded is drawn once rather than decluttered.
-  assert.ok(ms < 10000, `${ms.toFixed(0)} ms`);
+  assert.ok(ms < budget(10000), `${ms.toFixed(0)} ms`);
 });
 
 test('a sheet of a dozen pipes, the size of an issued spool, draws in well under a second', () => {
@@ -64,5 +65,5 @@ test('a sheet of a dozen pipes, the size of an issued spool, draws in well under
   const t = performance.now();
   createDrawing(doc, 'S0');
   const ms = performance.now() - t;
-  assert.ok(ms < 250, `${ms.toFixed(0)} ms`);
+  assert.ok(ms < budget(250), `${ms.toFixed(0)} ms`);
 });
