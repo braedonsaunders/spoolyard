@@ -8,6 +8,7 @@ import { forgetEarlierDrawings } from '../src/core/iso/render';
 import { letteringShapes } from '../src/core/iso/declutter';
 import { bbox, BoxIndex, overlaps, type Poly } from '../src/core/iso/placement';
 import { countSearch, leanSearch, LEAN_AFTER } from '../src/core/iso/context';
+import { budget } from './perf-budget';
 
 type Text = Extract<Primitive, { type: 'text' }>;
 
@@ -145,6 +146,6 @@ test('label search on a hopeless sheet is bounded by what searches found, so it 
     assert.equal(ink(createDrawing(next, 'S0')), ink(cold), `edit ${k}, again`);
     assert.deepEqual(overprints(warm), []);
     // Generous: catches a search that stopped being bounded, not a slow machine.
-    assert.ok(ms < 2000, `${ms.toFixed(0)} ms`);
+    assert.ok(ms < budget(2000), `${ms.toFixed(0)} ms`);
   }
 });

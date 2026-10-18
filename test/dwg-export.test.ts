@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { appendRun, insertComponent, newIso, type IsoDocument } from '../src/core/model.ts';
 import { isometricDxf } from '../src/core/document.ts';
+import { budget } from './perf-budget';
 
 // The DWG writer's own files, as the worker loads them (plain JavaScript beside the WebAssembly).
 const asset = (name: string) => new URL(`../public/dwg-export/${name}`, import.meta.url);
@@ -101,5 +102,5 @@ test('the LibreDWG writer converts a drawing with a large stored model quickly a
   const dwg = writer.FS.readFile('/output.dwg');
   assert.equal(new TextDecoder().decode(dwg.subarray(0, 6)), 'AC1015');
   // Without the NUL-ended text this took over 20 s; it is well under a second.
-  assert.ok(ms < 5000, `${Math.round(ms)} ms`);
+  assert.ok(ms < budget(5000), `${Math.round(ms)} ms`);
 });

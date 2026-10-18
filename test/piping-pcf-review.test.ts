@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { getNode, type PipeNode } from '../src/core/model.ts';
 import { exportPcf, importPcf } from '../src/core/pcf.ts';
+import { budget } from './perf-budget';
 
 // Hand-written PCFs with invented data.
 const head = (bore = 'MM') => `UNITS-BORE ${bore}\nUNITS-CO-ORDS MM\nPIPELINE-REFERENCE L1\n    PIPING-SPEC A1\n`;
@@ -80,5 +81,5 @@ test('supports are placed on their pipes promptly in a large PCF', () => {
   const supports = doc.nodes.filter((n: PipeNode) => n.kind === 'support');
   assert.equal(supports.length, 300);
   assert.ok(supports.every(s => { const r = doc.runs.find(r => r.id === s.associatedRunId)!; return getNode(doc, r.from).position[0] <= s.position[0] && s.position[0] <= getNode(doc, r.to).position[0]; }));
-  assert.ok(ms < 4000, `${ms.toFixed(0)} ms`);
+  assert.ok(ms < budget(4000), `${ms.toFixed(0)} ms`);
 });

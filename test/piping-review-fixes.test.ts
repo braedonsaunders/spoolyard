@@ -4,6 +4,7 @@ import {
   appendRun, applyComponent, clone, getNode, insertComponent, newIso, removeComponent, runResult, welds, type IsoDocument
 } from '../src/core/model.ts';
 import { draftLength, formatLength, coordinateText } from '../src/core/format.ts';
+import { budget } from './perf-budget';
 
 // Invented data throughout.
 const inch = (v: number) => v * 25.4;
@@ -67,10 +68,10 @@ test('the welds of a 300-pipe job are found in linear time and kept for an uncha
   const fresh = performance.now() - t;
   assert.ok(all.length > 400);
   // About 3 ms on a 2024 laptop; the scanning version took about 20 ms.
-  assert.ok(fresh < 60, `${fresh.toFixed(1)} ms`);
+  assert.ok(fresh < budget(60), `${fresh.toFixed(1)} ms`);
   t = performance.now();
   for (let i = 0; i < 10; i++) assert.deepEqual(welds(copy), all);
-  assert.ok((performance.now() - t) / 10 < 30);
+  assert.ok((performance.now() - t) / 10 < budget(30));
   // The result handed out is the caller's own: changing it does not change the next answer.
   welds(copy)[0].tag = 'XX';
   assert.equal(welds(copy)[0].tag, all[0].tag);

@@ -540,6 +540,9 @@ interface LayoutCache {
   fits: Map<string, { fit: SheetFit; placed: PlacedNodes; fits: boolean; base: number; layout: Layout; legs: Record<string, number>; lattice: PaperLattice | undefined; state: string }>
 }
 const layoutCaches = new Map<string, LayoutCache>()
+let laidAnew = 0
+/** How many drawings so far had to lay their sheet out anew, rather than use a layout an earlier drawing found. */
+export const layoutsLaidAnew = () => laidAnew
 /** Layouts kept, by drawing layout; and steps kept for one, past which it starts over. */
 const LAYOUTS_KEPT = 4, STEPS_KEPT = 96
 /**
@@ -552,7 +555,7 @@ function layoutCache(doc: IsoDocument, spool: string, sheet: unknown[]): LayoutC
   const key = JSON.stringify([sharedContent(doc), doc.runs, doc.nodes, spool, doc.sheets?.[spool]?.nodePositions ?? null, sheet])
   let cache = layoutCaches.get(key)
   if (cache) layoutCaches.delete(key)
-  else cache = { fills: new Map(), placed: new Map(), fits: new Map() }
+  else { cache = { fills: new Map(), placed: new Map(), fits: new Map() }; laidAnew++ }
   for (const m of [cache.fills, cache.placed, cache.fits] as Array<Map<string, unknown>>) if (m.size > STEPS_KEPT) m.clear()
   layoutCaches.set(key, cache)
   if (layoutCaches.size > LAYOUTS_KEPT) layoutCaches.delete(layoutCaches.keys().next().value!)

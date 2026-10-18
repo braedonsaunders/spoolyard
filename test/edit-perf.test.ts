@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { budget } from './perf-budget';
 import { createDrawing, type Drawing } from '../src/core/drawing';
-import { forgetEarlierDrawings } from '../src/core/iso/render';
+import { forgetEarlierDrawings, layoutsLaidAnew } from '../src/core/iso/render';
 import { appendRun, applyComponent, attachComponent, clone, insertComponent, newIso, type IsoDocument } from '../src/core/model';
 
 /**
@@ -70,6 +70,7 @@ test('moving a label on a crowded sheet does not lay it out again', () => {
   createDrawing(clone(doc), 'S0');
   const fresh = performance.now() - t;
   const times: number[] = [];
+  let before = 0;
   for (let i = 0; i < 4; i++) {
     const next = clone(doc);
     edits[0][1](next, first);
@@ -77,12 +78,14 @@ test('moving a label on a crowded sheet does not lay it out again', () => {
     t = performance.now();
     createDrawing(next, 'S0');
     times.push(performance.now() - t);
+    if (i === 0) before = layoutsLaidAnew();
   }
-  const nudge = Math.min(...times);
+  const relaid = layoutsLaidAnew() - before, nudge = Math.min(...times);
   // About 200 ms drawn from nothing and 70 ms a nudge on a 2024 laptop.
   assert.ok(fresh < budget(3000), `drawn from nothing in ${fresh.toFixed(0)} ms`);
   assert.ok(nudge < budget(1000), `a nudge redrawn in ${nudge.toFixed(0)} ms`);
-  assert.ok(nudge < fresh * 0.8, `a nudge (${nudge.toFixed(0)} ms) redraws faster than a drawing from nothing (${fresh.toFixed(0)} ms)`);
+  // Counted, not timed: a shared runner's noise can't make this fail, only a layout laid out again.
+  assert.equal(relaid, 0, 'once the sheet is laid out, moving labels never lays it out again');
 });
 
 test('a hundred-pipe sheet redraws an edit within the editing budget', () => {
