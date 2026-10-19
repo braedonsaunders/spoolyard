@@ -493,6 +493,22 @@ export function SheetSettings({
             <option value="FW">FW, as a field weld</option>
           </select>
         </Field>
+        <Field label="Flanged component gaskets">
+          <select aria-label="Gasket dimension span" value={style.gasketSpan ?? "component"}
+            title="Which dimension a flanged valve's gaskets are included in. Cut lengths are the same either way."
+            onChange={(e) => setStyle({ gasketSpan: e.target.value === "component" ? undefined : "pipe" })}>
+            <option value="component">In the component span (mating faces)</option>
+            <option value="pipe">In the pipe span (body faces)</option>
+          </select>
+        </Field>
+        <Field label="Flange pair on a fitting">
+          <select aria-label="Fitting flange pair gasket span" value={style.fittingGasketSpan ?? "pipe"}
+            title="Which dimension the gasket of a flange pair welded straight onto a fitting is included in. Cut lengths are the same either way."
+            onChange={(e) => setStyle({ fittingGasketSpan: e.target.value === "pipe" ? undefined : "fitting" })}>
+            <option value="pipe">Gasket in the pipe span</option>
+            <option value="fitting">Gasket in the fitting make-up</option>
+          </select>
+        </Field>
         <Field label="Material list">
           <select aria-label="Material list placement" value={style.materialList ?? "auto"}
             title="Automatic: on the drawing sheet, unless it leaves a not-to-scale drawing too little room to be drawn at full size; then on a sheet of its own after the drawing"

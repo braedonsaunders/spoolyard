@@ -18,9 +18,9 @@ export function ProfileSettings({ doc, commit, onError }: { doc: IsoDocument; co
     if (Object.keys(p).length) d.profile = p;
     else delete d.profile;
   });
-  const length = (key: "stockLength" | "orderIncrement" | "kerf" | "bendAllowance", label: string, hint: string) => (
+  const length = (key: "stockLength" | "orderIncrement" | "kerf" | "bendAllowance" | "uncutTolerance", label: string, hint: string) => (
     <Row label={label} keywords="profile pipe order cut" hint={hint} modified={own[key] != null} onReset={() => set(key, undefined)}>
-      <LengthInput aria={label} mm={own[key]} units={units} allowEmpty positive={key === "stockLength"} placeholder={lengthInputValue(resolved[key], units)} onError={onError}
+      <LengthInput aria={label} mm={own[key]} units={units} allowEmpty positive={key === "stockLength"} precision={key === "uncutTolerance" ? "fine" : undefined} placeholder={lengthInputValue(resolved[key], units, key === "uncutTolerance" ? "fine" : undefined)} onError={onError}
         onCommit={(v) => set(key, v)} />
     </Row>
   );
@@ -37,6 +37,7 @@ export function ProfileSettings({ doc, commit, onError }: { doc: IsoDocument; co
       {length("stockLength", "Stock pipe length", "Random length pipe is bought in; longer pieces are flagged. A specification's own stock length takes precedence.")}
       {length("orderIncrement", "Order rounding", "Ordered pipe length is rounded up to this; zero orders the exact length.")}
       {length("kerf", "Saw kerf", "Allowed between pieces cut from one length.")}
+      {length("uncutTolerance", "Full-length tolerance", "A piece within this of the stock length is used as it comes and listed as not cut.")}
       {length("bendAllowance", "Bend allowance", "Extra length per formed bend, for grip or springback.")}
       <Row label="Field-fit makeup" keywords="field fit ffw trim" hint="Extra pipe left at each field-fit weld, trimmed on site." modified={doc.fieldFitMakeup != null}
         onReset={() => commit((d) => setFieldFitMakeup(d, undefined))}>

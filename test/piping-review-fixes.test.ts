@@ -103,31 +103,35 @@ test('the field-fit note follows the drawing units and profile, and is left off 
   assert.deepEqual(flag().map(p => p.type === 'text' && p.text), ['FFW\n+4" FIT-UP']);
 });
 
-test('lug-bolt lengths are a stated convention, surfaced as an assumption with every assumption it rests on', async () => {
-  const { bolting, LUG_CONVENTION } = await import('../src/core/standards.ts');
-  for (const opts of [{}, { body: 50 }, { tapped: true }]) {
+test('lug-bolt lengths are calculated by the stated tapped-body rule, never raised as assumptions', async () => {
+  const { bolting } = await import('../src/core/standards.ts');
+  for (const opts of [{}, { body: 50 }, { tapped: true }, { type: 'machine' as const }]) {
     const lug = bolting(2, '150#', 'RF', 'lug-valve-side', opts)!;
-    assert.match(lug.source, /convention/);
-    assert.doesNotMatch(lug.source, /^ASME/);
-    assert.ok(lug.assumed?.includes(LUG_CONVENTION), JSON.stringify(opts));
+    assert.equal(lug.basis, 'calculated');
+    assert.match(lug.source, /^calculated by the tapped-body rule/);
+    assert.equal(lug.assumed, undefined, JSON.stringify(opts));
   }
-  // The category of the API 609 body the length rests on is still said alongside.
-  assert.match(bolting(2, '150#', 'RF', 'lug-valve-side')!.assumed!, /Category A/);
+  // An API 609 category is said only where it decides the length: here two diameters (31.75 mm) would pass half of the
+  // assumed Category A body (43 mm / 2 = 21.5 mm), so the half-body limit, and so the category, sets the engagement.
+  const limited = bolting(2, '150#', 'RF', 'lug-valve-side', { engagement: 2 })!;
+  assert.match(limited.source, /half the 43 mm body/);
+  assert.match(limited.assumed!, /Category A/);
   // A pair stud is the B16.5 table, and assumes nothing.
+  assert.equal(bolting(2, '150#', 'RF', 'flange-pair')!.basis, 'standard');
   assert.equal(bolting(2, '150#', 'RF', 'flange-pair')!.assumed, undefined);
-  // A flange bolted to a lug mate off the drawing says both what body it assumed and that the length is a convention.
+  // A flange bolted to a lug mate off the drawing: lug bolts, calculated, with no assumption about the mate's body.
   const { flangedJoints } = await import('../src/core/joints.ts');
+  const { fabricationWarnings } = await import('../src/core/review.ts');
   const doc = line();
   const end = getNode(doc, doc.runs[0].from);
   applyComponent(doc, end, 'FLG-RFWN');
   end.jointSupply = { gasket: true, bolts: true, mate: 'lug' };
   const joint = flangedJoints(doc).find(j => j.nodeId === end.id)!;
-  assert.equal(joint.bolts!.kind, 'lug');
-  assert.ok(joint.assumed.some(a => /API 609 lug butterfly body/.test(a)));
-  assert.ok(joint.assumed.some(a => /Category A/.test(a)));
-  assert.ok(joint.assumed.includes(LUG_CONVENTION));
-  // Each assumption is listed whole, never split into fragments at its own punctuation.
-  assert.ok(joint.assumed.every(a => /assumed|convention|because/.test(a)), JSON.stringify(joint.assumed));
+  assert.deepEqual([joint.bolts!.kind, joint.bolts!.basis, joint.bolts!.assumed], ['lug', 'calculated', undefined]);
+  assert.ok(!joint.assumed.some(a => /lug|API 609|Category|convention/i.test(a)), JSON.stringify(joint.assumed));
+  assert.ok(!fabricationWarnings(doc).some(w => /lug-bolt|API 609|bolting chart|convention|confirm/i.test(w)), fabricationWarnings(doc).join('\n'));
+  // Each assumption that is made is listed whole, never split into fragments at its own punctuation.
+  assert.ok(joint.assumed.every(a => /assumed|because/.test(a)), JSON.stringify(joint.assumed));
 });
 
 test('names every object answers to are no template bindings, built-in templates or design fields', async () => {

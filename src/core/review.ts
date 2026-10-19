@@ -6,9 +6,13 @@ import {
   branchConnection, connected, eccentricMisalignment, fitting, getNode, getSpec, itemName, pipePrepAt, recommendedWeldSpacing, runResult,
   validateIso, weldClearance, welds, weldsAlong, type IsoDocument, type PipeNode
 } from './model'
-import { dimensionIssues, nodeItem } from './joints'
+import { dimensionIssues } from './joints'
 
-/** A finding of the fabrication review. Errors stop the cut list; warnings ask the drafter to confirm an assumption. */
+/**
+ * A finding of the fabrication review. Errors stop the cut list; warnings ask the drafter about data that is missing or
+ * ambiguous. A value from the specification, a standard table or a documented calculation is not a finding: its
+ * source is shown with the value (the inspector, `dimensionSource`, a joint's bolting source).
+ */
 export interface Issue { severity: 'error' | 'warning'; message: string }
 
 /**
@@ -29,10 +33,13 @@ const where = (doc: IsoDocument, n: PipeNode) => {
   return edge?.spool ? edge.spool + ': ' : ''
 }
 /**
- * Assumptions and drafting choices a checker should see, none of which stops fabrication: pieces longer than stock,
- * cells printed as issued that differ from the model, standard dimensions standing in for missing specification
- * data, unset socket-weld gaps, eccentric reducers drawn without their offset, close welds, branch-table departures and
- * pipe weights that disagree with the pipe's dimensions.
+ * Missing or ambiguous data and drafting choices a checker should see, none of which stops fabrication: pieces longer
+ * than stock, cells printed as issued that differ from the model, dimensions that had to assume a class, face,
+ * pattern, body, category, wall or gasket the specification does not give, eccentric reducers drawn without their
+ * offset, close welds, branch-table departures, pipe weights that disagree with the pipe's dimensions, and missing
+ * labour rates and weights. Standard-table and calculated values (a B16.5 stud length, a lug-bolt length, a slip-on
+ * set-back, the B31.3 socket-weld gap, a standard takeout standing in for a specification row without one) are not
+ * warnings.
  */
 export function fabricationWarnings(doc: IsoDocument): string[] {
   const out: string[] = []
@@ -40,25 +47,12 @@ export function fabricationWarnings(doc: IsoDocument): string[] {
   try { out.push(...materialWarnings(doc)) } catch { return [] }
   // Built-in standard dimensions that had to assume a class, face, pattern, body, wall or gasket the specification lacks.
   out.push(...dimensionIssues(doc))
-  // Socket-weld gaps the specification leaves to the default.
-  const socketSpecs = new Set(doc.runs.filter(r => [0, 1].some(i => pipePrepAt(doc, r, i) === 'SW')).map(r => r.specId))
-  for (const id of socketSpecs) {
-    const spec = getSpec(doc, id)
-    if (spec.socketGap == null)
-      out.push(`Specification ${spec.name} sets no socket-weld gap; 1/16" (1.6 mm) is allowed at each socket (ASME B31.3 Fig. 328.5.2C). Set the gap in the specification to confirm it.`)
-  }
-  const assumed = new Set<string>()
   for (const n of doc.nodes) {
     const at = where(doc, n), name = itemName(doc, n)
     const off = eccentricMisalignment(doc, n)
     if (off > 0.5)
       out.push(`${at}the ${name} has its flat on the ${n.flatSide}, which moves the small pipe ${formatLength(off, doc.units)} across, but the pipes beyond it are drawn on the large end's centreline: their elevations and coordinates are out by that much. Set the flat side again to move them.`)
-    // A specification row without a takeout: the built-in standard dimension stands in for it.
-    const own = fitting(doc, n), item = nodeItem(doc, n)
-    if (own?.takeoutMissing && item && item !== own && n.takeout == null && !n.portTakeouts && !assumed.has(own.id)) {
-      assumed.add(own.id)
-      out.push(`${at}the ${name} (${sizeText(own.nps, own.smallerNps)}) has no dimension in its specification row; the standard ${item.source.split(';')[0]} dimension is assumed. Confirm it against the manufacturer's data or enter the takeout.`)
-    }
+    const own = fitting(doc, n)
     const edges = connected(doc, n.id)
     // Threads screwed together are one male and one female: a male part on a (male) threaded pipe end, or two female
     // parts screwed straight together with no nipple, cannot be made up.

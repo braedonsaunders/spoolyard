@@ -30,6 +30,20 @@ export interface SpecDesign {
   defaultFlange?: string
   /** Catalogued nipple length (mm) where the specification has no nipple row. */
   nippleLength?: number
+  /**
+   * Lug bolting without a specification lug-bolt row: thread engagement in the tapped lug, in bolt diameters
+   * (default 1, limited to half the body each side; see standards.ts `lugBolt`).
+   */
+  lugBoltEngagement?: number
+  /** Lug studs without a specification row: full threads standing beyond the nut (default 2; cap screws have none). */
+  lugBoltProjection?: number
+  /**
+   * Pipe set-back (mm) inside slip-on flanges whose catalogue row states none. Default: the lesser of the pipe wall and
+   * 1/4 in, the face-side fillet weld size of ASME B31.3 Fig. 328.5.2B (see standards.ts `slipOnSetBack`).
+   */
+  slipOnSetBack?: number
+  /** Clearance (mm) added to the default slip-on set-back. Default 0. */
+  slipOnClearance?: number
 }
 export type SpecDesignField = keyof SpecDesign
 
@@ -102,7 +116,11 @@ const FIELDS: Record<SpecDesignField, (v: unknown) => boolean> = {
   stubEndSchedule: v => typeof v === 'string' && v.length <= 20,
   oletSchedule: v => typeof v === 'string' && v.length <= 20,
   defaultFlange: v => typeof v === 'string' && v.length <= 40,
-  nippleLength: v => typeof v === 'number' && v > 0 && v < 10000
+  nippleLength: v => typeof v === 'number' && v > 0 && v < 10000,
+  lugBoltEngagement: v => typeof v === 'number' && v > 0 && v <= 5,
+  lugBoltProjection: v => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 20,
+  slipOnSetBack: v => typeof v === 'number' && v >= 0 && v < 100,
+  slipOnClearance: v => typeof v === 'number' && v >= 0 && v < 50
 }
 /** Whether a parsed `design` object is well formed (for document validation). */
 export function validSpecDesign(design: unknown): boolean {
@@ -110,9 +128,10 @@ export function validSpecDesign(design: unknown): boolean {
   if (typeof design !== 'object' || Array.isArray(design)) return false
   return Object.entries(design).every(([k, v]) => v == null || (Object.hasOwn(FIELDS, k) && FIELDS[k as SpecDesignField](v)))
 }
-/** Whether a catalogue row's typed design fields (pattern, body, category, bolt kind, assumption) are well formed. */
-export function validCatalogDesign(f: { valvePattern?: unknown; bodyType?: unknown; valveCategory?: unknown; boltKind?: unknown; assumed?: unknown }): boolean {
+/** Whether a catalogue row's typed design fields (pattern, body, category, bolt kind, set-back, assumption) are well formed. */
+export function validCatalogDesign(f: { valvePattern?: unknown; bodyType?: unknown; valveCategory?: unknown; boltKind?: unknown; setBack?: unknown; assumed?: unknown }): boolean {
   return (f.valvePattern == null || ['long', 'short', 'regular', 'venturi'].includes(f.valvePattern as string)) &&
+    (f.setBack == null || FIELDS.slipOnSetBack(f.setBack)) &&
     (f.bodyType == null || FIELDS.butterflyBody(f.bodyType)) &&
     (f.valveCategory == null || FIELDS.butterflyCategory(f.valveCategory)) &&
     (f.boltKind == null || ['stud', 'machine', 'lug'].includes(f.boltKind as string)) &&

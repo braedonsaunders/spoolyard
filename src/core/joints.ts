@@ -1,12 +1,12 @@
 import { COMPONENT_TYPE_BY_CODE } from './components'
 import {
   BUTTERFLY_BODY, GASKET_THICKNESS, bolting, ratingClass, standardRow, stubEnd as standardStub,
-  type BoltMakeup, type ButterflyBody, type FlangeFace, type Resolved, type StandardOptions
+  type BoltMakeup, type BoltingOptions, type ButterflyBody, type FlangeFace, type Resolved, type StandardOptions
 } from './standards'
 import { designValue } from './spec-design'
 import { compose, draftLength, listLength, schedule, sizeFor, sizeText } from './format'
 import {
-  add, connected, fitting, getNode, getSpec, length, mul, sub, takeout, withIndex,
+  add, connected, fitting, getNode, getSpec, length, mul, rowDimensioned, rowTakeout, sub, takeout, withIndex,
   type CatalogItem, type EndPrep, type IsoDocument, type Kind, type PipeNode, type PipeRun, type PipeSpec, type Vec3
 } from './model'
 
@@ -126,6 +126,11 @@ export function standardInputs(spec: PipeSpec, code: string, nps: number, named?
       gasketThickness: design('gasketThickness'),
       boltType: design('boltType'),
       oletSchedule: design('oletSchedule'),
+      // A slip-on row's own set-back dimensions the row itself (model.ts rowTakeout); this is the specification's.
+      ...(v => v.value != null ? { slipOnSetBack: v.value, setBackSource: v.source } : {})(designValue(spec, 'slipOnSetBack')),
+      slipOnClearance: design('slipOnClearance'),
+      lugBoltEngagement: design('lugBoltEngagement'),
+      lugBoltProjection: design('lugBoltProjection'),
       ratingAssumed: cls.assumed
     }
   }
@@ -136,7 +141,7 @@ export function standardInputs(spec: PipeSpec, code: string, nps: number, named?
  */
 export function catalogRow(spec: PipeSpec, code: string, nps: number, smallerNps?: number, drawing?: Drawing): CatalogItem | undefined {
   const rows = spec.fittings.filter(f => f.component === code && f.nps === nps && sameBranch(f, nps, smallerNps))
-  const row = rows.find(f => !f.takeoutMissing)
+  const row = rows.find(rowDimensioned)
   if (row) return row
   if (code === 'NIPPLE') return nippleRow(spec, nps, rows[0], drawing)
   const pipe = spec.sizes.find(s => s.nps === nps), input = standardInputs(spec, code, nps, rows[0])
@@ -177,7 +182,7 @@ export function nodeCode(doc: IsoDocument, node: PipeNode): string | undefined {
 /** The row a node is built from: its own dimensioned specification row, else the standard for its component. */
 export function nodeItem(doc: IsoDocument, node: PipeNode): CatalogItem | undefined {
   const item = fitting(doc, node)
-  if (item && !item.takeoutMissing) return item
+  if (item && rowDimensioned(item)) return item
   const code = item?.component ?? node.component, sizes = code && !node.bendAngle ? nodeSizes(doc, node) : undefined
   if (!code || !sizes) return item
   return catalogRow(sizes.spec, code, item?.nps ?? sizes.nps, item?.smallerNps ?? sizes.smallerNps, doc) ?? item
@@ -238,7 +243,7 @@ export function jointGasket(spec: PipeSpec, nps: number, face: FlangeFace): Join
 export const gasketRow = (spec: PipeSpec, nps: number, face: FlangeFace): CatalogItem | undefined => jointGasket(spec, nps, face).item
 /** Pipe-side length of a flange: weld-neck hub, slip-on set-back or stub-end length. */
 const flangeLength = (flange: MatingFlange | null) =>
-  !flange ? 0 : isLapJoint(flange.code) ? (flange.stub?.takeout ?? NaN) : (flange.item?.takeout ?? NaN)
+  !flange ? 0 : isLapJoint(flange.code) ? (flange.stub?.takeout ?? NaN) : (flange.item ? rowTakeout(flange.item) : NaN)
 /** End preparation of the pipe at a flanged connection. */
 export const flangePipePrep = (code: string): EndPrep =>
   isLapJoint(code) ? 'BW' : COMPONENT_TYPE_BY_CODE[code]?.endPrep ?? 'BW'
@@ -358,8 +363,13 @@ export interface JointBolts {
   length: number
   /** The specification bolt row the set is bought as (its material and description), when it has one. */
   item?: CatalogItem
-  /** Where count, diameter and length come from: one specification row, or the standard (one consistent set). */
+  /**
+   * Where count, diameter and length come from, as one consistent set: a 'specification' row, a 'standard' table
+   * (ASME B16.5 flange-pair studs and machine bolts) or a 'calculated' length (standards.ts `bolting`).
+   */
+  basis: 'specification' | 'standard' | 'calculated'
   source: string
+  /** Only for data that was missing or ambiguous; a standard or calculated length is not an assumption. */
   assumed?: string
 }
 export interface FlangedJoint {
@@ -394,13 +404,16 @@ export interface FlangedJoint {
   line: string
   specId: string
 }
-/** The valve body a lug or wafer joint bolts through: its face-to-face and API 609 category; `tapped` for any other lugged body. */
+/** The valve body a lug or wafer joint bolts through: its face-to-face and API 609 category; `tapped` for a lugged body of unknown length. */
 interface BoltedBody { faceToFace?: number; category?: CatalogItem['valveCategory']; tapped?: boolean }
 /**
- * Bolting for one joint. A specification bolt row is used only for the makeup it describes: a stud (or, by the
- * specification's bolt type, machine) bolt row for a flange pair, a lug row for a lug side, matched by face and class;
- * its count, diameter and length are taken together or not at all. Lap-joint pairs and wafer bodies need longer studs
- * than a pair row gives, so they are sized by the standard method (with the stud row's material).
+ * Bolting for one joint, the way a Plant 3D specification resolves it: a specification bolt row matched by makeup
+ * (a stud or, by the specification's bolt type, machine-bolt row for a flange pair; a lug row for a lug side or tapped
+ * mate, as cap screws when the bolt type is machine), face and class always wins, its count, diameter and length taken
+ * together or not at all. Without one, flange pairs take the ASME B16.5 table, and lap-joint pairs, wafer bodies and
+ * lug sides the calculated length (standards.ts `bolting`, `lugBolt`) with the specification's lug-bolt engagement and
+ * projection, bought in the stud row's material. Lap-joint pairs need longer studs than a pair row gives, so they are
+ * calculated unless a row is the specification's own lap-joint pair.
  */
 function jointBolts(spec: PipeSpec, nps: number, face: FlangeFace, makeup: BoltMakeup, body: BoltedBody = {}, lapJoint = makeup === 'lj-pair'): JointBolts | null {
   const cls = specFlangeClass(spec), type = designValue(spec, 'boltType').value ?? 'stud'
@@ -417,29 +430,30 @@ function jointBolts(spec: PipeSpec, nps: number, face: FlangeFace, makeup: BoltM
   const usable = makeup === 'flange-pair' || makeup === 'lj-pair' || makeup === 'lug-valve-side' ? own : undefined
   const screws = want === 'lug' && type === 'machine'
   if (usable?.boltCount && usable.boltDiameter && usable.boltLength)
-    return { kind: want, count: usable.boltCount, nuts: nutsOn(want, screws), diameter: usable.boltDiameter, length: usable.boltLength, item: usable, source: `specification row ${usable.id}` }
+    return {
+      kind: want, count: usable.boltCount, nuts: nutsOn(want, screws), diameter: usable.boltDiameter, length: usable.boltLength, item: usable,
+      basis: 'specification', source: `specification row ${usable.id}`
+    }
   // Lap-joint studs pass through both stub-end laps and the gasket as specified.
   const stub = lapJoint ? stubEnd(spec, nps) : undefined, short = stub?.component === 'STUB-END-SHORT'
   const lap = stub?.thickness ?? (lapJoint ? standardStub(nps, short, designValue(spec, 'stubEndSchedule').value ?? spec.sizes.find(s => s.nps === nps)?.schedule ?? spec.schedule) : undefined)
   const lapThickness = typeof lap === 'number' ? lap : lap?.lapThickness
-  const options = {
+  const options: BoltingOptions = {
     lap: lapThickness, gasket: jointGasket(spec, nps, face).thickness, type: makeup === 'flange-pair' || makeup === 'lj-pair' || makeup === 'lug-valve-side' ? type : undefined,
-    body: body.faceToFace, category: body.category
+    body: body.faceToFace, category: body.category, tapped: body.tapped,
+    engagement: designValue(spec, 'lugBoltEngagement').value, projectionThreads: designValue(spec, 'lugBoltProjection').value,
+    system: material?.boltSystem
   }
-  // A lugged mate of unknown length (a lug valve or tapped nozzle off this drawing) is sized as the class's API 609
-  // lug butterfly body, the same as a drawn lug valve, and the assumption is said; a class with no API 609 body takes
-  // one bolt diameter into a tapped body.
-  const lugged = makeup === 'lug-valve-side' && body.tapped && body.faceToFace == null
-    ? bolting(nps, cls.value, face, makeup, options) : undefined
-  const std = lugged
-    ? { ...lugged, assumed: [`lug bolts into the mate are sized for an API 609 lug butterfly body because the mate's body length is not given`, lugged.assumed].filter(Boolean).join('; ') }
-    : bolting(nps, cls.value, face, makeup, { ...options, tapped: body.tapped })
+  const std = bolting(nps, cls.value, face, makeup, options)
   if (!std) return null
   const assumed = [
     cls.assumed, typeof lap === 'object' ? lap?.assumed : undefined, std.assumed,
     usable ? `the specification bolt row ${usable.id} lacks a count, diameter or length, so the whole standard bolt set is used` : undefined
   ].filter((a): a is string => !!a)
-  return { kind: std.kind, count: std.count, nuts: nutsOn(std.kind, !!std.capScrews), diameter: std.diameter, length: std.length, item: material, source: std.source, ...(assumed.length ? { assumed: assumed.join('; ') } : {}) }
+  return {
+    kind: std.kind, count: std.count, nuts: nutsOn(std.kind, !!std.capScrews), diameter: std.diameter, length: std.length, item: material,
+    basis: std.basis, source: std.source, ...(assumed.length ? { assumed: assumed.join('; ') } : {})
+  }
 }
 const nutsOn = (kind: JointBolts['kind'], capScrews: boolean): JointBolts['nuts'] => kind === 'stud' ? 2 : kind === 'machine' ? 1 : capScrews ? 0 : 1
 /**

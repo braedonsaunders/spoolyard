@@ -48,6 +48,17 @@ export interface StandardOptions {
   boltType?: BoltType
   /** Weldolet weight (STD or XS) the specification names; else it follows the branch wall. */
   oletSchedule?: string
+  /**
+   * Slip-on flanges: the pipe end's set-back from the flange face (mm) a catalogue row or the specification states,
+   * in place of the default rule (see `slipOnSetBack`); `setBackSource` names where it comes from.
+   */
+  slipOnSetBack?: number
+  setBackSource?: string
+  /** Slip-on flanges: a clearance (mm) the specification adds to the default set-back rule. Default 0. */
+  slipOnClearance?: number
+  /** Lug bolting: engagement in bolt diameters and threads beyond the nut (see `lugBolt`). */
+  lugBoltEngagement?: number
+  lugBoltProjection?: number
   /** Stated when `rating` itself was assumed by the caller (no class in the specification). */
   ratingAssumed?: string
 }
@@ -78,6 +89,11 @@ export interface StandardRow {
   valveCategory?: ButterflyCategory
   description: string
   source: string
+  /**
+   * How the takeout is known when it is not a standard table value: 'calculated' by a documented rule (a slip-on
+   * set-back), or set by the 'specification' (its design values, a row's set-back). Absent for table values.
+   */
+  dimensionBasis?: 'specification' | 'calculated'
   /** What was assumed to give this row (a class, a pattern, a wall); absent when every input was given. */
   assumed?: string
 }
@@ -112,8 +128,14 @@ export interface Bolting {
   kind: 'stud' | 'lug' | 'machine'
   /** Lug bolting as hex-head cap screws (the specification's bolt type is machine bolts): no nut, the head on the flange. */
   capScrews?: boolean
+  /**
+   * What the length is: 'standard', a published table (ASME B16.5 flange-pair studs and machine bolts); 'calculated',
+   * a stated length formula where no table gives one (lap-joint pairs, wafer bodies, lug bodies).
+   */
+  basis: 'standard' | 'calculated'
   /** The table or the stated length method the length comes from. */
   source: string
+  /** Only for data that was missing or ambiguous (a lap thickness, a butterfly category that changes the length). */
   assumed?: string
 }
 export interface BoltingOptions {
@@ -124,8 +146,14 @@ export interface BoltingOptions {
   /** Valve body face-to-face (mm) for wafer and lug bodies; else the API 609 length of `category`. */
   body?: number
   category?: ButterflyCategory
-  /** Lug bolts into a tapped body that is not an API 609 valve (equipment, a lugged hose end): one diameter engaged. */
+  /** Lug bolts into a tapped body of unknown length (equipment, a lugged mate off this drawing): no half-body limit. */
   tapped?: boolean
+  /** Lug bolts: thread engagement in the tapped body, in bolt diameters (default `LUG_BOLT.engagement`, one). */
+  engagement?: number
+  /** Lug studs: full threads projecting beyond the nut (default `LUG_BOLT.projectionThreads`, two). */
+  projectionThreads?: number
+  /** Inch (ASME B1.1 threads, lengths in 1/4 in steps, the default) or metric (ISO 261 threads, 5 mm steps) bolting. */
+  system?: 'inch' | 'metric'
   /**
    * Machine bolts instead of stud bolts for flange pairs (B16.5 lists their lengths for Class 150 and 300); into a lug
    * body, hex-head cap screws with no nut instead of lug studs with one nut each.
@@ -404,39 +432,111 @@ export function butterflyCategory(cls: number, given?: ButterflyCategory): Resol
 export const butterflyLength = (nps: number, cls: number, category: ButterflyCategory) =>
   at(category === 'A' ? (cls === 150 ? API609_A : undefined) : API609_B[cls], nps)?.[1]
 /**
- * Bolting for one flanged joint, inch sizes converted to mm. Flange-pair studs and machine bolts are the published
- * B16.5 table lengths. The other makeups use the B16.5 bolt-length method: per flange its thickness C at the gasket
- * face plus the thickness tolerance T (0.12 in to NPS 18, 0.19 in above) and one heavy nut (height = bolt diameter
- * d), plus the gaskets (default allowance g = 0.12 in each, or `gasket`) and the point projection n = 0.06 in.
- * - 'lj-pair': two lap-joint flanges and two stub-end laps; `lap` is the lap thickness (mm). Rounded to the nearest
- *   1/4 in as B16.5 rounds its table. Without `lap` the STD wall is assumed and stated.
- * - 'lug-valve-side': lug bolts for ONE side of a lug body. No ASME or API table gives lug-bolt lengths, so this is
- *   Spoolyard's lug-body convention, and every result says so in `assumed`: the pair method (two flanges, nuts and T,
- *   the 0.12 in gasket allowance, n) less 1/2 in, limited to C + T + one nut + 0.12 in + half the lug body + n + 1/4 in,
- *   rounded up to the next 1/4 in. Into a tapped body of unknown length (`tapped`): C (with any `lap`) + T + nut +
- *   gasket + one bolt diameter engaged + n. A specification lug-bolt row, or the valve maker's bolting chart, governs.
- * - 'wafer-valve': through studs spanning both flanges, both gaskets and the wafer body, rounded up to 1/4 in.
- * The body length is `body` (the valve's own face-to-face), else the API 609 length of `category`, stated.
+ * Defaults of the lug-bolt rule (`lugBolt`). A specification sets its own with the `lugBoltEngagement` and
+ * `lugBoltProjection` design values.
  */
-/** Said of every lug-bolt length worked out here: no standard gives one. */
-export const LUG_CONVENTION = 'lug-bolt lengths follow Spoolyard\'s lug-body convention because no ASME or API table gives them: confirm them against the valve maker\'s bolting chart or add a lug-bolt row to the specification'
+export const LUG_BOLT = {
+  /** Thread engagement in the tapped body, in bolt diameters. */
+  engagement: 1,
+  /** Full threads a lug stud stands beyond its nut. */
+  projectionThreads: 2
+} as const
+/** B16.5 gasket allowance (in) of its bolt-length method, used where no gasket thickness is given. */
+const B165_GASKET = 0.12
+/** Threads per inch of inch bolting: UNC coarse to 1 in, and the 8-thread series above it, as ASME B16.5 names (ASME B1.1). */
+const UNC = [[0.25, 20], [0.3125, 18], [0.375, 16], [0.4375, 14], [0.5, 13], [0.5625, 12], [0.625, 11], [0.75, 10], [0.875, 9], [1, 8]]
+/** ISO 261 coarse thread pitch (mm) by metric bolt diameter. */
+const ISO_COARSE = [[6, 1], [8, 1.25], [10, 1.5], [12, 1.75], [14, 2], [16, 2], [20, 2.5], [22, 2.5], [24, 3], [27, 3], [30, 3.5],
+  [33, 3.5], [36, 4], [39, 4], [42, 4.5], [45, 4.5], [48, 5], [52, 5], [56, 5.5], [64, 6]]
+const nearest = (rows: number[][], v: number) => rows.reduce((a, b) => Math.abs(b[0] - v) < Math.abs(a[0] - v) ? b : a)
+/** Thread pitch (mm) of a bolt of this diameter (mm): ASME B1.1 UNC/8UN for inch bolting, ISO 261 coarse for metric. */
+export function threadPitch(diameter: number, system: 'inch' | 'metric' = 'inch'): number {
+  if (system === 'metric') return nearest(ISO_COARSE, diameter)[1]
+  const d = diameter / 25.4
+  return 25.4 / (d > 1 + 1e-6 ? 8 : nearest(UNC, d)[1])
+}
+export interface LugBoltInput {
+  /** Thickness clamped under the nut or head (mm): the flange at its gasket face, with a stub-end lap under a lap-joint flange. */
+  flange: number
+  /** Compressed gasket thickness (mm). */
+  gasket: number
+  /** Bolt diameter (mm). */
+  diameter: number
+  /** Face-to-face of the lugged body (mm), when known: bolts from both sides share each tapped hole. */
+  body?: number
+  /** Hex-head cap screws: the head bears on the flange, so no nut and no projection. */
+  capScrews?: boolean
+  /** Engagement in bolt diameters (default `LUG_BOLT.engagement`). */
+  engagement?: number
+  /** Threads beyond the nut (default `LUG_BOLT.projectionThreads`). */
+  projectionThreads?: number
+  system?: 'inch' | 'metric'
+}
+/**
+ * One side's lug-bolt length. No ASME or API table gives lug-bolt lengths (API 609 fixes the body, not its bolting),
+ * so it is calculated by the rule for bolting into a tapped body, the same build-up as the ASME B16.5 bolt-length
+ * method with the second flange replaced by the tapped thread:
+ *
+ *   L = F + G + E + P, rounded up to 1/4 in (5 mm for metric bolting)
+ *   F  the flange thickness at the gasket face (a lap-joint flange plus its stub-end lap)
+ *   G  the compressed gasket
+ *   E  thread engagement: k bolt diameters, k = 1 by default (one diameter develops a steel stud's strength in a
+ *      steel tapped hole; ASME BPVC VIII-1 UG-43(g) asks at least one stud diameter, more in a weaker tapped
+ *      material), but no more than half the body face-to-face, since the bolts from each side meet in a
+ *      through-tapped lug
+ *   P  a stud's projection: one heavy hex nut, taken as one bolt diameter thick as the B16.5 method takes it
+ *      (ASME B18.2.2 heavy nuts are d - 1/64 in), and n full threads (ASME B1.1 UNC/8UN or ISO 261 pitch) beyond
+ *      it, n = 2 by default, so the stud stands right through its nut as ASME PCC-1 asks; a cap screw has none,
+ *      its head bearing on the flange
+ *
+ * k and n are the specification's `lugBoltEngagement` and `lugBoltProjection`. A specification lug-bolt row, or
+ * the valve maker's bolting chart entered as one, always wins over this rule.
+ */
+export function lugBolt(i: LugBoltInput): { length: number; exact: number; engagement: number; limited: boolean; source: string } {
+  const k = i.engagement ?? LUG_BOLT.engagement, threads = i.projectionThreads ?? LUG_BOLT.projectionThreads
+  const full = k * i.diameter, half = i.body != null ? i.body / 2 : Infinity
+  const engagement = Math.min(full, half), limited = half < full
+  const nut = i.capScrews ? 0 : i.diameter, projection = i.capScrews ? 0 : threads * threadPitch(i.diameter, i.system)
+  const exact = i.flange + i.gasket + engagement + nut + projection, metric = i.system === 'metric'
+  const length = metric ? Math.ceil(exact / 5 - 1e-9) * 5 : mm(upQuarter(exact / 25.4))
+  const parts = [`flange ${r2(i.flange)}`, `gasket ${r2(i.gasket)}`,
+    `engagement ${r2(engagement)} (${limited ? `half the ${r2(i.body!)} mm body` : `${k} x bolt diameter`})`,
+    ...(i.capScrews ? [] : [`nut ${r2(nut)}`, `${threads} threads ${r2(projection)}`])]
+  return {
+    length, exact: r2(exact), engagement: r2(engagement), limited,
+    source: `calculated by the tapped-body rule (no ASME or API table gives lug-bolt lengths): ${parts.join(' + ')} = ${r2(exact)} mm${i.capScrews ? ' (cap screws: no nut)' : ''}, rounded up to ${metric ? '5 mm' : '1/4 in'}`
+  }
+}
+/**
+ * Bolting for one flanged joint, inch sizes converted to mm. Flange-pair studs and machine bolts are the published
+ * ASME B16.5 table lengths (`basis` 'standard'). The other makeups are calculated (`basis` 'calculated'):
+ * - 'lj-pair': two lap-joint flanges and two stub-end laps by the B16.5 bolt-length method: per flange its thickness
+ *   C plus the thickness tolerance T (0.12 in to NPS 18, 0.19 in above) and one heavy nut (height = bolt diameter d),
+ *   plus the gasket (`gasket`, else the method's 0.12 in allowance), the laps (`lap`, mm) and the point projection
+ *   n = 0.06 in; rounded to the nearest 1/4 in as B16.5 rounds its table. Without `lap` the STD wall is assumed and said.
+ * - 'wafer-valve': through studs by the same method spanning both flanges, both gaskets and the wafer body, rounded
+ *   up to 1/4 in. The body is `body` (the valve's own face-to-face), else the API 609 length of `category`.
+ * - 'lug-valve-side': one side of a lug body or tapped mate by `lugBolt`. `body` (else, for a lug valve that is not
+ *   `tapped`, the API 609 length of `category`) only limits the engagement; a category assumed is said only when that
+ *   limit decides the length. `type` 'machine' gives cap screws.
+ */
 export function bolting(nps: number, rating: string | number | undefined, face: FlangeFace, makeup: BoltMakeup, opts: BoltingOptions = {}): Bolting | undefined {
   const cls = flangeClass(rating), r = cls ? at(B165[cls], nps) : undefined
   if (!cls || !r) return undefined
   const [, c, , , , , count, d, stud, machine] = r.slice(1), low = cls <= 300
   if (face === 'FF' && !low && makeup !== 'lj-pair') return undefined
   const diameter = mm(d), t = nps <= 18 ? 0.12 : 0.19, n = 0.06, tf = c + (low ? 0 : 0.25)
-  const g = opts.gasket != null ? opts.gasket / 25.4 : 0.12, gasketNote = opts.gasket != null ? `${r2(opts.gasket)} mm gaskets` : '0.12 in gasket allowance'
+  const g = opts.gasket != null ? opts.gasket / 25.4 : B165_GASKET, gasketNote = opts.gasket != null ? `${r2(opts.gasket)} mm gaskets` : '0.12 in gasket allowance'
   if (makeup === 'flange-pair') {
     if (opts.type === 'machine')
-      return machine ? { count, diameter, length: mm(machine), kind: 'machine', source: `ASME B16.5 Class ${cls} machine-bolt length` } : undefined
-    return { count, diameter, length: mm(stud), kind: 'stud', source: `ASME B16.5 Class ${cls} stud-bolt length` }
+      return machine ? { count, diameter, length: mm(machine), kind: 'machine', basis: 'standard', source: `ASME B16.5 Class ${cls} machine-bolt length` } : undefined
+    return { count, diameter, length: mm(stud), kind: 'stud', basis: 'standard', source: `ASME B16.5 Class ${cls} stud-bolt length` }
   }
   if (makeup === 'lj-pair') {
     const std = pipeWall(nps, 'STD') ?? 0, lap = (opts.lap ?? std) / 25.4
     return {
-      count, diameter, length: mm(quarter(2 * ((low ? c - 1 / 16 : c) + t + d) + 2 * lap + g + n)), kind: 'stud',
-      source: `ASME B16.5 bolt-length method: two lap-joint flanges and nuts, two stub-end laps, ${gasketNote}, rounded to 1/4 in`,
+      count, diameter, length: mm(quarter(2 * ((low ? c - 1 / 16 : c) + t + d) + 2 * lap + g + n)), kind: 'stud', basis: 'calculated',
+      source: `calculated by the ASME B16.5 bolt-length method: two lap-joint flanges and nuts, two stub-end laps, ${gasketNote}, rounded to 1/4 in`,
       ...(opts.lap == null || opts.type === 'machine' ? {
         assumed: [opts.lap == null ? 'lap-joint studs assume STD-wall stub-end laps because no lap thickness was given' : '',
           opts.type === 'machine' ? 'stud bolts are sized for lap-joint pairs because B16.5 tabulates machine bolts for weld-neck pairs only' : ''].filter(Boolean).join('; ')
@@ -444,39 +544,29 @@ export function bolting(nps: number, rating: string | number | undefined, face: 
     }
   }
   // A lap-joint flange (no raised face) clamps its stub-end lap: both are in the grip.
-  const grip = opts.lap != null ? (low ? c - 1 / 16 : c) + opts.lap / 25.4 : tf
-  const lapNote = opts.lap != null ? ' (lap-joint flange and stub-end lap)' : ''
-  // Into a lug a stud takes one nut, on the flange side, and projects n beyond it; a cap screw's head bears on the
-  // flange, so it has neither.
-  const screws = makeup === 'lug-valve-side' && opts.type === 'machine', nut = screws ? 0 : d + n
-  const fastener = screws ? 'hex-head cap screws (no nut)' : 'one nut'
-  if (makeup === 'lug-valve-side' && opts.tapped && opts.body == null)
+  const lapped = opts.lap != null, grip = lapped ? (low ? c - 1 / 16 : c) + opts.lap! / 25.4 : tf
+  if (makeup === 'lug-valve-side') {
+    const cat = opts.body == null && !opts.tapped ? butterflyCategory(cls, opts.category) : undefined
+    const body = opts.body ?? (cat ? butterflyLength(nps, cls, cat.value) : undefined)
+    const screws = opts.type === 'machine'
+    const lug = lugBolt({
+      flange: lapped ? mm(low ? c - 1 / 16 : c) + opts.lap! : mm(tf), gasket: opts.gasket ?? r2(B165_GASKET * 25.4), diameter, body, capScrews: screws,
+      engagement: opts.engagement, projectionThreads: opts.projectionThreads, system: opts.system
+    })
     return {
-      count, diameter, length: mm(upQuarter(grip + t + g + d + nut)), kind: 'lug', ...(screws ? { capScrews: true } : {}),
-      source: `lug-body convention (no ASME or API table gives lug-bolt lengths): one flange${lapNote} and ${fastener} by the ASME B16.5 bolt-length method, ${gasketNote}, one bolt diameter engaged in the tapped body, rounded up to 1/4 in`,
-      assumed: LUG_CONVENTION
+      count, diameter, length: lug.length, kind: 'lug', ...(screws ? { capScrews: true } : {}), basis: 'calculated', source: lug.source,
+      ...(lug.limited && cat?.assumed ? { assumed: cat.assumed } : {})
     }
+  }
+  const lapNote = lapped ? ' (lap-joint flanges and stub-end laps)' : ''
   const cat = opts.body == null ? butterflyCategory(cls, opts.category) : undefined
   const body = opts.body ?? (cat ? butterflyLength(nps, cls, cat.value) : undefined)
   if (body == null) return undefined
-  const f = body / 25.4, assumed = cat?.assumed
   const bodyNote = opts.body != null ? `the valve's ${r2(body)} mm body` : `the ${cat!.source} ${body} mm body`
-  if (makeup === 'wafer-valve')
-    return {
-      count, diameter, length: mm(upQuarter(2 * (grip + t + d) + 2 * g + f + n)), kind: 'stud',
-      source: `ASME B16.5 bolt-length method through both flanges${lapNote}, ${gasketNote} and ${bodyNote}, rounded up to 1/4 in`, ...(assumed ? { assumed } : {})
-    }
-  // No ASME or API table gives lug-bolt lengths; this is a convention, stated as such. One side is the B16.5 pair
-  // method (flange thickness C, tolerance T and a nut per flange, the table's 0.12 in gasket allowance, n) less 1/2 in,
-  // limited to one flange, nut and gasket allowance plus half the lug body and a 1/4 in projection; rounded up to 1/4 in.
-  // On the B16.5 basis like the pair table, so it does not move with the gasket or lap: 2-3/4 in at NPS 2 and 3-1/4 in
-  // at NPS 3, Class 150.
-  // Cap screws are the stud length less its nut and projection.
-  const side = Math.min(2 * (tf + t + d) + 0.12 + n - 0.5, tf + t + 0.12 + f / 2 + d + n + 0.25) - (d + n - nut)
   return {
-    count, diameter, length: mm(upQuarter(side)), kind: 'lug', ...(screws ? { capScrews: true } : {}),
-    source: `lug-body convention (no ASME or API table gives lug-bolt lengths): the ASME B16.5 pair length less 1/2 in, at most one flange and ${fastener}, the 0.12 in gasket allowance, half of ${bodyNote} and 1/4 in${screws ? ', less the nut and projection a stud takes' : ''}, rounded up to 1/4 in`,
-    assumed: [assumed, LUG_CONVENTION].filter(Boolean).join('; ')
+    count, diameter, length: mm(upQuarter(2 * (grip + t + d) + 2 * g + body / 25.4 + n)), kind: 'stud', basis: 'calculated',
+    source: `calculated by the ASME B16.5 bolt-length method through both flanges${lapNote}, ${gasketNote} and ${bodyNote}, rounded up to 1/4 in`,
+    ...(cat?.assumed ? { assumed: cat.assumed } : {})
   }
 }
 // ---- ASME B16.9 butt-weld fittings (in): [nps, LR 90 A, SR 90 A, LR 45 B, tee C, cap E, reducer H, stub end long F, stub end MSS SP-43 short F, lap OD G]
@@ -519,6 +609,50 @@ const RETURN = [
   [5, 15, 10.31, 10, 7.75], [6, 18, 12.31, 12, 9.31], [8, 24, 16.31, 16, 12.31], [10, 30, 20.38, 20, 15.38], [12, 36, 24.38, 24, 18.38],
   [14, 42, 28, 28, 21], [16, 48, 32, 32, 24], [18, 54, 36, 36, 27], [20, 60, 40, 40, 30], [22, 66, 44, 44, 33], [24, 72, 48, 48, 36]
 ]
+/**
+ * Centre-to-end (tangent length, mm) of an elbow or bend of centreline radius R (mm) turning θ radians: R·tan(θ/2),
+ * the distance along each tangent from the work point, where the centrelines meet, to where the arc starts. A 90°
+ * turn takes out R and a 45° R·tan 22.5° (0.414 R). Fittings with a published centre-to-end use the table (ASME B16.9
+ * LR, SR and 3D elbows); this gives 3D elbows beyond the table, and formed pipe bends of any radius and angle
+ * (model.ts `bendTakeout`).
+ */
+export const tangentLength = (radius: number, theta: number) => radius * Math.tan(theta / 2)
+/** Centreline radius (mm) of a 3D elbow: three times the nominal size, R = 3 x NPS inches. */
+export const threeDRadius = (nps: number) => mmx(3 * nps)
+/**
+ * ASME B16.9 3D elbows (R = 3 x NPS), centre-to-end (in): [nps, 90° A, 45° B], the US customary values B16.9 lists,
+ * NPS 3/4 to 48. 3D elbows start at NPS 3/4; B16.9 lists none smaller. Transcribed from the published table (as
+ * reproduced by metalspiping.com "ASME B16.9 3D Elbows"); the SI column (FGS Steel, Ferrobend and wermac.org B16.9
+ * 3D elbow tables) agrees with every row to the millimetre, but for NPS 30 45°, where some copies print 964 mm, a
+ * transposition of the 946 mm that 37.25 in and the geometry both give.
+ */
+const B169_3D = [
+  [0.75, 2.25, 0.94], [1, 3, 1.25], [1.25, 3.75, 1.56], [1.5, 4.5, 1.88], [2, 6, 2.5], [2.5, 7.5, 3.12], [3, 9, 3.75],
+  [3.5, 10.5, 4.38], [4, 12, 5], [5, 15, 6.19], [6, 18, 7.44], [8, 24, 9.94], [10, 30, 12.44], [12, 36, 14.88],
+  [14, 42, 17.38], [16, 48, 19.88], [18, 54, 22.38], [20, 60, 24.88], [22, 66, 27.31], [24, 72, 29.81], [26, 78, 32.31],
+  [28, 84, 34.75], [30, 90, 37.25], [32, 96, 39.75], [36, 108, 44.69], [42, 126, 52.19], [48, 144, 59.69]
+]
+/** ASME B16.9 3D elbows (mm), SI values, for the sizes whose inch values are not transcribed above: [nps, 90° A, 45° B]. */
+const B169_3D_SI = [[34, 2591, 1073], [38, 2896, 1200], [40, 3048, 1264], [44, 3353, 1389], [46, 3505, 1453]]
+/**
+ * A 3D elbow's centre-to-end (mm) and where it comes from: the ASME B16.9 table, else, for a size B16.9 does not list
+ * (above NPS 48), the elbow's geometry by `tangentLength` with R = 3 x NPS (R for a 90°, R tan 22.5° for a 45°).
+ * Below NPS 3/4 there are no 3D elbows.
+ */
+function threeDElbow(nps: number, degrees: 45 | 90): { takeout: number; source: string; calculated?: true } | undefined {
+  if (nps < 0.75) return undefined
+  const letter = degrees === 90 ? 'A' : 'B', inch = at(B169_3D, nps), si = at(B169_3D_SI, nps)
+  if (inch) return { takeout: mm(inch[degrees === 90 ? 1 : 2]), source: `${B169} 3D elbow (R = 3 x NPS); takeout = centre-to-end ${letter}` }
+  if (si) return { takeout: si[degrees === 90 ? 1 : 2], source: `${B169} 3D elbow (R = 3 x NPS), SI table; takeout = centre-to-end ${letter}` }
+  return {
+    takeout: r2(tangentLength(threeDRadius(nps), degrees * Math.PI / 180)), calculated: true,
+    source: `3D elbow, R = 3 x NPS; takeout = R tan(${degrees}°/2)${degrees === 90 ? ' = R' : ''}, calculated from the elbow geometry (ASME B16.9 lists 3D elbows to NPS 48)`
+  }
+}
+const threeDRow = (nps: number, degrees: 45 | 90) => {
+  const t = threeDElbow(nps, degrees)
+  return t && row(degrees === 90 ? 'elbow90' : 'elbow45', nps, t.takeout, `ELBOW ${degrees} 3D BW`, t.source, t.calculated ? { dimensionBasis: 'calculated' } : {})
+}
 /** ASME B16.9 180° return (mm): centre-to-centre O, back-to-face K and the bend radius (O/2) one 90° half takes out. */
 export function returnBend(nps: number, radius: 'LR' | 'SR'): { centreToCentre: number; backToFace: number; radius: number; source: string } | undefined {
   const r = at(RETURN, nps), o = r?.[radius === 'LR' ? 1 : 3], k = r?.[radius === 'LR' ? 2 : 4]
@@ -695,14 +829,15 @@ const reducing = (nps: number, small: number | undefined, table = REDUCER_MIN) =
 const FLANGE_NAMES: Record<string, string> = { WN: 'WELD NECK', SO: 'SLIP-ON', SW: 'SOCKET-WELD', SC: 'THREADED', BL: 'BLIND', LJ: 'LAP-JOINT' }
 /** Butterfly valve codes and the body type each fixes; the generic BFLY takes its body from the row or specification. */
 export const BUTTERFLY_BODY: Readonly<Record<string, ButterflyBody | undefined>> = { BFLY: undefined, 'BFLY-LUG': 'lug', 'BFLY-WAFER': 'wafer' }
+/** The face-side fillet weld's largest size in ASME B31.3 Fig. 328.5.2B: 6 mm (1/4 in, 6.35 mm, on inch flanges). */
+const SO_WELD_MAX = mm(1 / 4)
 /**
- * ASME B31.3 Fig. 328.5.2B sizes a double-welded slip-on flange's face-side (bore) fillet weld at the lesser of the
- * pipe wall T and 6 mm (1/4 in), and its hub weld at the lesser of 1.4 T and the hub thickness. The pipe end is set
- * back from the flange face by that face-side weld so the weld does not stand proud of the face.
+ * Pipe set-back (mm) inside a slip-on flange where neither the catalogue row nor the specification states one. ASME
+ * B31.3 Fig. 328.5.2B sizes a double-welded slip-on flange's face-side (bore) fillet weld at the lesser of the pipe
+ * wall T and 6 mm (1/4 in); the pipe end is set back from the face by that weld size so the weld does not stand proud
+ * of the face. `clearance` (the specification's `slipOnClearance`, default 0) is added when a shop wants more room.
  */
-const SO_SETBACK_MAX = mm(1 / 4)
-/** Shop clearance added to the slip-on set-back so the bore fillet weld stays clear of the gasket face (a convention, not a code value). */
-export const SLIP_ON_CLEARANCE = mm(1 / 16)
+export const slipOnSetBack = (wall: number, clearance = 0) => r2(Math.min(wall, SO_WELD_MAX) + clearance)
 /**
  * Standard dimensions (mm) for a component code at a size and class; undefined where the standard does not define the
  * size or the class is unknown. `rating` is the B16.5 flange class (a rating without one gives no class-dependent
@@ -745,12 +880,17 @@ function standard(c: string, nps: number, rating: string | number | undefined, s
     }
     if (!f.soLength) return undefined
     if (type === 'SO') {
+      const hub = { ...base, lengthThroughHub: f.soLength }
+      if (o.slipOnSetBack != null)
+        return row('flange', nps, o.slipOnSetBack, name, `${B165_SOURCE}; slip-on: pipe end set back ${r2(o.slipOnSetBack)} mm from the face (${o.setBackSource ?? 'specification set-back'})`,
+          { ...hub, dimensionBasis: 'specification' })
       const { wall, assumed } = wallFor(nps, schedule, 'STD', 'the slip-on set-back')
       if (wall == null) return undefined
       note(assumed)
-      return row('flange', nps, Math.min(wall, SO_SETBACK_MAX) + SLIP_ON_CLEARANCE, name,
-        `${B165_SOURCE}; slip-on: pipe end set back by the face-side fillet weld, the lesser of the pipe wall and 1/4 in (ASME B31.3 Fig. 328.5.2B), plus 1/16 in shop clearance so the weld stays below the face`,
-        { ...base, lengthThroughHub: f.soLength })
+      const extra = o.slipOnClearance ?? 0
+      return row('flange', nps, slipOnSetBack(wall, extra), name,
+        `${B165_SOURCE}; slip-on: pipe end set back by the face-side fillet weld, calculated as the lesser of the pipe wall and 1/4 in (ASME B31.3 Fig. 328.5.2B)${extra ? ` plus the specification's ${r2(extra)} mm clearance` : ''}`,
+        { ...hub, dimensionBasis: 'calculated' })
     }
     if (type === 'SW')
       return f.socketDepth == null ? undefined : row('flange', nps, f.soLength - f.socketDepth, name, `${B165_SOURCE}; socket-weld: effective takeout = hub length less socket depth D`, { ...base, lengthThroughHub: f.soLength, socketDepth: f.socketDepth })
@@ -794,7 +934,9 @@ function standard(c: string, nps: number, rating: string | number | undefined, s
     const cat = butterflyCategory(fc, o.butterflyCategory), len = cat ? butterflyLength(nps, fc, cat.value) : undefined
     if (!cat || len == null) return undefined
     note(cat.assumed)
-    const wafer = body === 'wafer', bolts = bolting(nps, fc, 'RF', wafer ? 'wafer-valve' : 'lug-valve-side', { body: len, gasket: o.gasketThickness })
+    const wafer = body === 'wafer', bolts = bolting(nps, fc, 'RF', wafer ? 'wafer-valve' : 'lug-valve-side', {
+      body: len, gasket: o.gasketThickness, ...(wafer ? {} : { type: o.boltType, engagement: o.lugBoltEngagement, projectionThreads: o.lugBoltProjection })
+    })
     return row('valve', nps, len / 2, `BUTTERFLY VALVE, ${wafer ? 'WAFER' : 'LUG'} TYPE, API 609 CATEGORY ${cat.value}, CLASS ${fc}`,
       `API 609 Category ${cat.value} ${body}-body face-to-face; takeout = half length; bolting = ${wafer ? 'through studs' : 'lug bolts per side'}`, {
         faceToFace: len, bodyType: body, valveCategory: cat.value, boltCount: bolts?.count, boltDiameter: bolts?.diameter, boltLength: bolts?.length
@@ -817,14 +959,14 @@ function standard(c: string, nps: number, rating: string | number | undefined, s
     return bolt && row('bolt', nps, 0, bolt.kind === 'machine' ? `MACHINE BOLT C/W HEAVY HEX NUT, CLASS ${fc}` : `STUD BOLT C/W 2 HEAVY HEX NUTS, CLASS ${fc}`,
       `${bolt.source} for one flange pair`, { boltCount: bolt.count, boltDiameter: bolt.diameter, boltLength: bolt.length })
   }
+  // 3D elbows have their own table, to NPS 48, beyond the B16.9 fittings table below.
+  if (c === 'W-3D90EL' || c === 'W-3D45ELL') return threeDRow(nps, c === 'W-3D90EL' ? 90 : 45)
   if (b) {
     const [, lr, sr, lr45, tee, cap, red] = b
     switch (c) {
       case 'W-LR90EL': return row('elbow90', nps, mm(lr), 'ELBOW 90 LR BW', `${B169} long radius; takeout = centre-to-end A`)
       case 'W-SR90EL': return sr ? row('elbow90', nps, mm(sr), 'ELBOW 90 SR BW', `${B169} short radius; takeout = centre-to-end A`) : undefined
-      case 'W-3D90EL': return nps >= 0.75 ? row('elbow90', nps, mmx(3 * nps), 'ELBOW 90 3D BW', `${B169} 3D elbow (R = 3 x NPS); takeout = centre-to-end`) : undefined
       case 'W-45ELL': return row('elbow45', nps, mm(lr45), 'ELBOW 45 LR BW', `${B169} long radius; takeout = centre-to-end B`)
-      case 'W-3D45ELL': return nps >= 0.75 ? row('elbow45', nps, mm(1.25 * nps), 'ELBOW 45 3D BW', `${B169} 3D 45° elbow B (R tan 22.5° rounded, 1.25 x NPS)`) : undefined
       case 'LR180R':
       case 'SR180R': {
         const ret = returnBend(nps, c === 'LR180R' ? 'LR' : 'SR')

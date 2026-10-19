@@ -4,9 +4,10 @@ import { allowanceText, draftLength, scheduleText, sizeFor, sizeHeader, UNKNOWN 
 import { feetThreshold } from './profile'
 import { measureMember, packageSpools, pieceEnds, sheetMaterials, type MaterialRow, type PipeEnd, type PipePiece } from './material-list'
 import {
-  connected, csv, distance, getNode, getSpec, round, runResult, sheetInfoOf, takeout, weldDiameterInches, weldHours, welds, withIndex, runById,
+  csv, getNode, getSpec, round, runResult, sheetInfoOf, weldDiameterInches, weldHours, welds, withIndex, runById,
   type IsoDocument, type PipeNode, type PipeRun, type Weld
 } from './model'
+import { pipeStation } from './stations'
 export { allowanceText, scheduleText, UNKNOWN } from './format'
 export { packageSpools, pipeEnd, type PipeEnd } from './material-list'
 
@@ -54,17 +55,6 @@ function materialRows(doc: IsoDocument, options: ScheduleOptions): MaterialSched
   }))
 }
 
-/**
- * How far in from a node the sheet dimensions its pipe: a flanged valve to its mating flange face, across the gasket;
- * a reducer to its end. Elsewhere the node itself is the dimension point.
- */
-function stationOffset(doc: IsoDocument, node: PipeNode, run: PipeRun, joints: FlangedJoint[]): number {
-  if (connected(doc, node.id).length < 2) return 0
-  const port = joints.find(j => j.kind === 'component-port' && j.id === `${node.id}:${run.id}`)
-  if (port) return distance(node.position, port.position) + (port.gasket?.thickness ?? 0)
-  if (node.kind === 'reducer' && !/CPLG/.test(nodeCode(doc, node) ?? '')) return takeout(doc, node, run.id) ?? 0
-  return 0
-}
 export interface CutRow {
   spool: string
   drawing: string
@@ -107,7 +97,8 @@ function cutRow(doc: IsoDocument, joints: FlangedJoint[], spool: string, row: Ma
   const run = (id: string) => runById(doc, id)!
   const runs = piece.runIds.map(run)
   const [start, finish] = piece.ends.map(e => ({ run: run(e.runId), index: e.index }))
-  const station = (e: typeof start) => stationOffset(doc, getNode(doc, e.index === 0 ? e.run.from : e.run.to), e.run, joints)
+  // Measured from the sheet's own stations (src/core/stations.ts), so the overall is the sheet's dimension.
+  const station = (e: typeof start) => pipeStation(doc, getNode(doc, e.index === 0 ? e.run.from : e.run.to), e.run, joints)
   const result = (e: typeof start) => runResult(doc, e.run)
   return {
     spool, drawing: sheetTitle(doc, spool), item: row.id, piece: i + 1, pieces, run: runs[0], runIds: piece.runIds, bends: piece.bendIds.length,

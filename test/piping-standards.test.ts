@@ -27,7 +27,7 @@ const DELIBERATE: Array<{ key: RegExp; nps?: number[]; reason: string }> = [
   { key: /^d1\/CHECK-FL\/(takeout|faceToFace)$/, reason: 'spec D1 lists manufacturer check-valve lengths (its duplicate rows disagree with each other); B16.10 Class 900 check valves take the gate length' },
   { key: /^d1\/WOL\/takeout$/, nps: [6, 8, 10, 12], reason: 'spec D1 lists standard-weight weldolets on its Schedule 80 branches; an extra-strong weldolet suits a wall heavier than standard' },
   { key: /\/(SOL|UNION-SW)\/(takeout|socketDepth)$/, reason: 'library sockolets and socket-weld unions take the B16.11 minimum socket depth J while its socket-weld fittings take the deeper as-made depth; one as-made depth is used for every socket-weld item so derived takeouts agree' },
-  { key: /\/FLG-RFSO\/takeout$/, reason: 'library slip-on set-backs are the full pipe wall plus 1/16 in on heavy walls; ASME B31.3 Fig. 328.5.2B limits the set-back to the lesser of the wall and 1/4 in' },
+  { key: /\/FLG-RFSO\/takeout$/, reason: 'library slip-on rows set the pipe back by its full wall plus 1/16 in (their catalogue value, used as given); the calculated default with no row is the face-side fillet weld of ASME B31.3 Fig. 328.5.2B, the lesser of the wall and 1/4 in' },
   { key: /^(c|d1)\/W-CAP\/takeout$/, reason: 'library caps keep length E on walls heavier than the B16.9 limiting (XS) wall; ASME B16.9 gives the longer E1 there' },
   { key: /^c\/CHECK-FL\/(takeout|faceToFace)$/, nps: [24], reason: 'spec C lists a 55-1/2 in Class 600 NPS 24 swing check (a manufacturer length); ASME B16.10 gives 55 in' }
 ];
@@ -40,7 +40,7 @@ test('rating classes parse from every spec spelling', () => {
   assert.equal(ratingClass(900), 900);
 });
 
-// The lug-bolt anchors used to be fitted to one client's sheets (a -1/2 in fudge): they now follow the stated method.
+// Lug-bolt lengths follow the stated tapped-body rule, never lengths fitted to particular drawings.
 test('pair studs are the B16.5 table; lap-joint, lug and wafer bolting follow the stated B16.5 bolt-length method', () => {
   const b = (nps: number, makeup: Parameters<typeof bolting>[3], opts?: Parameters<typeof bolting>[4]) => {
     const r = bolting(nps, '150#', makeup === 'flange-pair' ? 'RF' : 'FF', makeup, opts)!;
@@ -53,16 +53,19 @@ test('pair studs are the B16.5 table; lap-joint, lug and wafer bolting follow th
   // Sch 10S stub-end laps with 1/16 in gaskets keep NPS 3 LJ pairs at 3-1/2 in.
   assert.deepEqual(b(3, 'lj-pair', { lap: pipeWall(3, '10S'), gasket: gasketThickness('sheet-1/16') }), [4, 0.625, 3.5, 'stud']);
   assert.equal(bolting(3, '150#', 'FF', 'lj-pair', { lap: pipeWall(3, '10S') })!.assumed, undefined);
-  // One side of a lug body: the pair method less 1/2 in, at most one flange, nut and the 0.12 in gasket allowance plus
-  // half the API 609 body and 1/4 in; up to the next 1/4 in. 2-3/4 in at NPS 2 and 3-1/4 in at NPS 3 are the lengths
-  // issued Class 150 sets buy; on the B16.5 basis, neither the gasket nor a lap moves them.
+  // One side of a lug body, calculated by the tapped-body rule (in inches): flange C + gasket (the B16.5 0.12 in
+  // allowance) + one 5/8 in diameter engaged + a 5/8 in nut + two 5/8-11 UNC threads, rounded up to 1/4 in.
   const up = (v: number) => Math.ceil(v * 4 - 1e-9) / 4;
-  assert.deepEqual(b(2, 'lug-valve-side'), [4, 0.625, up(Math.min(2 * (0.75 + 0.12 + 0.625) + 0.12 + 0.06 - 0.5, 0.75 + 0.12 + 0.12 + 43 / 50.8 + 0.625 + 0.06 + 0.25)), 'lug']);
-  assert.deepEqual(b(2, 'lug-valve-side'), [4, 0.625, 2.75, 'lug']);
-  assert.deepEqual(b(3, 'lug-valve-side'), [4, 0.625, 3.25, 'lug']);
-  assert.deepEqual(b(3, 'lug-valve-side', { body: 47, gasket: gasketThickness('sheet-1/16'), lap: pipeWall(3, '10S') }), [4, 0.625, 3.25, 'lug']);
-  assert.equal(inch(bolting(2, '150#', 'RF', 'lug-valve-side')!.length), 2.75);
-  assert.match(bolting(2, '150#', 'RF', 'lug-valve-side')!.source, /lug-body convention/);
+  assert.deepEqual(b(2, 'lug-valve-side'), [4, 0.625, up(0.75 + 0.12 + 0.625 + 0.625 + 2 / 11), 'lug']); // 2.30 -> 2 1/2
+  assert.deepEqual(b(2, 'lug-valve-side'), [4, 0.625, 2.5, 'lug']);
+  assert.deepEqual(b(3, 'lug-valve-side'), [4, 0.625, 2.5, 'lug']); // 0.94 + 0.12 + 0.625 + 0.625 + 0.18 = 2.49
+  // A lap-joint flange (C less its raised face) with its 10S lap and a 1/16 in gasket: 0.875 + 0.12 + 0.0625 + 1.43 = 2.49.
+  assert.deepEqual(b(3, 'lug-valve-side', { body: 47, gasket: gasketThickness('sheet-1/16'), lap: pipeWall(3, '10S') }), [4, 0.625, 2.5, 'lug']);
+  // The gasket and lap are part of the grip, so a thicker joint can take the next 1/4 in.
+  assert.deepEqual(b(3, 'lug-valve-side', { gasket: 6, lap: pipeWall(3, '10S') }), [4, 0.625, 2.75, 'lug']);
+  assert.equal(bolting(2, '150#', 'RF', 'lug-valve-side')!.basis, 'calculated');
+  assert.match(bolting(2, '150#', 'RF', 'lug-valve-side')!.source, /^calculated by the tapped-body rule/);
+  assert.equal(bolting(2, '150#', 'RF', 'flange-pair')!.basis, 'standard');
   assert.equal(bolting(2, '150#', 'RF', 'wafer-valve')!.count, 4);
   assert.ok(bolting(2, '150#', 'RF', 'wafer-valve')!.length > bolting(2, '150#', 'RF', 'flange-pair')!.length);
   assert.equal(bolting(2, '600#', 'FF', 'flange-pair'), undefined);
@@ -75,8 +78,10 @@ test('lug bolts are shorter than a flange-pair stud yet engage the lug by at lea
   for (const cls of [150, 300]) for (const nps of [2, 2.5, 3, 4, 5, 6, 8, 10, 12, 14, 16, 18, 20, 24]) {
     const lug = bolting(nps, cls, 'RF', 'lug-valve-side'), wafer = bolting(nps, cls, 'RF', 'wafer-valve');
     const body = standardRow('BFLY-LUG', nps, cls)?.faceToFace, f = flange(nps, cls)!, pair = bolting(nps, cls, 'RF', 'flange-pair')!;
-    if (!body) { assert.equal(lug, undefined); continue; }
-    assert.ok(lug && wafer, `${cls}# NPS ${nps}`);
+    // A lug side needs no body length (it only limits the engagement); a wafer stud spans the body, so needs one.
+    assert.ok(lug, `${cls}# NPS ${nps}`);
+    if (!body) { assert.equal(wafer, undefined); continue; }
+    assert.ok(wafer, `${cls}# NPS ${nps}`);
     assert.equal(lug.count, f.boltCount);
     assert.ok(lug.length <= pair.length, `${cls}# NPS ${nps}: lug ${lug.length} vs pair ${pair.length}`);
     assert.ok(lug.length - f.thickness - lug.diameter >= lug.diameter, `${cls}# NPS ${nps}: lug engagement`);
@@ -171,7 +176,19 @@ test('valve, fitting and small-bore spot values', () => {
   assert.equal(standardRow('BFLY', 2, '150#')!.boltLength, bolting(2, '150#', 'RF', 'lug-valve-side')!.length);
   assert.equal(ff('C-RED', 24, undefined, 20), 508);
   assert.equal(standardRow('W-RTEE', 24, undefined, 20)!.branchTakeout, 431.8);
-  assert.equal(standardRow('W-3D45ELL', 4)!.takeout, 127);
+  // ASME B16.9 3D elbows from its table (in): NPS 3/4 2.25 / 0.94, NPS 4 12.00 / 5.00, NPS 6 18.00 / 7.44, NPS 30 45° 37.25.
+  const threeD = (code: string, nps: number) => standardRow(code, nps)!;
+  assert.deepEqual([threeD('W-3D90EL', 0.75).takeout, threeD('W-3D45ELL', 0.75).takeout], [57.15, 23.81]);
+  assert.deepEqual([threeD('W-3D90EL', 4).takeout, threeD('W-3D45ELL', 4).takeout], [304.8, 127]);
+  assert.deepEqual([threeD('W-3D90EL', 6).takeout, threeD('W-3D45ELL', 6).takeout], [457.2, 188.91]);
+  assert.equal(threeD('W-3D45ELL', 30).takeout, 946.15);
+  assert.equal(threeD('W-3D45ELL', 34).takeout, 1073, 'the SI table where the inch value is not transcribed');
+  assert.match(threeD('W-3D45ELL', 6).source, /^ASME B16\.9 3D elbow/);
+  assert.equal(threeD('W-3D45ELL', 6).dimensionBasis, undefined);
+  assert.equal(standardRow('W-3D45ELL', 0.5), undefined, 'B16.9 has no 3D elbow below NPS 3/4');
+  // Beyond the table, the elbow's geometry: R = 3 x NPS, a 45° takes out R tan 22.5°.
+  assert.equal(threeD('W-3D45ELL', 60).takeout, Math.round(4572 * Math.tan(Math.PI / 8) * 100) / 100);
+  assert.equal(threeD('W-3D45ELL', 60).dimensionBasis, 'calculated');
   assert.equal(standardRow('LR180R', 4)!.takeout, 152.4);
   assert.deepEqual(stubEnd(2, true), { length: 63.5, lapOd: 92.07, lapThickness: 2.77, short: true, schedule: '10S', assumed: 'the stub-end lap uses the 10S wall because no pipe schedule was given' });
   assert.deepEqual(stubEnd(2, true, '10S'), { length: 63.5, lapOd: 92.07, lapThickness: 2.77, short: true, schedule: '10S' });

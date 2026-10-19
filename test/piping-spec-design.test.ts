@@ -4,7 +4,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { appendRun, applyComponent, attachComponent, newIso, parseIsoJson, runResult, type CatalogItem, type IsoDocument, type PipeSpec } from '../src/core/model.ts';
 import { catalogRow, dimensionIssues, flangedJoints, jointGasket, specFlangeClass } from '../src/core/joints.ts';
 import {
-  LUG_CONVENTION, SOCKET_WELD_GAP, bolting, flange, forgedClassForWall, pipeOd, pipeWall, returnBend, standardRow, stubEnd
+  SOCKET_WELD_GAP, bolting, flange, forgedClassForWall, pipeOd, pipeWall, returnBend, standardRow, stubEnd
 } from '../src/core/standards.ts';
 import { designValue, specDesign, validSpecDesign } from '../src/core/spec-design.ts';
 import { COMPONENT_TYPES } from '../src/core/components.ts';
@@ -138,12 +138,18 @@ test('butterfly valves: API 609 category by class, separate wafer, lug and doubl
 
 test('lug bolts into a tapped body engage one diameter; a lap-joint flange adds its stub-end lap to the grip', () => {
   const up = (v: number) => Math.ceil(v * 4 - 1e-9) / 4;
+  // In inches: flange C + the B16.5 0.12 in gasket allowance + one 5/8 in diameter engaged + a 5/8 in nut + two
+  // 5/8-11 UNC threads (2/11 in), rounded up to 1/4 in: 0.75 + 0.12 + 0.625 + 0.625 + 0.18 = 2.30 -> 2 1/2 in.
   const tapped = bolting(2, 150, 'RF', 'lug-valve-side', { tapped: true })!;
-  close(tapped.length, inch(up(0.75 + 0.12 + 0.625 + 0.12 + 0.625 + 0.06)));
-  assert.match(tapped.source, /tapped body/);
-  assert.equal(tapped.assumed, LUG_CONVENTION, 'no standard gives lug-bolt lengths: the convention is said');
+  close(tapped.length, inch(up(0.75 + 0.12 + 0.625 + 0.625 + 2 / 11)));
+  close(tapped.length, inch(2.5));
+  assert.match(tapped.source, /^calculated by the tapped-body rule/);
+  assert.equal(tapped.basis, 'calculated');
+  assert.equal(tapped.assumed, undefined, 'a calculated length is the rule\'s value, not an assumption');
+  // A lap-joint flange (C less the raised face) clamps its 1/2 in lap: 0.875 + 0.5 + 0.12 + 0.625 + 0.625 + 0.18 = 2.93 -> 3 in.
   const lap = bolting(4, 150, 'RF', 'lug-valve-side', { tapped: true, lap: inch(0.5) })!;
-  close(lap.length, inch(up(0.94 - 1 / 16 + 0.5 + 0.12 + 0.625 + 0.12 + 0.625 + 0.06)));
+  close(lap.length, inch(up(0.94 - 1 / 16 + 0.5 + 0.12 + 0.625 + 0.625 + 2 / 11)));
+  close(lap.length, inch(3));
 });
 
 test('bolt rows are matched by face, class and makeup, and their count, diameter and length are taken together', () => {
@@ -188,10 +194,10 @@ test('pipe walls come from the B36.10M schedules, and a missing wall is assumed 
   assert.equal(pipeWall(24, 'SCH.10'), 6.35);
   assert.equal(pipeWall(2, 'SCH 20'), undefined);
   const so = standardRow('FLG-RFSO', 2, 150, undefined, 'SCH 20')!;
-  close(so.takeout, pipeWall(2, 'STD')! + 1.59);
+  close(so.takeout, pipeWall(2, 'STD')!);
   assert.match(so.assumed!, /STD wall because schedule SCH 20/);
-  // B31.3 limits the set-back to the lesser of the wall and 1/4 in; the 1/16 in shop clearance is added and stated.
-  close(standardRow('FLG-RFSO', 8, 150, undefined, 'XS')!.takeout, 6.35 + 1.59);
+  // B31.3 limits the set-back to the lesser of the wall and 1/4 in, with no extra clearance unless the specification adds one.
+  close(standardRow('FLG-RFSO', 8, 150, undefined, 'XS')!.takeout, 6.35);
   assert.match(standardRow('FLG-RFSO', 8, 150, undefined, 'XS')!.source, /1\/4 in/);
   // Caps: length E up to the XS wall, E1 above it.
   close(standardRow('W-CAP', 4, undefined, undefined, 'XS')!.takeout, inch(2.5));

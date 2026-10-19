@@ -3,7 +3,7 @@ import { COMPONENT_TYPES, COMPONENT_TYPE_BY_CODE, SYMBOL_FAMILIES, type SymbolFa
 import { unitsPerMm } from './paper'
 import { boltedConnector, boltedDirect, breakOwner, stubInFlange, defaultCode, flangedAllowance, flangedJoints, matingFlange, spansSpools, nippleEnds, nippleLength, nippleText, nodeItem, pipeEndPrep, specRating } from './joints'
 import { formatLength } from './format'
-import { flange, GASKET_THICKNESS, pipeOd, SOCKET_WELD_GAP, type ButterflyBody, type ButterflyCategory, type ValvePattern } from './standards'
+import { flange, GASKET_THICKNESS, pipeOd, SOCKET_WELD_GAP, tangentLength, type ButterflyBody, type ButterflyCategory, type ValvePattern } from './standards'
 import { validCatalogDesign, validSpecDesign, type SpecDesign } from './spec-design'
 import { materialErrors, materialTakeoff, routeOrder } from './material-list'
 import { profileError, profileOf, type FabricationProfile } from './profile'
@@ -85,9 +85,23 @@ export interface CatalogItem {
   valveCategory?: ButterflyCategory
   /** Bolt rows: stud bolts (the default), machine bolts, or lug bolts into a tapped body. */
   boltKind?: 'stud' | 'machine' | 'lug'
+  /**
+   * Slip-on flange rows: the pipe end's set-back from the flange face (mm), the slip-on's pipe-side takeout. It wins
+   * over the row's `takeout` and dimensions the row on its own; a slip-on row without either takes the specification's
+   * `slipOnSetBack`, else the calculated default (standards.ts `slipOnSetBack`).
+   */
+  setBack?: number
+  /** Built-in rows: how the takeout is known when it is not a standard table value (see standards.ts StandardRow). */
+  dimensionBasis?: 'specification' | 'calculated'
   /** What a built-in standard dimension had to assume (no class, pattern or wall given); validation lists it. */
   assumed?: string
 }
+/** A slip-on flange row's stated set-back (`setBack` is read on slip-on rows only). */
+const setBackOf = (f: CatalogItem) => f.setBack != null && /SO$/.test(f.component ?? '') ? f.setBack : undefined
+/** A catalogue row's takeout: a slip-on row's stated set-back, else its takeout. */
+export const rowTakeout = (f: CatalogItem) => setBackOf(f) ?? f.takeout
+/** Whether a catalogue row gives its takeout (a slip-on row's set-back gives it). */
+export const rowDimensioned = (f: CatalogItem) => setBackOf(f) != null || !f.takeoutMissing
 export interface PipeSize {
   nps: number
   od: number
@@ -346,6 +360,23 @@ export interface DrawingStyle {
   elevations?: boolean
   /** A second dimension chain to component body faces, in addition to mating flange faces. */
   componentFaces?: boolean
+  /**
+   * Which span the gaskets of a flanged component (a valve, an instrument) inside a straight are dimensioned in.
+   * 'component' (default): the component is dimensioned between its mating flange faces, so its span is its
+   * face-to-face plus both gaskets and the pipe spans measure the fabricated spools exactly. 'pipe': the component is
+   * dimensioned to its own body faces (its catalogue face-to-face) and each gasket is in the pipe span beside it. The
+   * cut schedule measures from the same faces (src/core/stations.ts), so cuts do not change, only where the gasket is
+   * shown.
+   */
+  gasketSpan?: 'component' | 'pipe'
+  /**
+   * Which span the gasket of a flange pair welded straight onto a fitting (no pipe between) is dimensioned in. 'pipe'
+   * (default): the pair is located at its face on the fitting's side, so the fitting's make-up is the fitting and its
+   * flange alone and the gasket is in the pipe span. 'fitting': located at its face on the pipe's side, so the pipe
+   * span is the pipe and its flange alone and the gasket is in the fitting's make-up, as some issued drawings
+   * dimension it. The cut schedule measures from the same face (src/core/stations.ts); cuts do not change.
+   */
+  fittingGasketSpan?: 'pipe' | 'fitting'
   /** Print SCALE: NTS on schematic sheets. Omitted means shown. */
   scaleNote?: boolean
   /**
@@ -609,6 +640,14 @@ const rows = [
   [6, 168.3, 7.11, 18.99],
   [8, 219.1, 8.18, 28.58]
 ]
+/**
+ * The starter specifications' butt-weld root gap (mm): specification data, edited with the specification (or on a pipe
+ * as its own `rootGap`), never a value the engine falls back to. ASME B31.3 does not fix a root opening; the
+ * qualified welding procedure (ASME BPVC Section IX) states it, typically 1/16 to 1/8 in (1.6 to 3.2 mm) for an
+ * open-root pipe butt weld. 3 mm, the metric 1/8 in, is the open end of that range, for a root run without a backing
+ * ring; set the specification's own value from its WPS.
+ */
+export const STARTER_ROOT_GAP = 3
 export function defaultSpec(): PipeSpec {
   return {
     id: 'CS40',
@@ -618,7 +657,7 @@ export function defaultSpec(): PipeSpec {
     rating: 'Class 150',
     // A starter specification states its flange design, so new drawings do not rest on assumed classes or gaskets.
     design: { flangeClass: 150, flangeFace: 'RF', gasketThickness: GASKET_THICKNESS.spiralWoundCompressed },
-    rootGap: 3,
+    rootGap: STARTER_ROOT_GAP,
     socketGap: 1.6,
     density: 7850,
     pipeCostM: 0,
@@ -866,14 +905,16 @@ export function takeout(
   const own = node.branchEdgeId === runId && node.kind !== 'olet'
     ? node.branchTakeout ?? (item?.takeoutMissing ? undefined : item?.branchTakeout)
     : node.takeout ?? bendTakeout(doc, node) ?? (isFormedBend(doc, node) ? undefined
-      : item?.takeoutMissing ? undefined : lateralLongSide(doc, node, runId, item) ?? oletTakeout(doc, node, item) ?? item?.takeout)
+      : item && !rowDimensioned(item) ? undefined : lateralLongSide(doc, node, runId, item) ?? oletTakeout(doc, node, item) ?? (item && rowTakeout(item)))
   return own == null || !run ? own : own + flangedAllowance(doc, node, run)
 }
 /**
- * Where each dimension of a node comes from: measured on the node, the specification row, the built-in ASME standard
- * (the specification has no row with a dimension, or its row lacks one), or nowhere. The inspector and sheet show it.
+ * Where each dimension of a node comes from: measured on the node, the specification (its row, or a design value such
+ * as its slip-on set-back), a built-in standard table (the specification has no row with a dimension, or its row lacks
+ * one), a documented calculation where no table gives the value (a slip-on flange's set-back), or nowhere. The
+ * inspector shows it as the value's source; only 'missing' is a problem.
  */
-export type DimensionSource = 'measured' | 'specification' | 'standard' | 'missing'
+export type DimensionSource = 'measured' | 'specification' | 'standard' | 'calculated' | 'missing'
 export function dimensionSource(doc: IsoDocument, node: PipeNode, runId?: string): DimensionSource {
   if (['end', 'weld', 'support', 'annotation'].includes(node.kind)) return 'measured'
   if (runId ? node.portTakeouts?.[runId] != null || (node.branchEdgeId === runId && node.kind !== 'olet' ? node.branchTakeout : node.takeout) != null
@@ -881,7 +922,7 @@ export function dimensionSource(doc: IsoDocument, node: PipeNode, runId?: string
   if (isFormedBend(doc, node)) return node.bendRadius! > 0 ? 'measured' : 'missing'
   const own = fitting(doc, node), item = nodeItem(doc, node)
   if (!item || (runId && takeout(doc, node, runId) == null)) return 'missing'
-  return own && own === item && !own.takeoutMissing ? 'specification' : item.takeoutMissing ? 'missing' : 'standard'
+  return own && own === item && rowDimensioned(own) ? 'specification' : !rowDimensioned(item) ? 'missing' : item.dimensionBasis ?? 'standard'
 }
 /** Header centreline to a branch outlet's end, where its branch pipe starts (the takeout on the branch). */
 export function oletReach(doc: IsoDocument, node: PipeNode, branch: PipeRun): number | undefined {
@@ -934,11 +975,11 @@ export function deflection(doc: IsoDocument, node: PipeNode): number | undefined
   const [a, b] = legs, cos = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) / ((length(a) * length(b)) || 1)
   return Math.PI - Math.acos(Math.max(-1, Math.min(1, cos)))
 }
-/** Tangent length of a pipe bend of known radius: R · tan(θ/2) for the deflection θ the pipes make. */
+/** Tangent length of a pipe bend of known radius: R · tan(θ/2) for the deflection θ the pipes make (`tangentLength`). */
 export function bendTakeout(doc: IsoDocument, node: PipeNode): number | undefined {
   if (!(node.bendRadius! > 0)) return undefined
   const theta = deflection(doc, node)
-  return theta == null ? undefined : node.bendRadius! * Math.tan(theta / 2)
+  return theta == null ? undefined : tangentLength(node.bendRadius!, theta)
 }
 /** Centreline arc length R · θ of a formed bend: the pipe it takes between its tangent points. */
 export function bendArc(doc: IsoDocument, node: PipeNode): number | undefined {
@@ -1133,7 +1174,7 @@ export function preferredFitting(
   const score = (f: CatalogItem) =>
     (f.component && prepPrefix[prep] && !prepPrefix[prep]!.test(f.component) ? 10 : 0) +
     (/SR|3D|180|BEND|CRS|LAT/i.test(f.component ?? '') ? 5 : 0) +
-    (f.takeoutMissing ? 3 : 0)
+    (rowDimensioned(f) ? 0 : 3)
   return spec.fittings
     .filter(
       f =>
@@ -1656,7 +1697,7 @@ function slipOn(doc: IsoDocument, n: PipeNode, run: PipeRun): { setBack: number;
   const port = COMPONENT_TYPES.find(t => t.code === code)?.endPrep === 'FL'
   const mate = port ? matingFlange(doc, n, run) : n.kind === 'flange' ? { code, item: own } : null
   if (!mate || !/SO$/.test(mate.code)) return undefined
-  const setBack = mate.item?.takeout ?? 0
+  const setBack = mate.item ? rowTakeout(mate.item) : 0
   return { setBack, hub: mate.item?.lengthThroughHub ?? flange(run.nps, mate.item?.rating ?? specRating(getSpec(doc, run.specId)))?.soLength ?? setBack }
 }
 /**
@@ -2185,6 +2226,8 @@ function readPiping(raw: string, where: { at: string }): IsoDocument {
       typeof d.style.weldNumbers !== 'boolean' || !['cad', 'sans'].includes(d.style.lettering) ||
       (d.style.elevations != null && typeof d.style.elevations !== 'boolean') ||
       (d.style.componentFaces != null && typeof d.style.componentFaces !== 'boolean') ||
+      (d.style.gasketSpan != null && !['component', 'pipe'].includes(d.style.gasketSpan)) ||
+      (d.style.fittingGasketSpan != null && !['pipe', 'fitting'].includes(d.style.fittingGasketSpan)) ||
       (d.style.scaleNote != null && typeof d.style.scaleNote !== 'boolean') ||
       (d.style.dimensionRounding != null && !['chain', 'individual'].includes(d.style.dimensionRounding)) ||
       (d.style.stackSizeLabels != null && typeof d.style.stackSizeLabels !== 'boolean') ||

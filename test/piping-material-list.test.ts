@@ -100,11 +100,18 @@ test('break joints list only what this drawing supplies, and lug mates take lug 
   ({ doc, end } = build());
   end.jointSupply = { gasket: true, bolts: true, mate: 'lug' };
   const bolts = sheetMaterials(doc, 'S-1').find(r => r.category === 'bolt')!;
-  // A lug mate of unknown length is sized as the class's API 609 lug butterfly body, like a drawn lug valve: the pair
-  // method less 1/2 in, 2(0.75 + 0.12 + 0.625) + 0.12 + 0.06 - 0.5 = 2.67" -> 2 3/4", the length issued sets buy.
-  assert.equal(bolts.nd, `5/8"X2 3/4"`);
+  // No lug-bolt row: calculated by the tapped-body rule. Flange C less the raised face 0.6875" (17.46 mm) + the 10S
+  // stub-end lap 2.77 mm + the 1/16" gasket 1.59 mm + one diameter engaged 15.88 mm + the nut 15.88 mm + two 11-TPI
+  // threads 4.62 mm = 58.2 mm = 2.29" -> 2 1/2". A tapped mate of unknown length has no half-body limit to assume.
+  assert.equal(bolts.nd, `5/8"X2 1/2"`);
   assert.match(bolts.description, /LUG BOLT/);
   assert.equal(bolts.qtyText, '4');
+  assert.equal(bolts.assumed, undefined, 'a calculated lug-bolt length is not an assumption');
+  // The specification's own lug-bolt row wins over the rule, whatever length it lists.
+  doc.specs[0].fittings.push({ id: 'S1:LUG-2', component: 'BOLT-RF', kind: 'bolt', nps: 2, takeout: 0, description: 'LUG', source: 'test',
+    bomDescription: 'LUG BOLT, ASTM A193 B8M CL2 C/W 1 HEX NUT, CL150', boltKind: 'lug', boltCount: 4, boltDiameter: inch(5 / 8), boltLength: inch(2.75) });
+  const own = sheetMaterials(doc, 'S-1').find(r => r.category === 'bolt')!;
+  assert.deepEqual([own.nd, own.description], [`5/8"X2 3/4"`, 'LUG BOLT, ASTM A193 B8M CL2 C/W 1 HEX NUT, CL150']);
 });
 
 test('stud and lug bolt rows follow the joints along the route, independent of bolt length', () => {
@@ -114,10 +121,10 @@ test('stud and lug bolt rows follow the joints along the route, independent of b
   for (const node of [start, end]) applyComponent(doc, node, 'FLG-RFLJ', doc.specs[0].fittings[2]);
   end.jointSupply = { gasket: true, bolts: true, mate: 'lug' };
   const bolts = () => sheetMaterials(doc, 'S').filter(r => r.category === 'bolt');
-  assert.deepEqual(bolts().map(r => r.nd), [`5/8"X3 1/4"`, `5/8"X2 3/4"`]);
+  assert.deepEqual(bolts().map(r => r.nd), [`5/8"X3 1/4"`, `5/8"X2 1/2"`]);
   // Reversing which end has the lug mate reverses the order, even though the bolt lengths are unchanged.
   start.jointSupply = end.jointSupply; end.jointSupply = undefined;
-  assert.deepEqual(bolts().map(r => r.nd), [`5/8"X2 3/4"`, `5/8"X3 1/4"`]);
+  assert.deepEqual(bolts().map(r => r.nd), [`5/8"X2 1/2"`, `5/8"X3 1/4"`]);
 });
 
 test('a lap stub welded straight to a tee has one weld at the tee face', () => {

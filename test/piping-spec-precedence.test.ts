@@ -80,22 +80,80 @@ test('specification bolt rows written for the other face still size the joint, a
   assert.deepEqual(rows.map(r => [r.qtyText, r.nd, r.description]), [['8', '5/8"X3 1/2"', 'STUD BOLT, INVENTED']]);
 });
 
-test('lug bolts: a drawn lug valve and a lug mate off the drawing take the same API 609 body length', () => {
-  // Class 150: 2-3/4 in at NPS 2 and 3-1/4 in at NPS 3, whatever the gasket or lap.
-  assert.equal(bolting(2, 150, 'FF', 'lug-valve-side', { body: 43, gasket: inch(1 / 16), lap: 2.77 })!.length, inch(2.75));
-  assert.equal(bolting(3, 150, 'FF', 'lug-valve-side', { body: 47, gasket: inch(1 / 16) })!.length, inch(3.25));
+test('lug bolts without a specification row are calculated: flange + gasket + engagement + projection, up to 1/4 in', () => {
+  // L = F + G + E + P (standards.ts lugBolt), all in mm, rounded up to 1/4 in (5 mm for metric bolting).
+  const inches = (mm: number) => Math.round(mm / 25.4 * 1000) / 1000;
+  const len = (...args: Parameters<typeof bolting>) => inches(bolting(...args)!.length);
+  // NPS 2 Class 150 lap-joint flange to a 43 mm lug body: F = 17.46 flange (C 0.75 in less the 1/16 in raised face)
+  // + 2.77 lap; G = 1.59; E = min(1 x 15.88, 43 / 2) = 15.88; P = 15.88 nut + 2 x 25.4/11 = 4.62.
+  // 20.23 + 1.59 + 15.88 + 15.88 + 4.62 = 58.20 mm = 2.29 in -> 2 1/2 in.
+  assert.equal(len(2, 150, 'FF', 'lug-valve-side', { body: 43, gasket: inch(1 / 16), lap: 2.77 }), 2.5);
+  // Cap screws (machine bolting into the lug) have no nut or projection: 20.23 + 1.59 + 15.88 = 37.70 mm -> 1 1/2 in.
+  const screws = bolting(2, 150, 'FF', 'lug-valve-side', { body: 43, gasket: inch(1 / 16), lap: 2.77, type: 'machine' })!;
+  assert.deepEqual([inches(screws.length), screws.capScrews, screws.kind], [1.5, true, 'lug']);
+  // NPS 3 Class 150, lap 3.05: (22.23 + 3.05) + 1.59 + 15.88 + 15.88 + 4.62 = 63.25 mm = 2.49 in -> 2 1/2 in.
+  assert.equal(len(3, 150, 'FF', 'lug-valve-side', { body: 47, gasket: inch(1 / 16), lap: 3.05 }), 2.5);
+  // NPS 6 Class 300 weld-neck into a tapped body, 3.3 mm spiral-wound gasket, 3/4-10 UNC:
+  // 36.51 + 3.3 + 19.05 + 19.05 + 2 x 2.54 = 82.99 mm = 3.27 in -> 3 1/2 in.
+  assert.equal(len(6, 300, 'RF', 'lug-valve-side', { tapped: true, gasket: 3.3 }), 3.5);
+  // NPS 4 Class 600 (C 1.5 in + the 1/4 in raised face = 44.45), 7/8-9 UNC: 44.45 + 3.3 + 22.23 + 22.23 + 5.64
+  // = 97.85 mm = 3.85 in -> 4 in; as metric bolting (ISO 261 M22 pitch 2.5) 97.21 mm -> 100 mm.
+  assert.equal(len(4, 600, 'RF', 'lug-valve-side', { tapped: true, gasket: 3.3 }), 4);
+  assert.equal(bolting(4, 600, 'RF', 'lug-valve-side', { tapped: true, gasket: 3.3, system: 'metric' })!.length, 100);
+  // The specification's engagement and projection parameters move the rule: 1.5 diameters and 3 threads at NPS 2
+  // add 7.94 + 2.31 mm: 68.45 mm = 2.69 in -> 2 3/4 in.
+  assert.equal(len(2, 150, 'FF', 'lug-valve-side', { body: 43, gasket: inch(1 / 16), lap: 2.77, engagement: 1.5, projectionThreads: 3 }), 2.75);
+  // ...and engagement is never more than half the body: 3 diameters (47.63) are held to 43 / 2 = 21.5 mm.
+  assert.match(bolting(2, 150, 'FF', 'lug-valve-side', { body: 43, gasket: inch(1 / 16), lap: 2.77, engagement: 3 })!.source, /engagement 21\.5 \(half the 43 mm body\)/);
+  for (const b of [screws, bolting(6, 300, 'RF', 'lug-valve-side', { tapped: true, gasket: 3.3 })!]) {
+    assert.equal(b.basis, 'calculated');
+    assert.equal(b.assumed, undefined);
+  }
+
+  // On a drawing: a lug valve and a lug mate off the drawing take the same calculated length, with no warning.
   const doc = newIso(); doc.units = 'imperial'; doc.specs = [flatLapSpec()];
   appendRun(doc, null, [inch(40), 0, 0], 'X9', 2, 'S', 'L');
   placeComponentOnPipe(doc, doc.runs[0].id, type('BFLY-LUG'), 0.5, doc.specs[0].fittings.find(f => f.component === 'BFLY-LUG'));
-  const valve = flangedJoints(doc).filter(j => j.bolts?.kind === 'lug');
-  assert.deepEqual(valve.map(j => j.bolts!.length), [inch(2.75), inch(2.75)]);
-  // A flange whose mate is a lug valve (or tapped nozzle) on another drawing: sized for the API 609 body, and said.
   const end = appendRun(doc, null, [0, inch(20), 0], 'X9', 2, 'T', 'L');
   applyComponent(doc, end, 'FLG-FFLJ', doc.specs[0].fittings[1]);
   end.jointSupply = { gasket: true, bolts: true, mate: 'lug' };
-  const mate = flangedJoints(doc).find(j => j.nodeId === end.id)!;
-  assert.deepEqual([mate.bolts!.kind, mate.bolts!.length], ['lug', inch(2.75)]);
-  assert.match(mate.assumed.join(), /API 609 lug butterfly body/);
+  const lugs = () => flangedJoints(doc).filter(j => j.bolts?.kind === 'lug');
+  assert.deepEqual(lugs().map(j => [inches(j.bolts!.length), j.bolts!.basis]), Array(3).fill([2.5, 'calculated']));
+  assert.ok(lugs().every(j => !j.assumed.length), JSON.stringify(lugs().map(j => j.assumed)));
+  // The specification's parameters apply to every lug joint without a row.
+  doc.specs[0].design = { lugBoltEngagement: 1.5, lugBoltProjection: 3 };
+  assert.deepEqual(lugs().map(j => inches(j.bolts!.length)), Array(3).fill(2.75));
+  // Machine bolting makes the lug sides cap screws, with no nut.
+  doc.specs[0].design = { boltType: 'machine' };
+  assert.deepEqual(lugs().map(j => [inches(j.bolts!.length), j.bolts!.nuts]), Array(3).fill([1.5, 0]));
+});
+
+test('a specification lug-bolt row always wins, matched by makeup, face, class and size', () => {
+  const lugRow = row('BOLT-RF', 'bolt', 0, 'LUG BOLT, INVENTED', { id: 'X9/LUG-2', boltKind: 'lug', boltCount: 4, boltDiameter: inch(5 / 8), boltLength: inch(2.75) });
+  const doc = newIso(); doc.units = 'imperial'; doc.specs = [flatLapSpec()];
+  doc.specs[0].fittings.push(lugRow);
+  appendRun(doc, null, [inch(40), 0, 0], 'X9', 2, 'S', 'L');
+  placeComponentOnPipe(doc, doc.runs[0].id, type('BFLY-LUG'), 0.5, doc.specs[0].fittings.find(f => f.component === 'BFLY-LUG'));
+  const end = appendRun(doc, null, [0, inch(20), 0], 'X9', 2, 'T', 'L');
+  applyComponent(doc, end, 'FLG-FFLJ', doc.specs[0].fittings[1]);
+  end.jointSupply = { gasket: true, bolts: true, mate: 'lug' };
+  const lugs = flangedJoints(doc).filter(j => j.bolts?.kind === 'lug');
+  // Drawn lug valve (both sides) and the tapped mate: the row's set, whatever the rule would give.
+  assert.deepEqual(lugs.map(j => [j.bolts!.length, j.bolts!.item?.id, j.bolts!.basis, j.bolts!.source]), Array(3).fill([inch(2.75), 'X9/LUG-2', 'specification', 'specification row X9/LUG-2']));
+  assert.deepEqual(sheetMaterials(doc, 'S').filter(r => r.category === 'bolt').map(r => [r.qtyText, r.nd, r.description]), [['8', '5/8"X2 3/4"', 'LUG BOLT, INVENTED']]);
+  // A lug row is never a flange pair's set, nor the pair stud row a lug side's.
+  const pair = pairs(flatLapSpec({ fittings: [...flatLapSpec().fittings, lugRow] }), ['FLG-FFLJ', 'FLG-FFLJ']);
+  assert.ok(flangedJoints(pair).every(j => j.bolts!.item?.id === 'X9/BOLT-RF-2' && j.bolts!.length === inch(3.5)));
+  // A row for another class does not size this class's joint; the rule does.
+  lugRow.rating = '300#';
+  assert.ok(flangedJoints(doc).filter(j => j.bolts?.kind === 'lug').every(j => j.bolts!.length === inch(2.5) && j.bolts!.basis === 'calculated'));
+  // Machine bolting: a machine-bolt row sizes flange pairs, and a lug row is bought as cap screws (no nut).
+  delete lugRow.rating;
+  const machine = flatLapSpec({ design: { boltType: 'machine' }, fittings: [...flatLapSpec().fittings, lugRow,
+    row('BOLT-RF', 'bolt', 0, 'MACHINE BOLT, INVENTED', { id: 'X9/MB-2', boltKind: 'machine', boltCount: 4, boltDiameter: inch(5 / 8), boltLength: inch(3) })] });
+  assert.ok(flangedJoints(pairs(machine, ['FLG-FFLJ', 'FLG-FFLJ'])).every(j => j.bolts!.item?.id === 'X9/MB-2' && j.bolts!.kind === 'machine' && j.bolts!.nuts === 1));
+  doc.specs = [machine];
+  assert.ok(flangedJoints(doc).filter(j => j.bolts?.kind === 'lug').every(j => j.bolts!.item?.id === 'X9/LUG-2' && j.bolts!.nuts === 0));
 });
 
 test('a drawing saved before the socket-weld gap default keeps the gap it was issued with', () => {

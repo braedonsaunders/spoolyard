@@ -15,6 +15,12 @@ export interface FabricationProfile {
   orderIncrement?: number
   /** Saw kerf allowed between pieces cut from one length (mm). Default 1/8" (3.175 mm) imperial, 3 mm metric. */
   kerf?: number
+  /**
+   * A pipe piece within this of its stock length (mm) is a full length used as it comes, listed as not cut. Default
+   * 1/32" (0.79 mm) on imperial drawings, below the 1/16" lengths are lettered to, and 0.8 mm on metric ones, below
+   * their whole millimetres; a piece the list would letter at the stock length is then never given a cut of nothing.
+   */
+  uncutTolerance?: number
   /** Extra length added to a pipe piece for each formed bend (grip or springback allowance), mm. Default 0. */
   bendAllowance?: number
   /** Pipe rows give their cut after the description (" - CUT TO …"), or leave the cut to the cut list. Default 'description'. */
@@ -63,6 +69,7 @@ export function profileOf(doc: Pick<IsoDocument, 'units' | 'profile'>): Resolved
     stockLength: p.stockLength ?? SINGLE_RANDOM[doc.units],
     orderIncrement: p.orderIncrement ?? (metric ? 10 : INCH),
     kerf: p.kerf ?? (metric ? 3 : INCH / 8),
+    uncutTolerance: p.uncutTolerance ?? (metric ? 0.8 : INCH / 32),
     bendAllowance: p.bendAllowance ?? 0,
     cutNote: p.cutNote ?? 'description',
     feetFrom: { dimensions: p.feetFrom?.dimensions ?? 24, lists: p.feetFrom?.lists ?? 12 },
@@ -88,7 +95,7 @@ export function profileError(p: unknown): string | undefined {
   const names = (v: unknown) => v == null || Array.isArray(v) && v.length <= 50 && v.every(s => typeof s === 'string' && s.length <= 40)
   const feet = o.feetFrom as Record<string, unknown> | undefined
   if (!length(o.stockLength, 100000) || (o.stockLength != null && !((o.stockLength as number) > 0))) return 'Enter a positive stock pipe length.'
-  if (!length(o.orderIncrement, 1000) || !length(o.kerf, 50) || !length(o.bendAllowance, 5000)) return 'Invalid pipe order allowance.'
+  if (!length(o.orderIncrement, 1000) || !length(o.kerf, 50) || !length(o.uncutTolerance, 50) || !length(o.bendAllowance, 5000)) return 'Invalid pipe order allowance.'
   if (!oneOf(o.cutNote, ['description', 'none']) || !oneOf(o.sizeOrder, ['ascending', 'descending']) ||
     !oneOf(o.weldSequence, ['drawing', 'spool']) || !oneOf(o.spoolBreakWelds, ['field', 'shop']) ||
     !oneOf(o.sizeNotation, ['NPS', 'DN']) || !oneOf(o.materialSections, ['combined', 'shop-field'])) return 'Invalid fabrication profile setting.'

@@ -2,13 +2,12 @@ import { createDrawing } from '../src/core/drawing';
 import { appendRun, newIso } from '../src/core/model';
 
 /**
- * Timing budgets scaled to the machine running them. A fixed reference job (a small sheet drawn a few times) is
- * timed once, and budgets stretch by how much slower than the reference machine (about 3 ms on the reference machine) it runs, so a
- * shared CI runner fails a guard only when the work itself has grown, not because the runner is slow.
+ * Timing budgets scaled to the machine running them. A fixed reference job (a small sheet drawn a few times) is timed
+ * at each check, so a slow runner, or load from other work at that moment, stretches the budget by how much slower than
+ * the reference machine (about 3 ms a drawing) it runs. A guard then fails only when the work itself has grown.
  */
-let factor: number | undefined;
 export function budget(ms: number): number {
-  if (factor == null) {
+  {
     const doc = newIso();
     let at = appendRun(doc, null, [1500, 0, 0], 'CS40', 4, 'S1', 'L');
     for (let i = 0; i < 6; i++) at = appendRun(doc, at.id, i % 2 ? [0, 900, 0] : [0, 0, 600], 'CS40', 4, 'S1', 'L');
@@ -21,7 +20,21 @@ export function budget(ms: number): number {
       createDrawing(copy, 'S1');
       runs.push(performance.now() - t);
     }
-    factor = Math.max(1, Math.min(...runs) / 3);
+    runs.sort((a, b) => a - b);
+    return ms * Math.max(1, runs[2] / 3);
   }
-  return ms * factor;
+}
+
+/**
+ * A timing guard that tolerates a burst of load from other work: the measurement is taken up to three times and
+ * passes if any attempt is within its budget, judged against the machine as it was at that attempt.
+ */
+export function withinBudget(measure: () => number, ms: number): { ok: boolean; best: number; limit: number } {
+  let best = Infinity, limit = 0
+  for (let i = 0; i < 3; i++) {
+    const took = measure(), allowed = budget(ms)
+    if (took < best) { best = took; limit = allowed }
+    if (took < allowed) return { ok: true, best: took, limit: allowed }
+  }
+  return { ok: false, best, limit }
 }

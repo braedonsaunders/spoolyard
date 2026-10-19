@@ -225,15 +225,15 @@ test('a flange pair split at a spool break is weighed once per flange', () => {
   assert.equal(bom(doc).filter(r => r.description.startsWith('WN FLANGE')).reduce((s, r) => s + r.weightKg!, 0), 20);
 });
 
-test('an unset socket-weld gap is 1/16" and is reported for confirmation', () => {
+test('an unset socket-weld gap is the B31.3 1/16", a standard value and not a review warning', () => {
   const doc = drawing();
   delete doc.specs[0].socketGap;
   const elbow = appendRun(doc, null, [500, 0, 0], 'CS40', 1, 'S', 'L', 'SW');
   appendRun(doc, elbow.id, [0, 500, 0], 'CS40', 1, 'S', 'L', 'SW');
   assert.deepEqual(runResult(doc, doc.runs[0]).gaps, [0, 1.6]);
-  assert.match(fabricationWarnings(doc).join(), /sets no socket-weld gap; 1\/16" \(1\.6 mm\)/);
-  doc.specs[0].socketGap = 1.6;
   assert.doesNotMatch(fabricationWarnings(doc).join(), /socket-weld gap/);
+  doc.specs[0].socketGap = 3;
+  assert.deepEqual(runResult(doc, doc.runs[0]).gaps, [0, 3]);
 });
 
 test('the fabrication profile sets ordering, kerf, cut notes, feet, list order and weld sequence', () => {
@@ -390,7 +390,8 @@ test('a specification row without a takeout shows the standard dimension it stan
   elbow.catalogId = 'LR90-4';
   assert.equal(dimensionSource(doc, elbow, doc.runs[0].id), 'standard');
   assert.equal(sheetMaterials(doc, 'S').find(r => r.category === 'elbow90')!.dimensionSource, 'standard');
-  assert.match(fabricationWarnings(doc).join(), /has no dimension in its specification row; the standard .* dimension is assumed/);
+  // A standard table value standing in for a row without one is shown as its source, not raised as a warning.
+  assert.doesNotMatch(fabricationWarnings(doc).join(), /no dimension in its specification row|Confirm it/);
   assert.ok(reviewIso(doc).every(i => i.severity === 'warning' || !/standard/.test(i.message)));
   elbow.takeout = 152.4;
   assert.equal(dimensionSource(doc, elbow, doc.runs[0].id), 'measured');
@@ -424,4 +425,15 @@ test('a new drawing starts on a starter specification that states its flange cla
   placeComponentOnPipe(doc, doc.runs[0].id, COMPONENT_TYPE_BY_CODE['FLG-RFWN'], 0.5);
   assert.deepEqual(validateIso(doc).filter(m => /assumed/.test(m)), []);
   assert.deepEqual(flangedJoints(doc).map(j => [j.rating, j.face, j.gasket?.thickness]), [[150, 'RF', 3.3]]);
+});
+
+test('a piece within the profile\'s full-length tolerance of stock is listed uncut', () => {
+  const doc = drawing();
+  appendRun(doc, null, [6000.5, 0, 0], 'CS40', 4, 'S', 'L');
+  assert.equal(profileOf(doc).uncutTolerance, 0.8);
+  assert.equal(profileOf({ units: 'imperial' }).uncutTolerance, 25.4 / 32);
+  assert.equal(pipeRows(doc, 'S')[0].pipe!.uncut, true);
+  doc.profile = { uncutTolerance: 0.25 };
+  assert.equal(pipeRows(doc, 'S')[0].pipe!.uncut, false);
+  assert.equal(profileError({ uncutTolerance: -1 }), 'Invalid pipe order allowance.');
 });

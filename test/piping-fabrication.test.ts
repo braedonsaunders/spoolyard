@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
-import { appendRun, applyComponent, attachComponent, bom, clone, getNode, insertComponent, newIso, parseIsoJson, runResult, validateIso, welds, type IsoDocument, type PipeSpec } from '../src/core/model.ts';
+import { appendRun, applyComponent, attachComponent, bom, clone, dimensionSource, getNode, insertComponent, newIso, parseIsoJson, runResult, takeout, validateIso, welds, type IsoDocument, type PipeSpec } from '../src/core/model.ts';
+import { fabricationWarnings } from '../src/core/review.ts';
 import { nodeItem } from '../src/core/joints.ts';
 import { cutSchedule } from '../src/core/schedules.ts';
 import { sheetMaterials } from '../src/core/material-list.ts';
@@ -338,10 +339,49 @@ test('a field-fit weld leaves the pipe long by the makeup length, for trimming o
   assert.throws(() => parseIsoJson(JSON.stringify({ ...doc, fieldFitMakeup: -1 })), /settings/);
 });
 
-test('a slip-on flange sets the pipe back a wall and 1/16" from its face', () => {
-  assert.equal(standardRow('FLG-RFSO', 2, '150#', undefined, 'STD')!.takeout, 3.91 + 1.59);
-  assert.equal(standardRow('FLG-RFSO', 2, '150#', undefined, '10S')!.takeout, 2.77 + 1.59);
-  assert.equal(row(Object.assign(newIso(), { specs: [clone(specA)] }), 'FLG-RFSO', 2).takeout, 3.91 + 1.59);
+test('a slip-on flange sets the pipe back by its catalogue row, else the specification, else the B31.3 face-weld size', () => {
+  // Default: the lesser of the pipe wall and 1/4 in (6.35 mm), the face-side fillet weld of ASME B31.3 Fig. 328.5.2B,
+  // with no extra clearance.
+  assert.equal(standardRow('FLG-RFSO', 2, '150#', undefined, 'STD')!.takeout, 3.91); // min(3.91 STD wall, 6.35)
+  assert.equal(standardRow('FLG-RFSO', 2, '150#', undefined, '10S')!.takeout, 2.77); // min(2.77, 6.35)
+  assert.equal(standardRow('FLG-RFSO', 8, '150#', undefined, 'XS')!.takeout, 6.35); // min(12.7 XS wall, 6.35)
+  const calculated = standardRow('FLG-RFSO', 2, '150#', undefined, 'STD')!;
+  assert.equal(calculated.dimensionBasis, 'calculated');
+  assert.equal(calculated.assumed, undefined, 'a calculated set-back is not an assumption');
+  assert.match(calculated.source, /calculated as the lesser of the pipe wall and 1\/4 in \(ASME B31\.3 Fig\. 328\.5\.2B\)/);
+  assert.doesNotMatch(calculated.source, /1\/16|shop clearance/);
+  // A specification clearance is added to the rule only when it is set: 3.91 + 1.59 = 5.5.
+  assert.equal(standardRow('FLG-RFSO', 2, '150#', undefined, 'STD', { slipOnClearance: 1.59 })!.takeout, 5.5);
+
+  // A drawing whose specification has no slip-on row: the calculated set-back, shown as calculated, with no warning.
+  const doc = newIso(); doc.specs = [clone(specA)];
+  const spec = doc.specs[0];
+  spec.fittings = spec.fittings.filter(f => f.component !== 'FLG-RFSO');
+  appendRun(doc, null, [1000, 0, 0], 'A', 2, 'SP', 'L');
+  const flange = getNode(doc, doc.runs[0].from);
+  applyComponent(doc, flange, 'FLG-RFSO');
+  assert.equal(nodeItem(doc, flange)!.takeout, 3.91);
+  assert.equal(dimensionSource(doc, flange), 'calculated');
+  assert.ok(!fabricationWarnings(doc).some(w => /set-back|assumed|confirm/i.test(w)), fabricationWarnings(doc).join('\n'));
+  // The specification's set-back parameter replaces the rule, and is the specification's value.
+  spec.design = { ...spec.design, slipOnSetBack: 5 };
+  assert.equal(nodeItem(doc, flange)!.takeout, 5);
+  assert.equal(dimensionSource(doc, flange), 'specification');
+  spec.design = { ...spec.design, slipOnSetBack: undefined, slipOnClearance: 1 };
+  assert.equal(nodeItem(doc, flange)!.takeout, 4.91);
+  // A catalogue row wins over both: its set-back field over its takeout, and a library row's takeout as given.
+  spec.design = { slipOnSetBack: 5 };
+  spec.fittings.push({ id: 'T/SO-2', component: 'FLG-RFSO', kind: 'flange', nps: 2, takeout: 9, setBack: 4.5, description: 'SLIP-ON FLANGE', source: 'test' });
+  flange.catalogId = 'T/SO-2';
+  assert.equal(takeout(doc, flange, doc.runs[0].id), 4.5);
+  assert.equal(dimensionSource(doc, flange), 'specification');
+  const [bore] = welds(doc).filter(w => w.type === 'SO');
+  close(bore.position[0], 4.5);
+  // A row stating only its set-back (no takeout entered) is still dimensioned by the row.
+  Object.assign(spec.fittings.at(-1)!, { takeout: 0, takeoutMissing: true });
+  assert.equal(takeout(doc, flange, doc.runs[0].id), 4.5);
+  assert.equal(row(Object.assign(newIso(), { specs: [clone(specA)] }), 'FLG-RFSO', 2).takeout, 3.91 + 1.59, 'library rows keep their catalogue set-back');
+  assert.throws(() => parseIsoJson(JSON.stringify({ ...doc, specs: [{ ...spec, fittings: [{ ...spec.fittings.at(-1)!, setBack: -1 }] }] })), /fitting/);
 });
 
 test('standard sockolets, thredolets and plugs need no typed lengths', () => {

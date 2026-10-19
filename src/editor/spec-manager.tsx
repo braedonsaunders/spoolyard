@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { BookOpen, ChevronDown, Copy, Download, FilePlus2, Loader2, Plus, RotateCcw, Search, Trash2, Upload } from "lucide-react";
 import { cn } from "./cn";
-import { clone, DEFAULT_SOCKET_GAP, getSpec, lengthInputValue, type CatalogItem, type IsoDocument, type PipeSpec } from "../core/model";
+import { clone, DEFAULT_SOCKET_GAP, getSpec, STARTER_ROOT_GAP, lengthInputValue, type CatalogItem, type IsoDocument, type PipeSpec } from "../core/model";
 import { designValue, type SpecDesign, type SpecDesignField } from "../core/spec-design";
 import { dnOf, npsOfDn, sizeFor, sizeHeader } from "../core/format";
 import { COMPONENT_CATEGORIES, COMPONENT_TYPES, type ComponentType } from "../core/components";
@@ -60,7 +60,7 @@ const blankSpec = (doc: IsoDocument): PipeSpec => ({
   service: "",
   revision: "0",
   parameters: {},
-  rootGap: 3,
+  rootGap: STARTER_ROOT_GAP,
   socketGap: 1.6,
   density: 7850,
   pipeCostM: 0,
@@ -847,7 +847,9 @@ function ShopField({ value, onChange, aria }: { value?: "S" | "F"; onChange: (v:
 }
 
 const NOT_SET = "Not set (assumed by the standards)";
-type ChoiceField = Exclude<SpecDesignField, "gasketThickness" | "nippleLength" | "stubEndSchedule" | "oletSchedule">;
+type LengthField = "gasketThickness" | "nippleLength" | "slipOnSetBack" | "slipOnClearance";
+type CountField = "lugBoltEngagement" | "lugBoltProjection";
+type ChoiceField = Exclude<SpecDesignField, LengthField | CountField | "stubEndSchedule" | "oletSchedule">;
 /** Mating flanges only: blinds, orifice sets and stub ends are not what a flanged port is bolted to. */
 const MATING_FLANGES = COMPONENT_TYPES.filter((t) => t.kind === "flange" && t.code.startsWith("FLG-") && !t.code.endsWith("BL"));
 const classes = (values: number[]) => values.map((v): [string, string] => [String(v), `Class ${v}`]);
@@ -866,9 +868,16 @@ const DESIGN_CHOICES: Array<{ field: ChoiceField; label: string; numeric?: boole
   { field: "butterflyCategory", label: "Butterfly category (API 609)", options: [["A", "A, concentric"], ["B", "B, offset seat"]] },
   { field: "defaultFlange", label: "Default mating flange", options: MATING_FLANGES.map((t) => [t.code, t.label]) },
 ];
-const DESIGN_LENGTHS: Array<{ field: "gasketThickness" | "nippleLength"; label: string; below: number }> = [
+const DESIGN_LENGTHS: Array<{ field: LengthField; label: string; below: number; unset?: string }> = [
   { field: "gasketThickness", label: "Gasket thickness", below: 50 },
   { field: "nippleLength", label: "Nipple length", below: 10000 },
+  { field: "slipOnSetBack", label: "Slip-on set-back", below: 100, unset: "Lesser of pipe wall and 1/4 in (B31.3)" },
+  { field: "slipOnClearance", label: "Slip-on extra clearance", below: 50, unset: "None" },
+];
+/** Lug bolting without a specification lug-bolt row (standards.ts `lugBolt`). */
+const DESIGN_COUNTS: Array<{ field: CountField; label: string; min: number; max: number; integer?: boolean; suffix: string; unset: string }> = [
+  { field: "lugBoltEngagement", label: "Lug-bolt engagement", min: 0.25, max: 5, suffix: "x dia.", unset: "1 x bolt diameter" },
+  { field: "lugBoltProjection", label: "Lug-stud projection", min: 0, max: 20, integer: true, suffix: "threads", unset: "2 threads beyond the nut" },
 ];
 const DESIGN_SCHEDULES: Array<{ field: "stubEndSchedule" | "oletSchedule"; label: string }> = [
   { field: "stubEndSchedule", label: "Stub-end wall" },
@@ -923,7 +932,7 @@ function DesignSection({ spec, units, edit, onError }: {
             </Row>
           );
         })}
-        {DESIGN_LENGTHS.map(({ field, label, below }) => {
+        {DESIGN_LENGTHS.map(({ field, label, below, unset }) => {
           const legacy = inherited(field);
           return (
             <Row key={field} label={label} hint={legacy.hint} modified={spec.design?.[field] != null} onReset={() => set(field, undefined)}>
@@ -931,10 +940,10 @@ function DesignSection({ spec, units, edit, onError }: {
                 aria={label}
                 mm={spec.design?.[field]}
                 units={units}
-                precision={field === "gasketThickness" ? "fine" : "drafting"}
+                precision={field !== "nippleLength" ? "fine" : "drafting"}
                 allowEmpty
                 positive
-                placeholder={legacy.value != null ? lengthInputValue(legacy.value, units, field === "gasketThickness" ? "fine" : "drafting") : NOT_SET}
+                placeholder={legacy.value != null ? lengthInputValue(legacy.value, units, field !== "nippleLength" ? "fine" : "drafting") : unset ?? NOT_SET}
                 onError={onError}
                 onCommit={(v) => {
                   if (v != null && v >= below) {
@@ -947,6 +956,12 @@ function DesignSection({ spec, units, edit, onError }: {
             </Row>
           );
         })}
+        {DESIGN_COUNTS.map(({ field, label, min, max, integer, suffix, unset }) => (
+          <Row key={field} label={label} modified={spec.design?.[field] != null} onReset={() => set(field, undefined)}>
+            <NumberInput aria={label} value={spec.design?.[field]} min={min} max={max} integer={integer} suffix={suffix} placeholder={unset}
+              onError={onError} onCommit={(v) => set(field, v)} />
+          </Row>
+        ))}
         {DESIGN_SCHEDULES.map(({ field, label }) => {
           const own = spec.design?.[field], legacy = inherited(field);
           return (

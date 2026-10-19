@@ -276,8 +276,6 @@ export function pipePieces(doc: IsoDocument, spool = ''): PipePiece[] {
   return out
 }
 
-/** A piece within this of its stock length (mm, 1/32") is a full length, used as it comes. */
-const FULL_LENGTH_TOLERANCE = 0.8
 type Draft = Omit<MaterialRow, 'id' | 'qtyText' | 'key' | 'aliases'> & { size: number; flangeRank: number; first: number; group: string; key?: string; aliases: string[] }
 interface SheetBuild { rows: MaterialRow[]; errors: string[]; warnings: string[] }
 export interface SheetMaterialOptions {
@@ -352,9 +350,10 @@ function buildRows(doc: IsoDocument, spool: string, options: SheetMaterialOption
     const cut = piece.cut, known = Number.isFinite(cut) && cut > 0
     const rounded = known ? doc.units === 'mm' ? Math.round(cut) : Math.round(cut / 25.4 * 16) : NaN
     // A piece marked so (it runs on through a drawing break, or is used as it comes) is listed without a cut, and so is
-    // a piece exactly the stock length it is bought in (a full random length, to 1/32"): there is nothing to cut.
+    // a piece exactly the stock length it is bought in (a full random length, to the profile's `uncutTolerance`):
+    // there is nothing to cut.
     // A longer piece is never assumed uncut; it is cut and flagged below.
-    const stockLength = spec.stockLength ?? profile.stockLength, uncut = piece.uncut || (known && Math.abs(cut - stockLength) <= FULL_LENGTH_TOLERANCE)
+    const stockLength = spec.stockLength ?? profile.stockLength, uncut = piece.uncut || (known && Math.abs(cut - stockLength) <= profile.uncutTolerance)
     const identity: MaterialIdentity = { category: 'pipe', code: 'PIPE', nps: run.nps, schedule: scheduleText(pipeSize?.schedule ?? spec.schedule), material: pipeSize?.material ?? spec.material }
     const row = add(JSON.stringify([identityKey(identity), spec.id, base, known ? rounded : run.id, ...(uncut ? [run.id] : [])]), {
       category: 'pipe', nd: size(run.nps), description: base, text: base, qty: 0, size: run.nps, cut: known ? cut : NaN, identity,
@@ -432,7 +431,7 @@ function buildRows(doc: IsoDocument, spool: string, options: SheetMaterialOption
     }, node.id, node.quantity ?? (pair ? flanges : 1), JSON.stringify([category, item?.id ?? code, description, sizeText(nps, small), node.takeout ?? null, node.branchTakeout ?? null]))
     assume(row, item?.assumed)
     const source = dimensionSource(doc, node)
-    if (source === 'standard' || source === 'missing') row.dimensionSource = row.dimensionSource === 'missing' ? 'missing' : source
+    if (source === 'standard' || source === 'calculated' || source === 'missing') row.dimensionSource = row.dimensionSource === 'missing' ? 'missing' : source
   }
   for (const { node, first } of halves) {
     const row = [...rows.values()].find(r => r.memberIds.includes(first.id))

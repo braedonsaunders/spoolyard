@@ -1,11 +1,11 @@
 import type { Point } from '../drawing'
 import { draftLength, angleText } from '../format'
 import { feetThreshold } from '../profile'
-import { connected, distance, getNode, length, portPoint, runResult, sub, takeout, type DimensionAnchor, type PipeNode, type PipeRun, type Vec3 } from '../model'
-import { continuationPoint } from '../joints'
+import { connected, distance, getNode, length, runResult, sub, type DimensionAnchor, type PipeNode, type PipeRun, type Vec3 } from '../model'
+import { anchorPoint, continuingRun, nodeStations, runAxis, STATION_MERGE as MERGE, workPoint } from '../stations'
 import { emitters, faceOnPaper, sizeOf, type IsoContext } from './context'
 import { measureText } from '../stroke-font'
-import { drafting as componentDrafting, flangedGeometry, valveBodyOnSheet } from './valve-conventions'
+import { flangedGeometry, valveBodyOnSheet } from './valve-conventions'
 import { segmentPoly, textPoly, type Poly } from './placement'
 import { add2, dot2, isAxial, len2, lerp2, planeText, scale2, sub2, unit2, unit3, uprightOf } from './plane'
 
@@ -40,18 +40,9 @@ export function sheetLegs(ctx: IsoContext): Leg[] {
 }
 function findLegs(ctx: IsoContext): Leg[] {
   const seen = new Set<string>(), legs: Leg[] = []
-  // A leg runs through in-line components, fittings joined without pipe, and the run of a tee.
-  // Directions run between the pipes' centreline points, so the small end of an eccentric reducer, offset across the
-  // axis toward its flat, still continues the leg.
-  const axis = (r: PipeRun) => runAxis(ctx, r)
-  const straightThrough = (node: PipeNode, from: PipeRun) => {
-    if (node.kind === 'end' || node.kind.startsWith('elbow')) return undefined
-    const a = axis(from)
-    return connected(ctx.doc, node.id).filter(r => r.id !== from.id && ctx.geometry.has(r.id)).find(r => {
-      const b = axis(r)
-      return Math.abs(Math.abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) - 1) < 1e-4
-    })
-  }
+  // A leg runs through in-line components, fittings joined without pipe, and the run of a tee (see `continuingRun`).
+  const axis = (r: PipeRun) => runAxis(ctx.doc, r)
+  const straightThrough = (node: PipeNode, from: PipeRun) => continuingRun(ctx.doc, node, from, r => ctx.geometry.has(r.id))
   for (const g of ctx.geometry.values()) {
     if (seen.has(g.run.id)) continue
     const runs = [g.run], nodes = [g.run.from, g.run.to]
@@ -74,11 +65,6 @@ function onPipe(ctx: IsoContext, run: PipeRun, p: Vec3): Point {
   const g = ctx.geometry.get(run.id)!, a = getNode(ctx.doc, run.from).position, d = sub(getNode(ctx.doc, run.to).position, a)
   const l2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2], t = l2 > 1e-12 ? ((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1] + (p[2] - a[2]) * d[2]) / l2 : 0
   return lerp2(g.a, g.b, t)
-}
-/** A pipe's model direction from its `from` end, between its centreline points at each end. */
-function runAxis(ctx: IsoContext, run: PipeRun): Vec3 {
-  const a = getNode(ctx.doc, run.from), b = getNode(ctx.doc, run.to)
-  return unit3(sub(portPoint(ctx.doc, b, run.id), portPoint(ctx.doc, a, run.id)))
 }
 
 /** The drafting resolution lengths are lettered to: whole millimetres, or sixteenths of an inch. */
@@ -112,9 +98,6 @@ const HATCH = { start: 2, spacing: 1.15, square: 0.9, arc: 5.2, nested: 2.5, rol
 /** Offset angles in whole degrees, but the half degree of a 22 1/2° or 67 1/2° offset made with standard fittings. */
 const degrees = (a: number) => [22.5, 67.5].find(h => Math.abs(a - h) < 0.15) ?? Math.round(a)
 
-/** Where the pipe turns or branches: elbows, bends and tees are located at their work points. */
-const workPoint = (node: PipeNode) => /^(elbow|tee)/.test(node.kind)
-
 /**
  * A screwed vent or drain stub: one straight run of parts joined without pipe off a branch, capped (an olet's stub may
  * also end at an instrument). Its parts give its length. Returns the node it stands on.
@@ -133,15 +116,6 @@ function alongRun(ctx: IsoContext, run: PipeRun) {
   return (p: Vec3) => p[0] * dir[0] + p[1] * dir[1] + p[2] * dir[2]
 }
 
-/** The olet a part attached off the pipe's centreline stands on (a nipple screwed into it). */
-function oletUnder(ctx: IsoContext, node: PipeNode): PipeNode | undefined {
-  const host = node.kind !== 'olet' && ctx.doc.runs.find(r => r.id === node.associatedRunId)
-  if (!host) return undefined
-  const along = alongRun(ctx, host)
-  return ctx.nodes.find(o => o.kind === 'olet' && o.associatedRunId === host.id && Math.abs(along(o.position) - along(node.position)) < 1 &&
-    distance(o.position, node.position) > 1)
-}
-
 /** Olets carrying a capped vent or drain stub: they are located on the pipe rather than cut into its chain. */
 function ventOlets(ctx: IsoContext, legs: Leg[]): Set<string> {
   const out = new Set<string>()
@@ -157,9 +131,10 @@ function ventOlets(ctx: IsoContext, legs: Leg[]): Set<string> {
   return out
 }
 
-/** Stations closer than this (mm) are one point: below the drafting resolution of either unit system. */
-const MERGE = 0.5
-/** The thickest gasket in a leg's joints (mm): faces closer than it are one bolted joint. */
+/**
+ * The thickest gasket in a leg's joints (mm): faces closer than it (plus MERGE) are one bolted joint. The leg's
+ * thickest, so a leg with mixed gaskets still merges each of its joints; two separate joints are never that close.
+ */
 function legGasket(ctx: IsoContext, leg: Leg): number {
   const nodes = new Set(leg.nodes)
   return Math.max(0, ...ctx.joints.filter(j => nodes.has(j.nodeId)).map(j => j.gasket?.thickness ?? 0))
@@ -173,76 +148,43 @@ function measureAlong(ctx: IsoContext, leg: Leg) {
 
 /**
  * The chain stations of a leg: its ends, fitting work points, flange faces, the mating faces of flanged valves,
- * reducer ends and branch connections.
+ * reducer ends and branch connections. Where each is, and why, is `nodeStations` (src/core/stations.ts), which the
+ * cut schedule measures from too; this places each on the paper.
  */
 function stations(ctx: IsoContext, leg: Leg, vents: Set<string>, bodyFaces = false): Station[] {
   const out: Station[] = []
   const along = measureAlong(ctx, leg), own = new Set(leg.runs.map(r => r.id))
   const at = (model: Vec3, page: Point, node?: string, end = false, of?: string) => out.push({ model, page, node, along: along(model), end, ...(of ? { of } : {}) })
+  // A pipe's direction on the paper, away from the node.
+  const away = (run: PipeRun, id: string) => { const g = ctx.geometry.get(run.id)!; return run.from === id ? g.dir : scale2(g.dir, -1) }
   leg.nodes.forEach((id, i) => {
     const node = getNode(ctx.doc, id), page = ctx.pos.get(id)!
-    let end = i === 0 || i === leg.nodes.length - 1
-    if (!end && (bodyFaces ? node.dimensionChain === 'mate' : node.dimensionChain === 'body')) return
-    if (!end && node.kind === 'gasket') return
-    // A flange pair welded directly to a fitting is located at that fitting-side face. Its gasket belongs in the
-    // following pipe's span, rather than putting a half gasket into both rounded chain dimensions.
-    const pair = ctx.joints.find(j => j.nodeId === id && j.kind === 'flange-pair')
-    const connector = pair && connected(ctx.doc, id).find(r => r.connector && own.has(r.id) && getNode(ctx.doc, r.from === id ? r.to : r.from).kind !== 'flange')
-    if (pair && connector) {
-      const far = getNode(ctx.doc, connector.from === id ? connector.to : connector.from)
-      const out = unit3(sub(far.position, node.position)), g = ctx.geometry.get(connector.id)!
-      const dir = connector.from === id ? g.dir : scale2(g.dir, -1), gap = (pair.gasket?.thickness ?? 0) / 2
-      at(node.position.map((v,k)=>v+out[k]*gap) as Vec3, add2(page,scale2(dir,sizeOf(ctx).flangeThickness/2)), id, end)
-      return
-    }
-    // A branch standing on a part screwed into an olet is measured from the pipe's centreline, at the olet.
-    const olet = end ? oletUnder(ctx, node) : undefined, base = olet && ctx.pos.get(olet.id)
-    if (olet && base) { at(olet.position, base, olet.id, true); end = false }
-    // Nipples, couplings, unions and regulators only join the pieces either side: the dimensions run through them.
-    if (!end && componentDrafting(ctx.doc, node).dimensionThrough) return
-    const joints = ctx.joints.filter(j => j.nodeId === id && j.kind === 'component-port' && own.has(j.runIds[0]))
-    const e = ctx.extent.get(id) ?? 0
-    if (!end && joints.length) {
-      // A flanged valve is dimensioned between its mating flange faces, across its gaskets. A drawing that ends at the
-      // valve's own face leaves that gasket to the next drawing.
-      for (const j of joints) {
-        const run = ctx.runs.find(r => r.id === j.runIds[0]), g = run && ctx.geometry.get(run.id)
-        if (!run || !g) continue
-        const far = getNode(ctx.doc, run.from === id ? run.to : run.from).position
-        const out3 = sub(far, node.position), l = length(out3) || 1
-        const gap = bodyFaces ? 0 : Math.min(j.gasket?.thickness ?? 0, distance(j.position, far))
-        const face: Vec3 = [0, 1, 2].map(k => j.position[k] + out3[k] / l * gap) as Vec3
-        const dir = run.from === id ? g.dir : scale2(g.dir, -1)
-        const axial=Math.hypot(...ctx.direction(g.dir3))
-        const reach=flangedGeometry(ctx.doc,node,valveBodyOnSheet(ctx,node))[bodyFaces?'body':'mate']*axial
-        at(face, add2(page, scale2(dir, reach)), undefined, false, id)
+    const end = i === 0 || i === leg.nodes.length - 1
+    const found = nodeStations(ctx.doc, node, { end, inLeg: r => own.has(r.id), joints: ctx.joints, bodyFaces, onDrawing: r => ctx.geometry.has(r.id), nodes: ctx.nodes })
+    // A part standing on an olet is no longer the end: the leg is measured on from the olet at the pipe's centreline.
+    const onOlet = found.some(s => s.kind === 'olet')
+    for (const s of found) {
+      switch (s.kind) {
+        case 'pair-face': at(s.point, add2(page, scale2(away(s.connector, id), s.side * sizeOf(ctx).flangeThickness / 2)), id, end); break
+        case 'olet': { const base = ctx.pos.get(s.olet.id); if (base) at(s.point, base, s.olet.id, true); break }
+        case 'port-face': {
+          const g = ctx.geometry.get(s.run.id)!, axial = Math.hypot(...ctx.direction(g.dir3))
+          const reach = flangedGeometry(ctx.doc, node, valveBodyOnSheet(ctx, node))[s.face] * axial
+          at(s.point, add2(page, scale2(away(s.run, id), reach)), undefined, false, id)
+          break
+        }
+        case 'equipment-face': {
+          const dir = i === 0 ? scale2(leg.dir, -1) : leg.dir
+          at(s.point, add2(page, scale2(dir, s.gasket ? sizeOf(ctx).flangeThickness : 0)), id, true)
+          break
+        }
+        case 'reducer-end':
+          at(s.point, add2(page, scale2(away(s.run, id), ctx.extent.get(id) ?? 0)))
+          out[out.length - 1].outline = id
+          break
+        case 'node': at(s.point, page, id, end && !onOlet)
       }
-      return
     }
-    if (bodyFaces && end && node.kind === 'flange' && connected(ctx.doc, id).length === 1) {
-      const joint = ctx.joints.find(j => j.nodeId === id && j.kind === 'equipment')
-      const gap = joint?.supplied.gasket && node.jointSupply?.measuredTo !== 'mate' ? joint.gasket?.thickness ?? 0 : 0
-      const far = getNode(ctx.doc, leg.nodes[i === 0 ? 1 : i - 1]).position
-      const out3 = unit3(sub(node.position, far)), dir = i === 0 ? scale2(leg.dir, -1) : leg.dir
-      at(node.position.map((v, k) => v + out3[k] * gap) as Vec3, add2(page, scale2(dir, gap ? sizeOf(ctx).flangeThickness : 0)), id, true)
-      return
-    }
-    if (!end && node.kind === 'reducer') {
-      // A reducer is dimensioned to both its ends, except where it is welded straight onto the elbow or tee it reduces
-      // from: that make-up is measured from the fitting's work point to the reducer's far end.
-      const runs = connected(ctx.doc, id).filter(r => own.has(r.id) && ctx.geometry.has(r.id)), large = Math.max(...runs.map(r => r.nps))
-      for (const run of runs) {
-        const across = getNode(ctx.doc, run.from === id ? run.to : run.from)
-        if (run.connector && run.nps === large && workPoint(across)) continue
-        const g = ctx.geometry.get(run.id)!, t = takeout(ctx.doc, node, run.id) ?? 0
-        const out3 = sub(across.position, node.position), l = length(out3) || 1
-        const dir = run.from === id ? g.dir : scale2(g.dir, -1)
-        at([0, 1, 2].map(k => node.position[k] + out3[k] / l * t) as Vec3, add2(page, scale2(dir, e)))
-        out[out.length - 1].outline = id
-      }
-      return
-    }
-    at(node.position, page, id, end)
   })
   // Branch connections on the pipe are stations of the chain; capped vents and drains are located instead.
   for (const n of ctx.nodes) {
@@ -250,8 +192,16 @@ function stations(ctx: IsoContext, leg: Leg, vents: Set<string>, bodyFaces = fal
     if (n.kind === 'olet' && page && n.associatedRunId && own.has(n.associatedRunId) && !vents.has(n.id)) at(n.position, page, n.id)
   }
   out.sort((a, b) => a.along - b.along)
-  // Faces closer than the leg's gaskets are one station (a flange pair at a break), measured at the face on the pipe, so the
-  // gasket goes with a stub end welded to a fitting; at the end of a leg the gasket is dimensioned.
+  // Merging stations. Two faces closer than the leg's thickest gasket (plus MERGE, below the drafting resolution) are
+  // the two sides of one bolted joint, such as a flange pair at a drawing break or a valve's mating face beside a
+  // flange drawn as its own node. A dimension across a gasket alone is not a fabrication dimension (nobody sets out
+  // 3 mm between two faces), and lettering it would crowd the chain, so they are one station:
+  // - the station kept is the face on the pipe (a node joined by pipe, not a connector), so a pipe's own measuring
+  //   point (src/core/stations.ts) never moves and the gasket goes with the stub end or fitting welded on the other
+  //   side;
+  // - at the end of a leg the end station is kept and anything farther than MERGE from it is dimensioned, so a gasket
+  //   this drawing supplies at its end is shown, and the overall takes it in;
+  // - two flange nodes drawn explicitly are one joint even at the end of a leg.
   const onPipe = (s: Station) => !!s.node && connected(ctx.doc, s.node).some(r => own.has(r.id) && !r.connector)
   const kept: Station[] = [], gasket = legGasket(ctx, leg) + MERGE
   for (const s of out) {
@@ -348,30 +298,25 @@ export function drawDimensions(ctx: IsoContext) {
       }
       const n = ctx.nodes.find(n => n.id === a.nodeId), page = ctx.pos.get(a.nodeId)
       if (!n || !page) return
-      if (!a.face || !a.runId) return { model: n.position, page, along: 0, node: n.id }
+      // The point measured to is the shared rule the cut schedule measures from too (stations.ts `anchorPoint`).
+      const model = anchorPoint(ctx.doc, a, ctx.joints)
+      if (!model) return
+      if (!a.face || !a.runId) return { model, page, along: 0, node: n.id }
       const run = ctx.runs.find(r => r.id === a.runId), g = run && ctx.geometry.get(run.id)
       if (!run || !g) return
       const far = getNode(ctx.doc, run.from === n.id ? run.to : run.from), out = unit3(sub(far.position, n.position))
+      const dir = run.from === n.id ? g.dir : scale2(g.dir, -1)
       const pair = ctx.joints.find(j => j.nodeId === n.id && j.kind === 'flange-pair')
-      if (pair && n.kind === 'flange') {
-        const side = a.face === 'body' ? 1 : -1, half = (pair.gasket?.thickness ?? 0) / 2
-        const dir = run.from === n.id ? g.dir : scale2(g.dir,-1)
-        return { model:n.position.map((v,k)=>v+out[k]*half*side) as Vec3,
-          page:add2(page,scale2(dir,size.flangeThickness/2*side)),along:0,node:n.id }
-      }
+      if (pair && n.kind === 'flange')
+        return { model, page: add2(page, scale2(dir, size.flangeThickness / 2 * (a.face === 'body' ? 1 : -1))), along: 0, node: n.id }
       if (n.kind === 'flange' && connected(ctx.doc, n.id).length === 1) {
-        const model = continuationPoint(ctx.doc, { ...n, continuation: { text: '', coordinateFace: a.face === 'mate' ? 'mate' : 'flange' } })
-        const dir = run.from === n.id ? g.dir : scale2(g.dir, -1), delta = sub(model, n.position)
-        const shift = delta.reduce((s, v, i) => s + v * out[i], 0)
+        const shift = sub(model, n.position).reduce((s, v, i) => s + v * out[i], 0)
         return { model, page: add2(page, scale2(dir, Math.sign(shift) * Math.min(size.flangeThickness, Math.abs(shift)))), along: 0, node: n.id }
       }
       const joint = ctx.joints.find(j => j.nodeId === n.id && j.kind === 'component-port' && j.runIds.includes(run.id))
-      const body = joint?.position ?? n.position.map((v, i) => v + out[i] * (n.kind === 'flange' || n.kind === 'end' ? 0 : takeout(ctx.doc, n, run.id) ?? 0)) as Vec3
-      const gap = a.face === 'mate' ? joint?.gasket?.thickness ?? 0 : 0
-      const model = body.map((v, i) => v + out[i] * gap) as Vec3
-      const dir = run.from === n.id ? g.dir : scale2(g.dir, -1)
       if(!joint && workPoint(n)) {
-        const point=ctx.schematic ? add2(page,scale2(dir,faceOnPaper(ctx,n,run))) : onPipe(ctx, run, body)
+        // Without a joint the face point is the fitting's end on the pipe, with no gasket beyond it.
+        const point=ctx.schematic ? add2(page,scale2(dir,faceOnPaper(ctx,n,run))) : onPipe(ctx, run, model)
         return {model,page:point,along:0,of:n.id}
       }
       const extent = ctx.extent.get(n.id) ?? 0

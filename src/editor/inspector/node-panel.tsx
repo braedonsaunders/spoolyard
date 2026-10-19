@@ -18,6 +18,7 @@ import {
   parseIsoJson,
   pruneSheetAnchors,
   round,
+  rowTakeout,
   sub,
   type FlatSide,
   type IsoDocument,
@@ -48,11 +49,12 @@ export const parsePath = (raw: string, paper: PaperUnits, max = 500): Array<[num
   return p.map((q) => paper.fromPoint(q as Point).map((v) => Math.round(v * 100) / 100) as [number, number]);
 };
 /** Where a component's dimension comes from, as the drafter checks it. */
-const SOURCE = { measured: "measured", specification: "specification", standard: "standard", missing: "missing" } as const;
+const SOURCE = { measured: "measured", specification: "specification", standard: "standard", calculated: "calculated", missing: "missing" } as const;
 const SOURCE_HINT = {
   measured: "Centre to pipe end, measured on this component. Empty uses the specification.",
-  specification: "Centre to pipe end, from the specification's row for this component.",
-  standard: "Centre to pipe end, from the ASME standard dimension: the specification gives none. Confirm it, or enter the measured takeout.",
+  specification: "Centre to pipe end, from the specification: its row for this component, or its design values.",
+  standard: "Centre to pipe end, from the standard dimension table: the specification has no row with one.",
+  calculated: "Centre to pipe end, calculated by the documented rule where no table gives it (a slip-on flange's set-back: the lesser of the pipe wall and 1/4 in). Set it in the specification to change it.",
   missing: "No known dimension: enter the centre-to-pipe-end distance so the pipe cuts can be calculated.",
 } as const;
 const KG_PER_LB = 0.45359237, M2_PER_FT2 = 0.09290304;
@@ -93,7 +95,7 @@ export function NodePanel(props: NodePanelProps) {
   const hasTakeout = !NO_TAKEOUT.includes(node.kind);
   const source = dimensionSource(doc, node);
   const specTakeout = item && !NO_TAKEOUT.includes(node.kind)
-    ? `${item.source.startsWith("ASME") || item.id.startsWith("std:") ? "Standard" : "Specification"} takeout ${formatAllowance(item.takeout, units)}`
+    ? `${item.dimensionBasis === "calculated" ? "Calculated" : item.dimensionBasis !== "specification" && (item.source.startsWith("ASME") || item.id.startsWith("std:")) ? "Standard" : "Specification"} takeout ${formatAllowance(rowTakeout(item), units)}`
       + (item.branchTakeout != null ? ` · branch ${formatAllowance(item.branchTakeout, units)}` : "")
       + (item.faceToFace != null ? ` · face to face ${formatAllowance(item.faceToFace, units)}` : "")
     : "";
