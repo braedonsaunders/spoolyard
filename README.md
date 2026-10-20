@@ -35,6 +35,8 @@ where it powers piping isometrics in Files and Tools.
   - a north arrow on plant north;
   - an ID / QTY / ND / DESCRIPTION bill of materials with `CUT TO` lengths;
   - boxed item tags with leaders, and `F12 B13 G14` flanged-joint callouts with gasket marks;
+  - nominal sizes lettered once per size and wherever the size changes, so a row of like branches is not lettered
+    again and again (Drawing setup › Size callouts can also letter every branch and olet);
   - isometric-plane dimensions and lettering;
   - continuation callouts with plant coordinates, centreline elevations, tie points, valve operators and flow arrows;
   - hatched offset triangles with their angles, set and roll.
@@ -44,8 +46,9 @@ where it powers piping isometrics in Files and Tools.
   `MATERIAL LIST CONTINUED ON SHEET n` on the drawing (Drawing setup › Material list: automatic, always on the
   sheet, or always separate), and the set is numbered sheet n of m. No issued sheet overprints its lettering: on a
   sheet too dense to place a label beside its item, the label is drawn whole in the margin with a leader to the
-  item, and one that finds no clear paper at all is left off and reported. The next
-  spool's parts are drawn thin beyond each break. Link another `.piping` file at a continuation to include a
+  item, and one that finds no clear paper at all is left off and reported. A busy drawing that would crowd beside
+  its list gets the sheet to itself. The next spool's parts are drawn thin beyond each break, and each break is
+  lettered `CONT'D ON` with the other sheet's drawing number. Link another `.piping` file at a continuation to include a
   snapshot of its neighbouring components without adding its material or welds to this drawing.
 - **Issued drawing controls.** Hold and reorder item numbers, retain verbatim issued BOM cells alongside the
   calculated values, arrange nodes on the paper without changing plant coordinates, and draft dimensions between
@@ -55,8 +58,16 @@ where it powers piping isometrics in Files and Tools.
   repeat line identifiers on selected pipes, and control elevation callouts. Offset constructions have editable
   angle corners, radii, arrows and hatching; hoses and equipment connections can follow editable paper routes.
 - **Measured routing.** Click along the six iso directions with Ortho on, or type a length and pick East, North
-  or Up. Bends and branches get the specification's elbows and tees automatically; rolling offsets route in XYZ.
-  Click a pipe to branch off it, place olets on a header, and fit reducers either way round.
+  or Up. On not-to-scale paper each cell of the isometric paper routes one grid block (1'-0" on a feet-and-inches
+  drawing, the default), so the pointer steps cell by cell as the grid shows it; to-scale sheets draw at the largest
+  standard scale that fits, or at one you choose. Bends and branches get the specification's elbows and tees
+  automatically; rolling offsets route in XYZ. Click a pipe to branch off it, place olets on a header, fit reducers
+  either way round, and put a valve, coupling or union on an open end with no pipe after it. Esc puts a tool down
+  in one press, as in AutoCAD.
+- **Sheets.** Each spool is a sheet. **New sheet** starts the next one; **Split sheet** (or right-click › Continue
+  on a new sheet here) breaks a line onto a new sheet at a point or a connection. Window and crossing selection,
+  and Copy, Ctrl+C and Ctrl+V, place copies where you pick; a branch copied with its olet goes onto the pipe it is
+  pasted on.
 - **Cut lengths you can build from.**
   - **Pipe cuts:** each pipe's cut is the centreline length less fitting takeouts, the specification's butt-weld
     root gap and the B31.3 socket-weld gap. Branch outlets are measured from the outside of the header.
@@ -67,9 +78,15 @@ where it powers piping isometrics in Files and Tools.
   - **Field-fit welds:** they leave a makeup length on the pipe.
 - **Standard dimensions built in.** Specifications supply their own rows. Anything they lack falls back to ASME
   B16.5, B16.9, B16.10, B16.11, B16.20/21, MSS SP-43, MSS SP-97 and API 609 tables, so standard components never
-  need a length typed in. Eleven carbon- and stainless-steel specifications ship ready to use, with about 15,000
-  rows and complete purchase descriptions. Every row is editable, and you can add your own specifications, sizes
-  and components.
+  need a length typed in. Where no standard dimensions a size (threaded and socket-weld valves) and a
+  specification skips one size of a series, it is interpolated between the sizes either side and reported as
+  calculated. Seven general-service specifications ship ready to use: carbon steel Class 150, 300 and 600 and
+  stainless steel Class 150 to 900, with about 11,000 rows and complete purchase descriptions. Every row is
+  editable, and you can add your own specifications, sizes and components.
+- **Your own specification library.** Save a specification you have refined to your library and every new drawing
+  starts from it in place of the standard one; other drawings add it from the specification lists. In the browser
+  and the desktop app the library is kept on your device; inside BidWright it is your organisation's, shared by
+  everyone in it. A drawing still carries its own copy, and says when it differs from the library's.
 - **189 components and symbols**, each drawn on the sheet in its isometric plane. Valve symbols are distinct by
   type, and check valves point with the flow. The library also has relief valves, hoses, instruments, equipment
   nozzles, insulation and wall penetrations.
@@ -130,12 +147,15 @@ In embedded mode the host draws the header and Spoolyard talks to it with `postM
 | `spoolyard:ready` | The editor has mounted. |
 | `spoolyard:status` `{ status, error }` | `opening`, `saved`, `unsaved`, `saving` or `error`. |
 | `spoolyard:save` `{ id, content }` | Autosave: write `content`, then reply with `spoolyard:saved` or `spoolyard:save-failed` and the same `id`. |
+| `spoolyard:library` `{ id, op, specId?, spec? }` | Specification library request (`op`: `list`, `get`, `put`, `remove`), sent only to a host that offers a library. Reply with `spoolyard:library-result`. |
 
 | From the host (`source: "spoolyard-host"`) | Meaning |
 | --- | --- |
 | `spoolyard:saved` / `spoolyard:save-failed` `{ id, error? }` | Result of a save. |
 | `spoolyard:save-now` | Save immediately. |
 | `spoolyard:theme` `{ theme: "light" \| "dark" }` | Follow the host's theme. |
+| `spoolyard:capabilities` `{ library: { label } }` | In answer to `spoolyard:ready`: the host keeps the specification library (shown as "My library · `label`"). Without it the library is kept on the device. |
+| `spoolyard:library-result` `{ id, ok, result?, error? }` | Answer to a library request: `list` gives summaries `{ id, name, material, service, rating, revision, rowCount, updatedAt }`, `get` the specification, `put` its summary. |
 
 An empty file opens as a new drawing and is saved straight back, so a host can create a drawing by creating an
 empty `.piping` file.

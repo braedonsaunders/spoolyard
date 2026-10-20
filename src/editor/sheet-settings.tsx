@@ -487,6 +487,14 @@ export function SheetSettings({
             <option value="combined">One combined callout (F, B, G)</option>
           </select>
         </Field>
+        <Field label="Size callouts">
+          <select aria-label="Size callouts" value={style.sizeCallouts ?? "changes"}
+            title="Where nominal sizes are lettered. Every item is still tagged with its number, and its size is in the material list."
+            onChange={(e) => setStyle({ sizeCallouts: e.target.value === "changes" ? undefined : "branches" })}>
+            <option value="changes">Each size once, and at changes</option>
+            <option value="branches">Every branch and olet</option>
+          </select>
+        </Field>
         <Field label="Field-fit welds lettered">
           <select aria-label="Field-fit weld mark" value={style.fieldFitMark ?? "FFW"} onChange={(e) => setStyle({ fieldFitMark: e.target.value === "FFW" ? undefined : "FW" })}>
             <option value="FFW">FFW, with the makeup</option>
@@ -522,6 +530,7 @@ export function SheetSettings({
         <Toggle label="Centreline elevations at every change of level" checked={!!style.elevations} onChange={(on) => setStyle({ elevations: on })} />
         <Toggle label="Dimension component body faces in a second chain" checked={!!style.componentFaces} onChange={(on) => setStyle({ componentFaces: on })} />
         <Toggle label="Print SCALE: NTS on not-to-scale sheets" checked={style.scaleNote !== false} onChange={(on) => setStyle({ scaleNote: on })} />
+        <Toggle label="Letter breaks onto other sheets CONT'D ON with their drawing number" checked={style.breakCallouts !== false} onChange={(on) => setStyle({ breakCallouts: on ? undefined : false })} />
         <Toggle label="Stack the line size under the stub-end item tag" checked={!!style.stackSizeLabels} onChange={(on) => setStyle({ stackSizeLabels: on })} />
       </Section>
 

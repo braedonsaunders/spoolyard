@@ -7,6 +7,7 @@ import {
   fitting,
   getNode,
   getSpec,
+  insertComponent,
   itemName,
   prepAt,
   runResult,
@@ -278,6 +279,46 @@ export function nextSpool(spools: Iterable<string>, prefix = "SP-") {
   const numbers = [...spools].map((s) => Number(/(\d+)$/.exec(s)?.[1] ?? 0));
   return prefix + String(Math.max(0, ...numbers) + 1).padStart(3, "0");
 }
+/**
+ * Continue a line on a new sheet: the drawing is broken at a connection (or at a point on a pipe, where a weld goes in)
+ * and everything beyond it on its sheet goes to a new spool, which is issued as a sheet of its own. Beyond is the side
+ * the line was routed on to (the pipe leaving the connection), else the side with less pipe. Both sheets letter the
+ * break with the other's drawing number, and draw the neighbouring sheet's first parts thin beyond it. Returns the new
+ * spool.
+ */
+export function splitSheet(d: IsoDocument, at: { nodeId: string } | { runId: string; fraction: number }): { spool: string; nodeId: string } {
+  let nodeId: string;
+  if ("runId" in at) {
+    const run = d.runs.find((r) => r.id === at.runId);
+    if (!run || run.connector) throw new Error("Pick a pipe, or a connection on it, to continue the line on a new sheet.");
+    if (!(at.fraction > 0.001 && at.fraction < 0.999)) nodeId = at.fraction < 0.5 ? run.from : run.to;
+    else nodeId = insertComponent(d, run.id, "weld", at.fraction).id;
+  } else nodeId = at.nodeId;
+  const node = getNode(d, nodeId), edges = connected(d, nodeId);
+  if (edges.length < 2 || node.associatedRunId) throw new Error("A sheet breaks at a connection between pipes, or at a point on a pipe. Pick one with pipe on both sides.");
+  const spool = edges[0].spool;
+  // What lies beyond each pipe leaving the connection, on this sheet.
+  const side = (start: PipeRun) => {
+    const runs = new Set<string>(), queue: string[] = [], seen = new Set([nodeId]);
+    // A pipe brings its ends and the olets on it (and so their branches); a branch does not bring its header.
+    const take = (r: PipeRun) => {
+      if (r.spool !== spool || runs.has(r.id)) return;
+      runs.add(r.id);
+      for (const n of [r.from, r.to, ...d.nodes.filter((x) => x.associatedRunId === r.id).map((x) => x.id)])
+        if (!seen.has(n)) { seen.add(n); queue.push(n); }
+    };
+    take(start);
+    for (let i = 0; i < queue.length; i++) for (const r of connected(d, queue[i])) take(r);
+    return runs;
+  };
+  const leaving = edges.filter((r) => r.spool === spool && r.from === nodeId);
+  const candidates = (leaving.length ? leaving : edges.filter((r) => r.spool === spool)).map(side);
+  const beyond = candidates.length > 1 || leaving.length ? candidates.reduce((a, b) => (b.size < a.size ? b : a)) : candidates[0];
+  if (!beyond || edges.every((r) => beyond.has(r.id))) throw new Error("This connection is in a closed loop of the sheet's pipes, so the line cannot be split there. Pick a point outside the loop.");
+  const name = nextSpool(d.runs.map((r) => r.spool));
+  for (const r of d.runs) if (beyond.has(r.id)) r.spool = name;
+  return { spool: name, nodeId };
+}
 /** Plant extent of pasted pieces, to place a paste clear of what it was copied from. */
 export function clipboardExtent(clip: Clipboard): [Vec3, Vec3] {
   const lo: Vec3 = [Infinity, Infinity, Infinity], hi: Vec3 = [-Infinity, -Infinity, -Infinity];
@@ -293,15 +334,33 @@ export function pastePieces(d: IsoDocument, clip: Clipboard, delta: Vec3): { ids
   const ids = new Map<string, string>();
   const fresh = (old: string) => { let v = ids.get(old); if (!v) ids.set(old, (v = newId())); return v; };
   for (const spec of clip.specs) if (!d.specs.some((s) => s.id === spec.id)) d.specs.push(clone(spec));
+  const pipes = new Set(clip.runs.map((r) => r.id));
+  // A branch copied with its olet but not its header goes onto the pipe it is pasted on: the olet sits on that pipe,
+  // and the branch is part of that pipe's spool, as a branch copied along a header is.
+  const hosts = new Map<string, PipeRun>();
+  for (const n of clip.nodes)
+    if (n.kind === "olet" && n.associatedRunId && !pipes.has(n.associatedRunId)) {
+      const host = pipeThrough(d, add(n.position, delta));
+      if (host) hosts.set(n.id, host);
+    }
+  const host = [...hosts.values()][0];
   const taken = new Set(d.runs.map((r) => r.spool)), spoolMap = new Map<string, string>();
   for (const s of new Set(clip.runs.map((r) => r.spool))) {
-    const name = taken.has(s) ? nextSpool([...taken, ...spoolMap.values()]) : s;
+    const name = host ? host.spool : taken.has(s) ? nextSpool([...taken, ...spoolMap.values()]) : s;
     spoolMap.set(s, name);
     taken.add(name);
   }
-  const pipes = new Set(clip.runs.map((r) => r.id));
   const nodes = clip.nodes.map((n): PipeNode => {
-    // A branch copied without its header leaves its olet behind: the pasted branch starts at an open end.
+    const on = hosts.get(n.id);
+    if (on) {
+      const copy = clone(n);
+      copy.id = fresh(n.id);
+      copy.position = add(n.position, delta);
+      copy.associatedRunId = on.id;
+      delete copy.tag;
+      return copy;
+    }
+    // A branch copied without its header, pasted off any pipe, leaves its olet behind: it starts at an open end.
     if (n.associatedRunId && !pipes.has(n.associatedRunId)) return { id: fresh(n.id), kind: "end", position: add(n.position, delta) };
     const copy = clone(n);
     copy.id = fresh(n.id);
@@ -329,6 +388,18 @@ export function pastePieces(d: IsoDocument, clip: Clipboard, delta: Vec3): { ids
   d.runs.push(...runs);
   for (const n of nodes) if (!n.associatedRunId) setAutoFitting(d, n.id);
   return { ids: [...runs.map((r) => r.id)], spools: [...new Set(spoolMap.values())] };
+}
+
+/** The straight pipe a point lies on, strictly between its ends (within half a millimetre). */
+export function pipeThrough(d: IsoDocument, point: Vec3): PipeRun | undefined {
+  return d.runs.find((r) => {
+    if (r.connector) return false;
+    const a = getNode(d, r.from).position, b = getNode(d, r.to).position, ab = sub(b, a), l2 = ab.reduce((t, v) => t + v * v, 0);
+    if (!(l2 > 0)) return false;
+    const t = sub(point, a).reduce((u, v, i) => u + v * ab[i], 0) / l2;
+    if (!(t > 1e-6 && t < 1 - 1e-6)) return false;
+    return Math.hypot(...sub(point, add(a, ab.map((v) => v * t) as Vec3))) < 0.5;
+  });
 }
 
 /**

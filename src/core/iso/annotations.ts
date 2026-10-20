@@ -4,7 +4,7 @@ import { coordinateText, draftLength, elevationText, fieldFitNote, sizeFor } fro
 import { profileOf } from '../profile'
 import { continuationPoint, nodeCode, type FlangedJoint } from '../joints'
 import { findMaterialRow, materialId } from '../material-list'
-import { connected, getNode, type PipeNode, type PipeRun, type Weld } from '../model'
+import { connected, getNode, sheetInfoOf, type PipeNode, type PipeRun, type Weld } from '../model'
 import { measureText, strokeText, LINE_SPACING } from '../stroke-font'
 import { CLEAR_COST, countSearch, emitters, keepSearchHint, labelGroup, labelRecord, leanSearch, searched, searchHint, sizeOf, weldsOf, type IsoContext, type RunGeometry } from './context'
 import { bbox, overlaps, rectPoly, segmentPoly, textPoly, type Occupant, type Poly, type Rect } from './placement'
@@ -329,6 +329,11 @@ export function drawAnnotations(ctx: IsoContext) {
   // Fittings, valves and stub ends: a box with an arrowed leader. Where the size changes at the item, its size label
   // stands under its number in one block; an olet adds its type.
   const sizeLabelled = new Set<string>()
+  /**
+   * Size callouts: 'changes' (default) sizes the first pipe of each size on a line and every change of size, so a row
+   * of like branches is sized once; 'branches' also sizes every branch of another size than its header, and its olet.
+   */
+  const everyBranch = ctx.style.sizeCallouts === 'branches'
   for (const node of ctx.nodes) {
     const path=node.hosePath ?? node.continuation?.paperPath,at = path?.[Math.floor(path.length/2)] ?? ctx.pos.get(node.id)
     if (!at || ['end', 'weld', 'annotation', 'support', 'gasket', 'bolt'].includes(node.kind)) continue
@@ -353,6 +358,8 @@ export function drawAnnotations(ctx: IsoContext) {
   function sizeLabel(node: PipeNode, code: string): string[] {
     if(node.showSize===false)return []
     if (node.kind === 'olet') {
+      // Sized by its branch pipe's own size label, unless every branch is called out or no pipe of its own follows it.
+      if (!everyBranch && connected(ctx.doc, node.id).some(r => !r.connector && !r.nipple)) return []
       const nd = ctx.materials.find(r => r.memberIds.includes(node.id))?.nd, abbreviation = drafting(ctx.doc, node).abbreviation
       return nd ? [nominal(nd), ...(abbreviation ? [abbreviation] : [])] : []
     }
@@ -451,9 +458,9 @@ export function drawAnnotations(ctx: IsoContext) {
     const out = run.from === joint.nodeId ? g.dir : scale2(g.dir, -1)
     return add2(at, scale2(out, Math.max(0, (ctx.extent.get(joint.nodeId) ?? 0) - size.flangeThickness / 2)))
   }
-  // Nominal size labels: the first pipe of each size, again where the size changes along a straight, and on every
-  // branch of another size than its header, off a reducing tee or an olet. A screwed vent or drain made only of its
-  // fittings is sized by its olet.
+  // Nominal size labels: the first pipe of each size, again where the size changes along a straight, and (size callouts
+  // 'branches') on every branch of another size than its header, off a reducing tee or an olet. A screwed vent or drain
+  // made only of its fittings is sized by its olet.
   const sized = new Set<string>(stubSizes)
   for (const leg of sheetLegs(ctx)) {
     const branchAt = (id: string, run: PipeRun) => {
@@ -461,7 +468,7 @@ export function drawAnnotations(ctx: IsoContext) {
       return n.kind === 'olet' || n.kind === 'tee' && n.branchEdgeId === run.id && connected(ctx.doc, id).some(r => r.id !== run.id && r.nps !== run.nps)
     }
     if (leg.nodes.some(id => getNode(ctx.doc, id).kind === 'olet' || !!getNode(ctx.doc, id).associatedRunId) && leg.runs.every(r => r.connector || r.nipple)) continue
-    const branch = branchAt(leg.nodes[0], leg.runs[0]) || branchAt(leg.nodes.at(-1)!, leg.runs.at(-1)!)
+    const branch = everyBranch && (branchAt(leg.nodes[0], leg.runs[0]) || branchAt(leg.nodes.at(-1)!, leg.runs.at(-1)!))
     leg.runs.forEach((run, i) => {
       if(run.showSize===false)return
       const changed = i > 0 && run.nps !== leg.runs[i - 1].nps
@@ -548,6 +555,12 @@ export function drawAnnotations(ctx: IsoContext) {
       // Coordinates are plant data; without a plant origin there are none to give.
       if (node.continuation.coordinates !== false && ctx.doc.coordinates) lines.push(...coordinateText(ctx.doc, point))
       callout(node.continuation.leaderAt==='node'?at:node.continuation.paperPath?.at(-1) ?? at, lines, node.id, { key: `continuation:${node.id}` })
+    }
+    // A line broken onto another sheet says where it goes on, as the drafter would letter it, unless the drafter has.
+    else if (ctx.spool && ctx.style.breakCallouts !== false) {
+      const others = [...new Set(connected(ctx.doc, node.id).map(r => r.spool))].filter(s => s !== ctx.spool)
+      if (others.length && connected(ctx.doc, node.id).some(r => r.spool === ctx.spool))
+        callout(at, ["CONT'D ON", ...others.map(s => `DWG# ${sheetInfoOf(ctx.doc, s).drawingNumber}`.toUpperCase())], node.id, { key: `continuation:${node.id}` })
     }
     if (node.elevationCallout ?? levelChange(node)) callout(at, [elevationText(ctx.doc, node.position)], node.id, { key: `elevation:${node.id}` })
     if (node.tiePoint) tiePoint(at, node)

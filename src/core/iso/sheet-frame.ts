@@ -123,6 +123,10 @@ const IMPERIAL_SCALES: Array<[number, string]> = [
   [24, '1/2" = 1\'-0"'], [32, '3/8" = 1\'-0"'], [48, '1/4" = 1\'-0"'], [64, '3/16" = 1\'-0"'], [96, '1/8" = 1\'-0"'],
   [128, '3/32" = 1\'-0"'], [192, '1/16" = 1\'-0"']
 ]
+/** The standard scales a to-scale drawing can be drawn at, as plant length per paper length, with how each is written. */
+export function standardScales(units: IsoDocument['units'] = 'mm'): Array<[number, string]> {
+  return units === 'imperial' ? IMPERIAL_SCALES.map(([d, label]) => [d, label]) : METRIC_SCALES.map(d => [d, d === 1 ? '1:1' : `1:${d}`])
+}
 /**
  * The largest standard scale not larger than `scale` (paper per true length), so a drawing snapped to it still fits.
  * Returns the ratio denominator: 20 for 1:20.

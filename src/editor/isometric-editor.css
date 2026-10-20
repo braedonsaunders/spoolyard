@@ -1053,6 +1053,41 @@
   opacity: 0.5;
   padding: 4px;
 }
+.iso-specs-own-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 6px;
+}
+.iso-specs-own-status small {
+  flex-basis: 100%;
+}
+.iso-editor .iso-specs-own-status button {
+  flex: 1;
+  justify-content: center;
+  border: 1px solid rgb(var(--ch-border));
+  font-size: 11px;
+}
+.iso-editor .iso-specs-own-status button.primary {
+  background: #0b8eae;
+  border-color: #0b8eae;
+  color: #fff;
+}
+.iso-specs-own-row {
+  display: flex;
+  align-items: stretch;
+}
+.iso-editor .iso-specs-own-row > button:first-child {
+  flex: 1;
+  min-width: 0;
+}
+.iso-editor .iso-specs-own-row > button:last-child {
+  opacity: 0.5;
+}
+.iso-editor .iso-specs-own-row > button:last-child:hover {
+  opacity: 1;
+}
 .iso-specs-footer {
   margin-top: auto;
   padding-top: 8px;

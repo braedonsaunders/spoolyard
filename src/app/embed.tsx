@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useRef } from "react";
 import { IsometricEditor, type EditorController, type SaveStatus } from "../editor/isometric-editor";
+import { hostSpecLibrary, setSpecLibraryStore } from "../editor/spec-library";
 
 /**
  * Embedded mode, for hosts such as BidWright: `index.html?embed=1&file=<url>&name=<file name>&theme=dark`.
  * The host draws the single header; Spoolyard posts saves and status, and accepts save/theme commands.
  *   → host:  { source: "spoolyard", type: "spoolyard:ready" | "spoolyard:status" | "spoolyard:save", … }
  *   ← host:  { source: "spoolyard-host", type: "spoolyard:saved" | "spoolyard:save-failed" | "spoolyard:save-now" | "spoolyard:theme", … }
+ * A host that keeps the drafter's specification library answers spoolyard:ready with
+ *   ← host:  { type: "spoolyard:capabilities", library: { label: "BidWright" } }
+ * and then serves spoolyard:library requests (see spec-library.ts); otherwise the library is kept on this device.
  * Messages are accepted only from the same origin.
  */
 /** How long the host has to confirm a save before it is reported as failed. */
@@ -22,11 +26,18 @@ export function EmbeddedEditor({ params }: { params: URLSearchParams }) {
   }, []);
 
   useEffect(() => {
+    let library: ReturnType<typeof hostSpecLibrary> | null = null;
     const listener = (event: MessageEvent) => {
       if (event.origin !== window.location.origin || event.source !== window.parent) return;
-      const data = event.data as { source?: string; type?: string; id?: string; error?: string; theme?: string };
+      const data = event.data as { source?: string; type?: string; id?: string; error?: string; theme?: string; ok?: boolean; result?: unknown; library?: { label?: string } };
       if (data?.source !== "spoolyard-host") return;
-      if (data.type === "spoolyard:saved" || data.type === "spoolyard:save-failed") {
+      if (data.type === "spoolyard:capabilities") {
+        if (data.library && !library) {
+          library = hostSpecLibrary(post, typeof data.library.label === "string" && data.library.label ? data.library.label : "the host");
+          setSpecLibraryStore(library.store);
+        }
+      } else if (data.type === "spoolyard:library-result") library?.settle(data);
+      else if (data.type === "spoolyard:saved" || data.type === "spoolyard:save-failed") {
         const waiter = pending.current.get(data.id ?? "");
         pending.current.delete(data.id ?? "");
         if (waiter) clearTimeout(waiter.timer);
@@ -44,6 +55,8 @@ export function EmbeddedEditor({ params }: { params: URLSearchParams }) {
     const waiting = pending.current;
     return () => {
       window.removeEventListener("message", listener);
+      library?.dispose();
+      setSpecLibraryStore(null);
       for (const w of waiting.values()) clearTimeout(w.timer);
       waiting.clear();
     };

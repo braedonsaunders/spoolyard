@@ -354,6 +354,11 @@ export interface IssuedCells {
 }
 export interface DrawingStyle {
   layout: 'scale' | 'schematic'
+  /**
+   * To scale: the scale the sheet is drawn at, as plant length per paper length (48 is 1/4" = 1'-0", 50 is 1:50).
+   * Unset, the largest standard scale the drawing fits at.
+   */
+  scale?: number
   weldNumbers: boolean
   lettering: 'cad' | 'sans'
   /** Centreline elevation at every change of level, not only where the drafter places one. */
@@ -387,6 +392,14 @@ export interface DrawingStyle {
   dimensionRounding?: 'chain' | 'individual'
   northMark?: 'arrow' | 'ticks'
   stackSizeLabels?: boolean
+  /**
+   * Nominal size callouts. 'changes' (default): the first pipe of each size on a line and every change of size, so
+   * branches repeating a size already called out are not lettered again and an olet carries only its item number.
+   * 'branches': also every branch of another size than its header, and each olet's header-by-branch size.
+   */
+  sizeCallouts?: 'changes' | 'branches'
+  /** Letter each break onto another sheet CONT'D ON with that sheet's drawing number (default on). */
+  breakCallouts?: boolean
   /** Not to scale: the isometric paper's cell, in inches on the printed sheet (default 1/4"). */
   paperGrid?: number
   /**
@@ -2231,6 +2244,9 @@ function readPiping(raw: string, where: { at: string }): IsoDocument {
       (d.style.scaleNote != null && typeof d.style.scaleNote !== 'boolean') ||
       (d.style.dimensionRounding != null && !['chain', 'individual'].includes(d.style.dimensionRounding)) ||
       (d.style.stackSizeLabels != null && typeof d.style.stackSizeLabels !== 'boolean') ||
+      (d.style.scale != null && !(typeof d.style.scale === 'number' && Number.isFinite(d.style.scale) && d.style.scale > 0 && d.style.scale <= 10000)) ||
+      (d.style.breakCallouts != null && typeof d.style.breakCallouts !== 'boolean') ||
+      (d.style.sizeCallouts != null && !['changes', 'branches'].includes(d.style.sizeCallouts)) ||
       (d.style.northMark != null && !['arrow', 'ticks'].includes(d.style.northMark)) ||
       (d.style.paperGrid != null && !(typeof d.style.paperGrid === 'number' && d.style.paperGrid >= 0.05 && d.style.paperGrid <= 2)) ||
       (d.style.stretch != null && !(typeof d.style.stretch === 'number' && d.style.stretch >= 0 && d.style.stretch <= 2)) ||

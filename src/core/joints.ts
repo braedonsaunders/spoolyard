@@ -4,7 +4,7 @@ import {
   type BoltMakeup, type BoltingOptions, type ButterflyBody, type FlangeFace, type Resolved, type StandardOptions
 } from './standards'
 import { designValue } from './spec-design'
-import { compose, draftLength, listLength, schedule, sizeFor, sizeText } from './format'
+import { compose, draftLength, listLength, npsText, schedule, sizeFor, sizeText } from './format'
 import {
   add, connected, fitting, getNode, getSpec, length, mul, rowDimensioned, rowTakeout, sub, takeout, withIndex,
   type CatalogItem, type EndPrep, type IsoDocument, type Kind, type PipeNode, type PipeRun, type PipeSpec, type Vec3
@@ -146,7 +146,7 @@ export function catalogRow(spec: PipeSpec, code: string, nps: number, smallerNps
   if (code === 'NIPPLE') return nippleRow(spec, nps, rows[0], drawing)
   const pipe = spec.sizes.find(s => s.nps === nps), input = standardInputs(spec, code, nps, rows[0])
   const std = standardRow(code, nps, input.rating, smallerNps, input.schedule, input.options)
-  if (!std) return rows[0]
+  if (!std) return interpolatedRow(spec, code, nps, smallerNps, rows[0]) ?? rows[0]
   const named = rows[0], wrought = /^(W-|STUB-END|[CE]-RED$|REDELL$|LR180R$|SR180R$)/.test(code)
   return {
     ...named,
@@ -159,6 +159,33 @@ export function catalogRow(spec: PipeSpec, code: string, nps: number, smallerNps
     schedule: named?.schedule ?? (wrought ? pipe?.schedule ?? spec.schedule : undefined),
     takeoutMissing: undefined,
     source: std.source
+  }
+}
+/**
+ * A size gap in a series no published standard dimensions (threaded and socket-weld valves, specialty items): the
+ * specification lists the component at the sizes either side with their dimensions, but not at this one. Its takeout
+ * (and face-to-face) is interpolated linearly by nominal size between the nearest dimensioned rows of the same
+ * component, so a missing row in an otherwise complete series still cuts. The value is reported as calculated, and a
+ * dimension entered on the row or the component wins. Only plain (non-reducing) rows, and only inside the series.
+ */
+export function interpolatedRow(spec: PipeSpec, code: string, nps: number, smallerNps: number | undefined, named: CatalogItem | undefined): CatalogItem | undefined {
+  if (smallerNps != null && smallerNps !== nps) return undefined
+  const series = spec.fittings.filter(f => f.component === code && (f.smallerNps == null || f.smallerNps === f.nps) && rowDimensioned(f) && f.takeout > 0)
+  const below = series.filter(f => f.nps < nps).reduce<CatalogItem | undefined>((a, f) => !a || f.nps > a.nps ? f : a, undefined)
+  const above = series.filter(f => f.nps > nps).reduce<CatalogItem | undefined>((a, f) => !a || f.nps < a.nps ? f : a, undefined)
+  if (!below || !above) return undefined
+  const t = (nps - below.nps) / (above.nps - below.nps), mix = (a: number, b: number) => Math.round((a + (b - a) * t) * 100) / 100
+  const base = named ?? below
+  return {
+    ...base,
+    id: named?.id ?? `std:${code}:${nps}`,
+    nps,
+    component: code,
+    takeout: mix(rowTakeout(below), rowTakeout(above)),
+    ...(below.faceToFace != null && above.faceToFace != null ? { faceToFace: mix(below.faceToFace, above.faceToFace) } : {}),
+    takeoutMissing: undefined,
+    dimensionBasis: 'calculated',
+    source: `Interpolated between the specification's ${npsText(below.nps)}″ and ${npsText(above.nps)}″ rows (no standard dimensions this size)`
   }
 }
 /** The material the specification names for parts of a kind: butt-weld fittings, flanges, valves, gaskets or bolts. */

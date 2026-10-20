@@ -12,7 +12,7 @@ const load = (slug: string) => JSON.parse(readFileSync(new URL(slug + '.json', d
 test('every library specification embeds in a valid drawing and references known component types', () => {
   const codes = new Set(COMPONENT_TYPES.map(t => t.code));
   const files = readdirSync(dir).filter(f => f.endsWith('.json'));
-  assert.equal(files.length, 11);
+  assert.equal(files.length, 7);
   for (const file of files) {
     const doc = newIso();
     doc.specs = [namespaceSpec(load(file.replace('.json', '')), 'X')];

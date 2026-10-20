@@ -1,6 +1,6 @@
 import { COMPONENT_TYPES, COMPONENT_TYPE_BY_CODE, type ComponentType } from './components';
 import { catalogRow, defaultCode, flangedJoints, nodeCode } from './joints';
-import { connected, fitting, getNode, getSpec, length, sub, add, mul, prepAt, runResult, insertComponent, attachComponent, applyComponent, makeNipple, setAutoFitting, takeout, type CatalogItem, type IsoDocument, type PipeNode, type PipeRun, type PipeSpec, type Vec3 } from './model';
+import { connected, fitting, getNode, getSpec, id, length, sub, add, mul, prepAt, runResult, insertComponent, attachComponent, applyComponent, makeNipple, setAutoFitting, takeout, type CatalogItem, type IsoDocument, type PipeNode, type PipeRun, type PipeSpec, type Vec3 } from './model';
 
 export interface ComponentTrack {
   /** Ends of the whole straight leg, between changes of direction, branches and open ends. */
@@ -190,6 +190,40 @@ function refit(doc: IsoDocument, node: PipeNode, nps: number, specId: string) {
   else delete node.catalogId;
 }
 /**
+ * Put a pipe on another specification. The components it carries follow it: routed fittings (elbows, tees, welds)
+ * are chosen again from the new specification, an outlet on it and an in-line component whose row is not from a
+ * specification of its pipes take the new specification's row for the same component and sizes, or, where it has
+ * none, the standard part. Rows chosen from the specification a component's other pipe is on are kept (a spec break).
+ */
+export function setRunSpec(doc: IsoDocument, runId: string, specId: string): void {
+  const run = doc.runs.find(r => r.id === runId);
+  if (!run) return;
+  const spec = getSpec(doc, specId);
+  run.specId = specId;
+  if (!spec.sizes.some(s => s.nps === run.nps) && spec.sizes.length) throw new Error(`Specification ${spec.name} has no ${run.nps}″ size.`);
+  for (const node of [getNode(doc, run.from), getNode(doc, run.to), ...doc.nodes.filter(n => n.associatedRunId === run.id)]) refitToSpec(doc, node);
+}
+/** A component's row taken again from its pipes' specification, when the row it has is from none of theirs. */
+export function refitToSpec(doc: IsoDocument, node: PipeNode): void {
+  const edges = connected(doc, node.id), host = doc.runs.find(r => r.id === node.associatedRunId);
+  const pipes = host ? [host] : edges;
+  if (!pipes.length) return;
+  if (['end', 'weld', 'elbow90', 'elbow45', 'tee'].includes(node.kind) && !host) return setAutoFitting(doc, node.id);
+  const row = fitting(doc, node), code = node.component ?? row?.component;
+  if (!row || !code) return;
+  const own = new Set(pipes.map(r => r.specId));
+  if (doc.specs.some(s => own.has(s.id) && s.fittings.includes(row))) return;
+  const owner = pipes.reduce((a, b) => (b.nps > a.nps ? b : a)), spec = getSpec(doc, owner.specId);
+  const same = spec.fittings.find(f => f.component === code && f.nps === row.nps && (f.smallerNps ?? f.nps) === (row.smallerNps ?? row.nps));
+  // Without a row, the standard part; an outlet keeps its branch size in the standard part's name.
+  if (same) node.catalogId = same.id;
+  else if (node.kind === 'olet') node.catalogId = `std:${code}:${row.smallerNps ?? row.nps}`;
+  else delete node.catalogId;
+  node.component = code;
+  delete node.description;
+}
+
+/**
  * Carry a new size along the line beyond a fitting: the pipe leaving `fromId` and the pipes it runs on into through
  * joints, elbows and in-line components, up to the next reducer, branch or open end.
  */
@@ -272,6 +306,48 @@ export function placeComponentOnPipe(doc: IsoDocument, runId: string, type: Comp
     if (!edge.connector && Number.isFinite(cut) && cut <= 0)
       throw new Error('That position leaves no pipe after fitting takeouts and root gaps. Choose a point farther from the end.');
   }
+  return node;
+}
+
+/** In-line components that can close a line at its open end with no pipe after them: valves, couplings, unions, instruments. */
+export const terminalCapable = (type: ComponentType) =>
+  type.ports === 2 && !type.angle && ['valve', 'reducer'].includes(type.kind) && !/^(NIPPLE|SPACER|SPECBLD|SPEC-BLND|RF-SBLND)$/.test(type.code);
+/**
+ * Put an in-line component on a pipe's open end, with nothing after it: the line ends at the component's outlet. The
+ * pipe keeps its cut; the component's inlet port is where the pipe ended, and its outlet is the new open end, joined
+ * to it with no pipe between (a connector). A flanged component's outlet carries no mating flange: what bolts to it
+ * is not on this drawing. Returns the component.
+ */
+export function placeAtOpenEnd(doc: IsoDocument, runId: string, end: 0 | 1, type: ComponentType, row?: CatalogItem): PipeNode {
+  const run = doc.runs.find(r => r.id === runId && !r.connector);
+  if (!run) throw new Error('Click the open end of a pipe.');
+  if (!terminalCapable(type)) throw new Error(`${type.label} cannot end a line. Click between the pipe ends.`);
+  const node = getNode(doc, end === 0 ? run.from : run.to);
+  if (node.kind !== 'end' || node.associatedRunId || connected(doc, node.id).length !== 1)
+    throw new Error('That pipe end already has a fitting. Click an open pipe end, or between the ends.');
+  const far = getNode(doc, end === 0 ? run.to : run.from), span = length(sub(node.position, far.position));
+  if (!(span > 0)) throw new Error('That pipe has no length to end with a component.');
+  const u = mul(sub(node.position, far.position), 1 / span);
+  const spec = getSpec(doc, run.specId);
+  const match = (row && row.nps === run.nps && spec.fittings.includes(row) ? row : undefined) ??
+    spec.fittings.find(f => f.component === type.code && f.nps === run.nps && (f.smallerNps == null || f.smallerNps === f.nps));
+  const continuation = node.continuation, tiePoint = node.tiePoint;
+  delete node.continuation;
+  delete node.tiePoint;
+  applyComponent(doc, node, type.code, match);
+  // The outlet: an open end one takeout beyond the centre, with no pipe between.
+  const outlet: PipeNode = { id: id(), kind: 'end', position: [...node.position] as Vec3, ...(continuation ? { continuation } : {}), ...(tiePoint ? { tiePoint } : {}) };
+  doc.nodes.push(outlet);
+  const prep = type.endPrep && type.endPrep !== 'PLAIN' ? type.endPrep : prepAt(run, end === 0 ? 0 : 1);
+  const stub: PipeRun = { id: id(), from: node.id, to: outlet.id, specId: run.specId, nps: run.nps, spool: run.spool, line: run.line, heat: '', endPrep: prep, fromPrep: prep, toPrep: prep, connector: true };
+  if (run.flow) stub.flow = (run.flow === 'forward') === (end === 1) ? 'forward' : 'reverse';
+  doc.runs.push(stub);
+  if (type.endPrep === 'FL') node.portFlanges = { ...node.portFlanges, [stub.id]: { component: 'NONE', gasket: false, bolts: false } };
+  const inlet = takeout(doc, node, run.id), out = takeout(doc, node, stub.id);
+  if (inlet == null || out == null || !Number.isFinite(inlet) || !Number.isFinite(out))
+    throw new Error(`The ${type.label.toLowerCase()} has no length in the specification or the standards, so it cannot be placed on an open end. Place it between the pipe ends, or give its specification row a takeout.`);
+  node.position = add(node.position, mul(u, inlet));
+  outlet.position = add(node.position, mul(u, out));
   return node;
 }
 

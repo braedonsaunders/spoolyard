@@ -89,6 +89,10 @@ function annotation(code: string): SymbolStroke[] {
   if (/^SP$/.test(code)) return [...poly(-9, 0, -5, -8, 5, -8, 9, 0, 5, 8, -5, 8, -9, 0), T('SP', -6, 3, 7)]
   if (/^PL$|^PL-/.test(code)) return [...box(-11, -6, 22, 12), T('PL', -6, 3, 7)]
   if (/NORTH/.test(code)) return [L(0, 12, 0, -12), ...poly(-5, -5, 0, -12, 5, -5), T('N', -3, -15, 9)]
+  // Off-sheet connectors: the standard flag, pointing the way the line goes on (both ways for a dual connector).
+  if (/^R-ARR$/.test(code)) return [...poly(-13, -6, 6, -6, 13, 0, 6, 6, -13, 6, -13, -6)]
+  if (/^L-ARR$/.test(code)) return [...poly(13, -6, -6, -6, -13, 0, -6, 6, 13, 6, 13, -6)]
+  if (/^D-ARR$/.test(code)) return [...poly(-14, 0, -7, -6, 7, -6, 14, 0, 7, 6, -7, 6, -14, 0)]
   if (/ARR|ARRW/.test(code)) return [L(-14, 0, 12, 0), ...poly(5, -5, 13, 0, 5, 5, 5, -5)]
   if (/WELD|WLD|^FW$/.test(code)) return /DOT/.test(code) ? [C(0, 0, 3, true)] : [C(0, 0, 8), T('1', -3, 3, 9)]
   if (/^BAL|MTO/.test(code)) return [C(0, 0, 9), T('#', -3, 3, 9)]

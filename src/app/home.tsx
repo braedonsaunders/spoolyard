@@ -20,6 +20,8 @@ import {
 } from "lucide-react";
 import { SpoolyardMark } from "../editor/mark";
 import { loadSpecIndex, TEMPLATES, type DrawingTemplate, type LibrarySpecSummary } from "../editor/library";
+import { specLibrary, specLibraryChanged, useSavedSpecs } from "../editor/spec-library";
+import { download } from "../editor/download";
 import { deleteDrawing, listDrawings, type StoredDrawing } from "./storage";
 import { desktop } from "./platform";
 import { Thumbnail } from "./thumbnail";
@@ -111,6 +113,7 @@ export function Home({
   const [view, setView] = useState<"grid" | "list">(() => (getPreference(VIEW_KEY) === "list" ? "list" : "grid"));
   const [error, setError] = useState("");
   const [specs, setSpecs] = useState<LibrarySpecSummary[] | null>(null);
+  const saved = useSavedSpecs();
   useEffect(() => {
     listDrawings()
       .then(setDrawings)
@@ -334,8 +337,47 @@ export function Home({
           <>
             <header className="sy-main-head">
               <h1>Specifications</h1>
-              <p>Included with Spoolyard. Every row is editable inside a drawing, and you can add your own.</p>
+              <p>
+                Your own specifications, saved from a drawing's Specifications tab, are kept on {specLibrary().label} and start every new
+                drawing in place of the standard one they refine. The standard library is included with Spoolyard.
+              </p>
             </header>
+            <h2 className="sy-subhead">My library</h2>
+            {saved.length ? (
+              <table className="sy-table">
+                <thead>
+                  <tr>
+                    <th>Spec</th>
+                    <th>Name</th>
+                    <th>Rating</th>
+                    <th>Rows</th>
+                    <th>Saved</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {saved.map((s) => (
+                    <tr key={s.id}>
+                      <td><strong>{s.id}</strong></td>
+                      <td>{s.name}</td>
+                      <td>{s.rating}</td>
+                      <td>{s.rowCount.toLocaleString()}</td>
+                      <td>{new Date(s.updatedAt).toLocaleDateString()}</td>
+                      <td className="sy-row-actions">
+                        <button className="sy-btn small" onClick={() => onNew({ ...TEMPLATES[0], id: "own-" + s.id, spec: s.id, name: "Spec " + s.id })}>New drawing</button>
+                        <button className="sy-btn small" onClick={() => void specLibrary().get(s.id).then((spec) => spec && download(s.id + ".spec.json", JSON.stringify(spec, null, 2), "application/json"))}>Export</button>
+                        <button className="sy-btn small" onClick={() => {
+                          if (window.confirm(`Remove ${s.id} from your library? Drawings that use it keep their own copy.`)) void specLibrary().remove(s.id).then(specLibraryChanged);
+                        }}>Remove</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <p className="sy-empty-note">No specifications saved yet. Open a drawing, edit a specification on its Specifications tab, and choose Save to library.</p>
+            )}
+            <h2 className="sy-subhead">Standard library</h2>
             <table className="sy-table">
               <thead>
                 <tr>
@@ -391,7 +433,8 @@ export function Home({
                     Or type a length and press <b>East</b>, <b>North</b> or <b>Up</b> to route by measurement.
                   </li>
                   <li>
-                    Press <kbd>Esc</kbd> to finish the run; <b>New spool</b> starts the next one.
+                    Press <kbd>Enter</kbd> to finish the run and start another, or <kbd>Esc</kbd> to put the Pipe tool down.
+                    <b>New sheet</b> starts a spool on a sheet of its own; <b>Split sheet</b> breaks a line onto a new sheet.
                   </li>
                   <li>
                     Choose <b>Insert</b> (or press <kbd>I</kbd>), choose a component, then click its position on the pipe.

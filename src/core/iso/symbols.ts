@@ -245,6 +245,8 @@ export function drawPipes(ctx: IsoContext) {
   for (const g of ctx.geometry.values()) {
     if (boltedConnector(ctx.doc, g.run)) continue
     if(g.run.connector && [g.run.from,g.run.to].some(id=>getNode(ctx.doc,id).hosePath?.length))continue
+    // A component closing the line (a valve on the open end) is its own end: there is no pipe beyond it to draw.
+    if(g.run.connector && [g.run.from,g.run.to].some(id=>{const n=getNode(ctx.doc,id);return n.kind==='end'&&!n.associatedRunId&&connected(ctx.doc,id).length===1}) && [g.run.from,g.run.to].some(id=>getNode(ctx.doc,id).kind==='valve') && !ctx.nodes.some(n=>n.associatedRunId===g.run.id))continue
     let ea = Math.max(ctx.extent.get(g.run.from) ?? 0, bendStop.get(`${g.run.from}|${g.run.id}`) ?? 0)
     let eb = Math.max(ctx.extent.get(g.run.to) ?? 0, bendStop.get(`${g.run.to}|${g.run.id}`) ?? 0)
     for (const [index, id] of [g.run.from, g.run.to].entries()) {
@@ -635,7 +637,7 @@ function symbolDrawer(ctx: IsoContext, scene: Scene) {
           poly([f(side*(outer-plate),-F),f(side*outer,-F),f(side*outer,F),f(side*(outer-plate),F)],'SYMBOL',owner,{closed:true})
           hache(f,side*planes.mate,owner)
         }
-      }else flanges(f,h,owner)
+      }else flanges(f,h,owner,true)
     }
     const operator = valveOperatorOf(ctx.doc, node)
     if (check || operator === 'none') return

@@ -1,12 +1,13 @@
 
 import { useEffect, useMemo, useState } from "react";
-import { BookOpen, ChevronDown, Copy, Download, FilePlus2, Loader2, Plus, RotateCcw, Search, Trash2, Upload } from "lucide-react";
+import { BookOpen, BookmarkCheck, BookmarkPlus, ChevronDown, Copy, Download, FilePlus2, Library, Loader2, Plus, RotateCcw, Search, Trash2, Upload } from "lucide-react";
 import { cn } from "./cn";
 import { clone, DEFAULT_SOCKET_GAP, getSpec, STARTER_ROOT_GAP, lengthInputValue, type CatalogItem, type IsoDocument, type PipeSpec } from "../core/model";
 import { designValue, type SpecDesign, type SpecDesignField } from "../core/spec-design";
 import { dnOf, npsOfDn, sizeFor, sizeHeader } from "../core/format";
 import { COMPONENT_CATEGORIES, COMPONENT_TYPES, type ComponentType } from "../core/components";
-import { loadLibrarySpec, loadSpecIndex, namespaceSpec, uniqueSpecId, type LibrarySpecSummary } from "./library";
+import { loadLibrarySpec, loadSavedSpec, loadSpecIndex, namespaceSpec, uniqueSpecId, type LibrarySpecSummary } from "./library";
+import { librarySpec, onSpecLibraryChange, specText, specLibrary, specLibraryChanged, type SavedSpecSummary } from "./spec-library";
 import { download } from "./download";
 import { ComponentGlyph } from "./component-glyph";
 import { LengthInput, NumberInput, Row, Section, TextInput } from "./inspector/kit";
@@ -91,6 +92,29 @@ export function SpecManager({
     [loading, setLoading] = useState("");
   const [picker, setPicker] = useState(false);
   const spec = doc.specs.find((s) => s.id === specId) ?? doc.specs[0];
+  // The drafter's own library, and whether the specification shown is saved in it as it is now.
+  const [saved, setSaved] = useState<SavedSpecSummary[] | null>(null),
+    [savedError, setSavedError] = useState(""),
+    [savedRevision, setSavedRevision] = useState(0),
+    [savedCopy, setSavedCopy] = useState<string | null | undefined>(undefined),
+    [saving, setSaving] = useState(false);
+  useEffect(() => onSpecLibraryChange(() => setSavedRevision((n) => n + 1)), []);
+  useEffect(() => {
+    let live = true;
+    specLibrary().list()
+      .then((list) => { if (live) { setSaved(list); setSavedError(""); } })
+      .catch((e) => live && setSavedError(e instanceof Error ? e.message : String(e)));
+    return () => { live = false; };
+  }, [savedRevision]);
+  useEffect(() => {
+    let live = true;
+    setSavedCopy(undefined);
+    if (spec) specLibrary().get(spec.id).then((own) => live && setSavedCopy(own ? specText(own) : null)).catch(() => live && setSavedCopy(null));
+    return () => { live = false; };
+  }, [spec?.id, savedRevision]); // eslint-disable-line react-hooks/exhaustive-deps
+  const current = useMemo(() => {
+    try { return spec ? specText(librarySpec(spec)) : ""; } catch { return ""; }
+  }, [spec]);
   useEffect(() => {
     let live = true;
     loadSpecIndex()
@@ -158,6 +182,56 @@ export function SpecManager({
     return false;
   };
 
+  /** Saves the specification shown to the drafter's library, replacing the copy kept under its id. */
+  const saveToLibrary = async () => {
+    setSaving(true);
+    try {
+      await specLibrary().put(spec);
+      specLibraryChanged();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+  const addSaved = async (id: string) => {
+    setLoading("saved:" + id);
+    try {
+      const next = await loadSavedSpec(id, doc);
+      commit((d) => {
+        d.specs.push(next);
+      });
+      setSpecId(next.id);
+      setComponent(GENERAL);
+    } catch (e) {
+      onError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading("");
+    }
+  };
+  /** Puts the library's copy in place of the drawing's (rows keep their ids, so placed components keep theirs). */
+  const useSaved = async () => {
+    try {
+      const own = await specLibrary().get(spec.id);
+      if (!own) return;
+      commit((d) => {
+        const i = d.specs.findIndex((s) => s.id === spec.id);
+        if (i >= 0) d.specs[i] = namespaceSpec(clone(own), spec.id);
+      });
+    } catch (e) {
+      onError(e instanceof Error ? e.message : String(e));
+    }
+  };
+  const removeSaved = async (id: string) => {
+    if (!window.confirm(`Remove specification ${id} from your library (${specLibrary().label})? Drawings that use it keep their own copy.`)) return;
+    try {
+      await specLibrary().remove(id);
+      specLibraryChanged();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : String(e));
+    }
+  };
+  const ownState = savedCopy === undefined ? "checking" : savedCopy === null ? "unsaved" : savedCopy === current ? "saved" : "changed";
   const addLibrary = async (slug: string) => {
     setLoading(slug);
     try {
@@ -256,6 +330,45 @@ export function SpecManager({
             </small>
           </button>
         ))}
+        <div className="iso-specs-library iso-specs-own" aria-label="My specification library">
+          <span>My library · {specLibrary().label}</span>
+          <div className="iso-specs-own-status">
+            <small>
+              {ownState === "saved" ? `${spec.id} is saved as it is here; new drawings start from it.`
+                : ownState === "changed" ? `${spec.id} has changes not in your library.`
+                  : ownState === "unsaved" ? `Save ${spec.id} to reuse your edits in new drawings.` : "Checking…"}
+            </small>
+            {ownState === "saved" ? (
+              <button disabled title="Saved"><BookmarkCheck size={13} /> Saved</button>
+            ) : (
+              <button className="primary" disabled={saving || ownState === "checking"} onClick={() => void saveToLibrary()}
+                title={`Keep ${spec.id} in your library (${specLibrary().label}), so new drawings and other drawings can use this version`}>
+                {saving ? <Loader2 size={13} className="animate-spin" /> : <BookmarkPlus size={13} />} {ownState === "changed" ? "Update library" : "Save to library"}
+              </button>
+            )}
+            {ownState === "changed" && <button onClick={() => void useSaved()} title="Replace this drawing's copy with the one in your library"><RotateCcw size={13} /> Use library copy</button>}
+          </div>
+          {savedError ? <p role="alert">{savedError}</p> : !saved ? (
+            <p><Loader2 size={12} className="animate-spin" /> Loading…</p>
+          ) : !saved.length ? (
+            <p>No specifications saved yet.</p>
+          ) : (
+            saved.map((l) => (
+              <div key={l.id} className="iso-specs-own-row">
+                <button disabled={!!loading || doc.specs.some((s) => s.id === l.id)} onClick={() => void addSaved(l.id)} title={l.name}>
+                  {loading === "saved:" + l.id ? <Loader2 size={13} className="animate-spin" /> : <Library size={13} />}
+                  <span>
+                    <b>{l.id}</b> {l.material} · {l.rating}
+                    <small>
+                      {l.rowCount} rows · {doc.specs.some((s) => s.id === l.id) ? "in this drawing" : "add to drawing"} · saved {new Date(l.updatedAt).toLocaleDateString()}
+                    </small>
+                  </span>
+                </button>
+                <button aria-label={`Remove ${l.id} from my library`} title="Remove from my library" onClick={() => void removeSaved(l.id)}><Trash2 size={13} /></button>
+              </div>
+            ))
+          )}
+        </div>
         <div className="iso-specs-library">
           <span>Standard library</span>
           {libraryError ? (

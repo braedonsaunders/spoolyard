@@ -1,4 +1,5 @@
 import { assetUrl } from "./assets";
+import { specLibrary } from "./spec-library";
 import { defaultBlockSpacing, defaultGrid } from "../core/grid";
 import { newIso, type CatalogItem, type IsoDocument, type PipeSpec } from "../core/model";
 
@@ -57,11 +58,33 @@ export function namespaceSpec(spec: PipeSpec, id: string): PipeSpec {
   };
 }
 
-/** A new drawing starts on the standard library's general-service spec A, falling back to the built-in spec offline. */
-export async function newIsoWithDefaultSpec(): Promise<IsoDocument> {
+/** A specification from the drafter's own library, ready to embed in a drawing (see spec-library.ts). */
+export async function loadSavedSpec(id: string, doc?: IsoDocument): Promise<PipeSpec> {
+  const saved = await specLibrary().get(id);
+  if (!saved) throw new Error(`Specification ${id} is no longer in your library.`);
+  return namespaceSpec(saved, uniqueSpecId(saved.id, doc));
+}
+/**
+ * The specification a new drawing starts on for a standard library slug: the drafter's own refined copy of it (the
+ * same id in their library) when they have one, else the standard library's.
+ */
+export async function startingSpec(slug: string): Promise<PipeSpec> {
+  const id = (await loadSpecIndex().catch(() => [] as LibrarySpecSummary[])).find((s) => s.slug === slug)?.id ?? slug;
+  const own = await specLibrary().get(id).catch(() => undefined);
+  return own ? namespaceSpec(own, own.id) : loadLibrarySpec(slug);
+}
+
+/**
+ * A new drawing starts on the standard library's general-service spec A, falling back to the built-in spec offline,
+ * in feet and inches on tabloid paper: one cell of the isometric paper routes one foot of pipe.
+ */
+export async function newIsoWithDefaultSpec(units: IsoDocument["units"] = "imperial"): Promise<IsoDocument> {
   const doc = newIso();
+  doc.units = units;
+  doc.paper = "tabloid";
+  doc.grid = { ...defaultGrid(), spacing: defaultBlockSpacing(units) };
   try {
-    doc.specs = [await loadLibrarySpec("a")];
+    doc.specs = [await startingSpec("a")];
   } catch {
     // Keep the bundled Schedule 40 specification.
   }
@@ -97,11 +120,11 @@ export interface DrawingTemplate {
 }
 /** Starting points offered by New: sheet size, units and specification. */
 export const TEMPLATES: DrawingTemplate[] = [
-  { id: "metric-tabloid", name: "Metric · Tabloid", detail: "11×17 sheet · millimetres · Spec A carbon steel", spec: "a", paper: "tabloid", units: "mm" },
   { id: "imperial-tabloid", name: "Imperial · Tabloid", detail: "11×17 sheet · feet & inches · Spec A carbon steel", spec: "a", paper: "tabloid", units: "imperial" },
   { id: "imperial-letter", name: "Imperial · Letter", detail: "8½×11 sheet · feet & inches · Spec A carbon steel", spec: "a", paper: "letter", units: "imperial" },
+  { id: "stainless-tabloid", name: "Stainless · Tabloid", detail: "11×17 sheet · feet & inches · Spec SS-A stainless", spec: "ss-a", paper: "tabloid", units: "imperial" },
+  { id: "metric-tabloid", name: "Metric · Tabloid", detail: "11×17 sheet · millimetres · Spec A carbon steel", spec: "a", paper: "tabloid", units: "mm" },
   { id: "metric-a3", name: "Metric · A3", detail: "A3 sheet · millimetres · Spec A carbon steel", spec: "a", paper: "a3", units: "mm" },
-  { id: "stainless-tabloid", name: "Stainless · Tabloid", detail: "11×17 sheet · millimetres · Spec SS-A stainless", spec: "ss-a", paper: "tabloid", units: "mm" },
 ];
 
 export async function newIsoFromTemplate(template: DrawingTemplate, title = "Piping isometric"): Promise<IsoDocument> {
@@ -111,6 +134,6 @@ export async function newIsoFromTemplate(template: DrawingTemplate, title = "Pip
   doc.units = template.units;
   doc.grid = { ...defaultGrid(), spacing: defaultBlockSpacing(template.units) };
   // Never substitute carbon steel for a requested stainless or pressure-class specification.
-  doc.specs = [await loadLibrarySpec(template.spec)];
+  doc.specs = [await startingSpec(template.spec)];
   return doc;
 }

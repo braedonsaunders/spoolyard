@@ -128,8 +128,10 @@ export function renderIso(
     const full = x1 - x0 <= w + FIT_TOLERANCE && y1 - y0 <= h + FIT_TOLERANCE
     // To scale on a sheet, the largest standard scale that fits (1:20, 1/2" = 1'-0"), so the sheet can say so.
     const perMm = sheet?.paper?.unitsPerMm ?? sizes.mm
-    const standard = sheet && Number.isFinite(fits) && fits > 0 ? perMm / standardScale(fits / perMm, doc.units) : fits
-    const scale = !layout.raw.size ? 1 : schematic ? full ? 1 : fits : standard
+    // A scale the drafter chose holds, whether or not the drawing fits at it (the sheet's checks say when it does not).
+    const chosen = sheet && !schematic && style.scale && style.scale > 0 ? perMm / style.scale : undefined
+    const standard = chosen ?? (sheet && Number.isFinite(fits) && fits > 0 ? perMm / standardScale(fits / perMm, doc.units) : fits)
+    const scale = chosen ?? (!layout.raw.size ? 1 : schematic ? full ? 1 : fits : standard)
     return { centre: [(x0 + x1) / 2, (y0 + y1) / 2], scale, at: [(area[0] + area[2]) / 2, (area[1] + area[3]) / 2], ...(schematic ? { base, ...shape } : {}) }
   }
   const axis = (v: Vec3) => unit2(viewProject(v, facing, doc.north))
@@ -724,17 +726,30 @@ function decideApart(doc: IsoDocument, spool: string, width: number, height: num
   // that does not is drawn at that base, smaller (as `solveBase` finds).
   const least = boundsOf(lay(MIN_BASE).raw.values())
   /** How much of its full size the drawing can be drawn at in the paper the frame leaves it (1 when it fits). */
+  const paper = { on: 0, apart: 0 }
   const room = (materials: 'on' | 'apart') => {
     // As the drawing's own sheet asks for it, so the frame drawn here is the one it is drawn with.
     const sheet = framed(frame, { doc, spool, width, height, rows, view: 'iso', ...(materials === 'apart' ? { materials } : {}) })
     const open = openFor(sheet.regions?.free ?? openRegions(sheet.viewport, sheet.exclusions).free, laid, estimate) ?? sheet.regions?.open ?? sheet.viewport
     const area = insetBy(open, [estimate, estimate, estimate, estimate]), b = least
+    paper[materials] = Math.max(0, area[2] - area[0]) * Math.max(0, area[3] - area[1])
     if (b[2] - b[0] <= area[2] - area[0] + FIT_TOLERANCE && b[3] - b[1] <= area[3] - area[1] + FIT_TOLERANCE) return 1
     return Math.min(1, (area[2] - area[0]) / Math.max(1, b[2] - b[0]), (area[3] - area[1]) / Math.max(1, b[3] - b[1]))
   }
-  const on = room('on')
-  return on < 1 - 1e-9 && room('apart') > on * APART_GAIN
+  const on = room('on'), apart = room('apart')
+  if (on < 1 - 1e-9 && apart > on * APART_GAIN) return true
+  // A busy drawing that fits beside its list only just is crowded there: every item it tags and every pipe it
+  // dimensions needs clear paper for its lettering. When the items need more of the paper beside the list than a
+  // readable sheet gives them, and the sheet to itself has clearly more, the list goes to its own sheet.
+  const items = runs.length + nodes.filter(n => !['end', 'weld'].includes(n.kind)).length
+  return items * (ITEM_ROOM * sizes.text) ** 2 > paper.on * BUSY_SHARE && paper.apart > paper.on * APART_ROOM
 }
+/** Clear paper a tagged, dimensioned item needs around it, in lettering heights (a square this many letters a side). */
+const ITEM_ROOM = 8
+/** The share of the paper beside the list a drawing's items may need before the sheet reads as crowded. */
+const BUSY_SHARE = 0.5
+/** How much more paper the drawing must have on a sheet of its own for its list to move there for room alone. */
+const APART_ROOM = 1.3
 /** How much larger a drawing must be drawn without its material list beside it for the list to move to its own sheet. */
 const APART_GAIN = 1.05
 

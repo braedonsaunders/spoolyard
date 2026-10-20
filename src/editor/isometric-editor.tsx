@@ -37,6 +37,7 @@ import {
   ZoomOut,
   GitBranch,
   X,
+  Scissors,
 } from "lucide-react";
 import { cn } from "./cn";
 import { EditContextMenu, type EditMenuItem } from "./edit-context-menu";
@@ -86,7 +87,8 @@ import {
   type Vec3,
 } from "../core/model";
 import { createDrawing, drawingSheets, type Drawing, type Point, type SheetFit, type SheetKind } from "../core/drawing";
-import { defaultBlockSpacing, gridAnchor, pickGridPoint, pickOrthoPoint } from "../core/grid";
+import { defaultBlockSpacing, defaultGrid, gridAnchor, pickGridPoint, pickOrthoPoint } from "../core/grid";
+import { standardScales } from "../core/iso/sheet-frame";
 import { exportPcfPackage } from "../core/pcf";
 import { coordinateText, sizeFor, sizeHeader } from "../core/format";
 import { unitsPerMm } from "../core/paper";
@@ -99,7 +101,7 @@ import { ExportSettings, dxfOptions, readExportPreferences } from "./export-sett
 import { usePipingSave, type FileSaveResult, type SaveStatus, type SaveTarget } from "./use-piping-save";
 import { COMPONENT_TYPES, type ComponentType } from "../core/components";
 import { SpecManager } from "./spec-manager";
-import { defaultNps, loadLibrarySpec, loadSpecIndex, newIsoWithDefaultSpec, routingSizes, type LibrarySpecSummary } from "./library";
+import { defaultNps, loadLibrarySpec, loadSavedSpec, loadSpecIndex, newIsoWithDefaultSpec, routingSizes, type LibrarySpecSummary } from "./library";
 import { SpoolyardMark } from "./mark";
 import { ComponentLibrary, ComponentPalette, sizeLabel } from "./component-palette";
 import { ComponentGlyph } from "./component-glyph";
@@ -113,6 +115,8 @@ import {
   isSquareTurn,
   placeAtTurn,
   endCapable,
+  placeAtOpenEnd,
+  terminalCapable,
   legPoint,
   moveComponentAlongPipe,
   pipeLeg,
@@ -121,6 +125,7 @@ import {
   reduceAtJoint,
   routeError,
   sized,
+  setRunSpec,
   sizeChoices,
   snapAlongLeg,
   snapNearFace,
@@ -138,7 +143,7 @@ import { DIRECTIONS, dominantAxis, inputDelta, parseCommand, parsePointInput, ty
 import { CommandBar, type CommandOption } from "./command-bar";
 import { resolveSnap, snapPoints, type Snap } from "./snaps";
 import { clickSelect, existing, normaliseBox, pickInBox, boxMode, sameSelection, selectables } from "./selection";
-import { CLIPBOARD_MIME, clipboardExtent, copySelection, eraseSelection, extendRun, fitOletToBranch, moveSelection, nextSpool, oletBranchSize, pastePieces, readClipboard, stretchLeg, type Clipboard } from "./edit-ops";
+import { CLIPBOARD_MIME, clipboardExtent, copySelection, eraseSelection, extendRun, fitOletToBranch, moveSelection, nextSpool, oletBranchSize, pastePieces, readClipboard, splitSheet, stretchLeg, type Clipboard } from "./edit-ops";
 import { EditorDialog, ask, type DialogRequest } from "./dialogs";
 import { KEYS, ShortcutHelp, isMac } from "./shortcuts";
 import { MenuButton } from "./menu-button";
@@ -204,7 +209,7 @@ export type IsometricEditorProps = {
   controller?: MutableRefObject<EditorController | null>;
 };
 
-type Tool = "select" | "pan" | "pipe" | "insert" | "measure" | "move" | "copy" | "zoom-window";
+type Tool = "select" | "pan" | "pipe" | "insert" | "measure" | "move" | "copy" | "zoom-window" | "split";
 /** Paper shown around the sheet at zoom 1, as a fraction of its height. */
 const PAPER_PAD = 0.06;
 /** The ribbon's routing length, and the gap a typed run with no start leaves beside the work, in grid blocks. */
@@ -352,7 +357,8 @@ export function IsometricEditor({
   const [measure, setMeasure] = useState<{ from: Vec3; to?: Vec3 } | null>(null);
   // Move and Copy act on what was selected when they started: a copy selects what it made, but copying again
   // copies the originals from the same base point, as AutoCAD's multiple copy does.
-  const [transform, setTransform] = useState<{ mode: "move" | "copy"; base: Vec3 | null; ids: string[] } | null>(null);
+  // Paste places what is on the clipboard as Copy does, from its base point (the clip's first connection).
+  const [transform, setTransform] = useState<{ mode: "move" | "copy" | "paste"; base: Vec3 | null; ids: string[]; clip?: Clipboard; pasted?: number } | null>(null);
   const [dialog, setDialog] = useState<DialogRequest | null>(null);
   const [help, setHelp] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -400,6 +406,14 @@ export function IsometricEditor({
       storeDrafting(next);
       return next;
     });
+  /**
+   * The grid block is the drawing's routing scale (one cell of the not-to-scale paper, one block of the to-scale or
+   * model grid): it is kept with the drawing, so it reopens as drafted.
+   */
+  const setBlock = (spacing: number) => {
+    setDrafting({ spacing });
+    commit((d) => { d.grid = { ...(d.grid ?? defaultGrid()), spacing }; });
+  };
   // Routing from a connection keeps its end preparation (an olet's socket, say) rather than the size's default.
   const connectionPrep = useRef<{ prep: EndPrep; spec: string; nps: number; fixed?: boolean } | null>(null);
   /** The end preparation routing starts with; `fixed` keeps it at any size (an olet's socket or thread). */
@@ -599,12 +613,29 @@ export function IsometricEditor({
   // routed to, or a pending start. The last open end left over from opening, undo or delete is not one.
   const routing = !!pending || (!!startNode && primary === start);
   const spools = useMemo(() => [...new Set([...doc.runs.map((r) => r.spool), spool])].sort(), [doc.runs, spool]);
+  /** A new sheet: the next spool, shown on its own blank sheet; the next pipe drawn starts it. */
   const newSpool = () => {
-    setSpool(nextSpool(spools));
+    const next = nextSpool(spools);
+    setSpool(next);
     setStart("");
     setSelection([]);
     setPending(null);
+    if (doc.runs.length) setFilter(next);
     activateTool("pipe");
+    setNotice({ text: `New sheet ${next} · click the paper to start its first pipe, or pick an open end to continue onto it` });
+  };
+  /** Breaks the line onto a new sheet at a connection or a point on a pipe (see `splitSheet`). */
+  const breakSheet = (at: Parameters<typeof splitSheet>[1]) => {
+    const was = "runId" in at ? doc.runs.find((r) => r.id === at.runId)?.spool : connected(doc, at.nodeId)[0]?.spool;
+    let made: { spool: string; nodeId: string } | undefined;
+    if (commit((d) => { made = splitSheet(d, at); }) && made) {
+      setSelection([made.nodeId]);
+      setSpool(made.spool);
+      // Each spool is a sheet of its own now: the paper shows the sheet that was being drawn, with its break lettered.
+      if (!filter && was) setFilter(was);
+      activateTool("select");
+      setNotice({ text: `The line continues on ${made.spool}, a sheet of its own · both sheets say CONT'D ON the other's drawing number` });
+    }
   };
   const anchor = pending?.position ?? startNode?.position ?? gridAnchor(doc);
   // While a run is being drawn on paper, hold the sheet's fit so the next click point stays put;
@@ -704,8 +735,33 @@ export function IsometricEditor({
       },
     };
   }, [drawing, pending]);
-  const pick = (p: Point, from = anchor, ortho = routing && grid.ortho !== false) =>
-    ortho ? pickOrthoPoint(routeDrawing, p, from, grid) : pickGridPoint(routeDrawing, p, from, grid);
+  /**
+   * Routing on not-to-scale paper is drafted on the paper's lattice: one cell of the visible isometric paper along a
+   * routing direction is one grid block of pipe (12" by default on a feet-and-inches drawing), so the pointer steps
+   * cell by cell, as the grid shows it, whatever scale the laid-out drawing happens to be drawn at. The pick and its
+   * preview are measured from where the routing start is drawn, along the paper's own iso directions.
+   */
+  const latticeRoute = useMemo((): Drawing => {
+    const lattice = drawing.lattice;
+    if (tool !== "pipe" || !routing || surface !== "paper" || !lattice || !(drafting.spacing > 0)) return routeDrawing;
+    const origin = routeDrawing.project(anchor), per = lattice.cell / drafting.spacing;
+    const steps = [0, 1, 2].map((k): Point => {
+      const q: Vec3 = [...anchor];
+      q[k] += drafting.spacing;
+      const p = routeDrawing.project(q), v: Point = [p[0] - origin[0], p[1] - origin[1]], l = Math.hypot(v[0], v[1]);
+      return l > 1e-9 ? [(v[0] / l) * per, (v[1] / l) * per] : [0, 0];
+    });
+    return {
+      ...routeDrawing,
+      project: (p: Vec3): Point => [0, 1, 2].reduce<Point>((at, k) => [at[0] + (p[k] - anchor[k]) * steps[k][0], at[1] + (p[k] - anchor[k]) * steps[k][1]], [origin[0], origin[1]]),
+    };
+  }, [routeDrawing, drawing.lattice, tool, routing, surface, anchor, drafting.spacing]);
+  const pick = (p: Point, from = anchor, ortho = routing && grid.ortho !== false) => {
+    // A new run's first point on not-to-scale paper is where it is clicked, on the nearest point of the paper.
+    if (tool === "pipe" && !routing && surface === "paper" && drawing.lattice)
+      return pickGridPoint(routeDrawing, grid.snap ? nearestPaperPoint(p, drawing.lattice) : p, from, { ...grid, snap: false });
+    return ortho ? pickOrthoPoint(latticeRoute, p, from, grid) : pickGridPoint(latticeRoute, p, from, grid);
+  };
 
   // --- The view ---------------------------------------------------------------------------------------------------
   const screenRect = () => {
@@ -882,12 +938,12 @@ export function IsometricEditor({
     return prep && prep !== "PLAIN" && prep !== "FL" ? prep : header;
   };
   /** Start the branch of a tee or olet just placed: the Pipe tool routes from it at the branch size and its end. */
-  const routeBranch = (d: IsoDocument, nodeId: string, size: number) => {
+  const routeBranch = (d: IsoDocument, nodeId: string, size: number, route = true) => {
     selectConnection(nodeId, d);
     const node = getNode(d, nodeId), host = connected(d, nodeId)[0] ?? d.runs.find((r) => r.id === node.associatedRunId)!;
     setNps(size);
     routeWith(branchPrep(node.component, prepAt(host, host.from === nodeId ? 0 : 1)), host.specId, size, node.kind === "olet");
-    setTool("pipe");
+    if (route) setTool("pipe");
   };
   useEffect(() => {
     if (tab !== "3d" || !three.current) return;
@@ -988,10 +1044,12 @@ export function IsometricEditor({
     if (latest.current === before) return;
     setArmed(null);
     transient.patch({ insertHover: null });
-    // A tee or olet is placed to take a branch: route it straight away, at the branch size.
+    // A tee or olet is placed to take a branch: the Pipe tool (P) routes it from there, at the branch size. Placing it
+    // does not start routing, so more components can be placed, or none routed at all.
     if (placed && (type.kind === "tee" || type.kind === "olet") && canRouteFrom(latest.current, placed.id)) {
       const branch = type.kind === "olet" ? row && (row.smallerNps ?? row.nps) : row?.smallerNps ?? row?.nps;
-      routeBranch(latest.current, placed.id, branch ?? latest.current.runs.find((r) => r.id === runId)!.nps);
+      routeBranch(latest.current, placed.id, branch ?? latest.current.runs.find((r) => r.id === runId)!.nps, false);
+      setNotice({ text: `${type.label} placed · press P to route its branch from it, or Esc` });
     }
   };
   // The size a reducer, tee or olet is placed at, on the pipe the palette is showing.
@@ -1017,23 +1075,24 @@ export function IsometricEditor({
       if (runId) {
         const run = d.runs.find((r) => r.id === runId);
         if (run) {
-          run.specId = specId;
           if (!chosen.sizes.some((s) => s.nps === run.nps)) run.nps = defaultNps(chosen);
+          // Its fittings, outlets and in-line components take the new specification's rows.
+          setRunSpec(d, run.id, specId);
           size = run.nps;
         }
       }
       setSpec(specId);
       setNps(size);
     };
-    if (!value.startsWith("library:")) {
+    if (!value.startsWith("library:") && !value.startsWith("saved:")) {
       if (runId) commit((d) => use(d, value));
       else use(latest.current, value);
       return;
     }
-    const slug = value.slice("library:".length);
-    setSpecBusy(slug);
+    const saved = value.startsWith("saved:"), slug = value.slice(saved ? "saved:".length : "library:".length);
+    setSpecBusy(saved ? value : slug);
     try {
-      const next = await loadLibrarySpec(slug, latest.current);
+      const next = saved ? await loadSavedSpec(slug, latest.current) : await loadLibrarySpec(slug, latest.current);
       commit((d) => {
         d.specs.push(next);
         use(d, next.id);
@@ -1152,6 +1211,15 @@ export function IsometricEditor({
   /** Applies a Move or Copy offset to the selection. */
   const applyTransform = (delta: Vec3) => {
     if (!transform) return;
+    if (transform.mode === "paste" && transform.clip) {
+      let pasted: { ids: string[]; spools: string[] } | undefined;
+      if (commit((d) => { pasted = pastePieces(d, transform.clip!, delta); }) && pasted) {
+        setSelection(pasted.ids);
+        setTransform({ ...transform, pasted: (transform.pasted ?? 0) + 1 });
+        setNotice({ text: `Pasted into ${pasted.spools.join(", ")} · pick another point to paste again, or Esc` });
+      }
+      return;
+    }
     const ids = existing(latest.current, transform.ids);
     if (!ids.length) return setError("What was selected for this command is no longer in the drawing.");
     if (transform.mode === "move") {
@@ -1173,6 +1241,13 @@ export function IsometricEditor({
   const transformClick = (clientX: number, clientY: number) => {
     if (!transform) return;
     try {
+      // A copied branch is pasted onto the pipe picked, at the point picked along it (unless a point snaps).
+      const onPipe = transform.mode === "paste" && transform.base && !transient.get().snap && transform.clip?.nodes.some((n) => n.kind === "olet") ? branchTarget(clientX, clientY) : null;
+      if (onPipe && transform.base) {
+        const { runId, fraction } = snapAlongLeg(doc, onPipe.runId, onPipe.fraction), run = doc.runs.find((r) => r.id === runId)!;
+        const a = getNode(doc, run.from).position, b = getNode(doc, run.to).position;
+        return applyTransform(sub(a.map((v, i) => v + (b[i] - v) * fraction) as Vec3, transform.base));
+      }
       const at = commandPoint(clientX, clientY, transform.base);
       if (!transform.base) setTransform({ ...transform, base: at });
       else applyTransform(sub(at, transform.base));
@@ -1202,7 +1277,18 @@ export function IsometricEditor({
       if (hit) {
         // Flanges, blinds and caps dropped on an open pipe end become that end.
         const run = doc.runs.find((r) => r.id === hit.runId)!, endNode = hit.end == null ? undefined : getNode(doc, hit.end === 0 ? run.from : run.to);
-        const onEnd = endNode && endCapable(armed.type) && endNode.kind === "end" && connected(doc, endNode.id).length === 1;
+        const open = !!endNode && endNode.kind === "end" && !endNode.associatedRunId && connected(doc, endNode.id).length === 1;
+        const onEnd = open && endCapable(armed.type);
+        // A valve, coupling or union on an open end closes the line there, with no pipe after it.
+        if (open && !onEnd && terminalCapable(armed.type)) {
+          const before = latest.current;
+          commit((d) => setSelection([placeAtOpenEnd(d, hit.runId, hit.end!, armed.type, armed.row).id]));
+          if (latest.current !== before) {
+            setArmed(null);
+            transient.patch({ insertHover: null });
+          }
+          return;
+        }
         const at = onEnd ? { runId: hit.runId, fraction: hit.end! } : snapAlongLeg(doc, hit.runId, hit.fraction);
         const choices = sized(armed.type) ? sizeChoices(getSpec(doc, run.specId), armed.type, run.nps) : [];
         if (choices.length && !choices.some((c) => c.row.id === armed.row?.id)) {
@@ -1217,6 +1303,13 @@ export function IsometricEditor({
       return;
     }
     if (tool === "pipe") return routeClick(clientX, clientY, node ?? null);
+    if (tool === "split") {
+      const at = node ?? (owner && doc.nodes.some((n) => n.id === owner) ? owner : undefined);
+      if (at && connected(doc, at).length >= 2) return breakSheet({ nodeId: at });
+      const hit = branchTarget(clientX, clientY);
+      if (hit) return breakSheet(snapAlongLeg(doc, hit.runId, hit.fraction));
+      return setError("Click a pipe where the line goes on to the next sheet, or a connection (a weld, flange or fitting) to break at.");
+    }
     if (tool === "measure") return measureClick(clientX, clientY);
     if (tool === "move" || tool === "copy") return transformClick(clientX, clientY);
     // Fittings are picked on their bodies and pipes on their lines, whichever pick target is on top; a pipe too short
@@ -1407,7 +1500,7 @@ export function IsometricEditor({
     ];
     if (tool === "pipe") return [{ label: "Exit Pipe", key: "Esc", action: () => activateTool("select") }];
     if (tool === "insert" && armed) return [cancel];
-    if (tool === "measure" || tool === "move" || tool === "copy" || tool === "zoom-window") return [cancel];
+    if (tool === "measure" || tool === "move" || tool === "copy" || tool === "zoom-window" || tool === "split") return [cancel];
     return [];
   };
   const showEditMenu = (target: Element, x: number, y: number, keyboard = false) => {
@@ -1464,11 +1557,13 @@ export function IsometricEditor({
         { label: "Edit overall length", action: () => focusProperty("Pipe overall length") },
         { label: "Edit cut length", action: () => focusProperty("Pipe cut length") },
         { label: "Branch from here", action: () => startBranch(snapAlongLeg(doc, run.id, along)) },
+        { label: "Continue on a new sheet here", action: () => breakSheet(snapAlongLeg(doc, run.id, along)) },
       );
       items.push({ label: "Insert component", shortcut: "I", action: () => { setFraction(along * 100); activateTool("insert"); } }, { label: "Pipe properties", action: () => focusProperty("Pipe overall length") });
     } else if (node) {
       items.push({ label: "Component properties", action: () => focusProperty() });
       if (canRouteFrom(doc, node.id)) items.push({ label: "Continue / branch here", shortcut: "P", action: () => { selectConnection(node.id); setTool("pipe"); lastCommand.current = "pipe"; } });
+      if (connected(doc, node.id).length >= 2 && !node.associatedRunId) items.push({ label: "Continue on a new sheet here", action: () => breakSheet({ nodeId: node.id }) });
       if (surface === "paper") items.push({ label: "Reset paper position", danger: true, disabled: !Object.values(doc.sheets ?? {}).some((s) => s.nodePositions?.[node.id]), action: () => commit((d) => { for (const sheet of Object.values(d.sheets ?? {})) if (sheet.nodePositions) delete sheet.nodePositions[node.id]; }) });
     } else if (ids.length > 1) {
       items.push({ label: `Properties of ${ids.length} objects`, action: () => focusProperty() });
@@ -1509,8 +1604,14 @@ export function IsometricEditor({
     if (editMenu) return setEditMenu(null);
     if (lengthEdit) return setLengthEdit(null);
     if (cancelGesture()) return setNotice(null);
-    if (armed) { setArmed(null); transient.patch({ insertHover: null }); return; }
-    if (tool === "pipe" && (start && routing || pending)) { finishRun(); return; }
+    // Esc ends the command outright, as in CAD: a run being routed is finished (what was drawn stays) and the Pipe
+    // tool is put down, in one press. Enter or Space finishes the run and stays in the Pipe tool for the next.
+    if (tool === "pipe" && (start && routing || pending)) {
+      finishRun();
+      setSelection([]);
+      activateTool("select");
+      return;
+    }
     if (tool !== "select") { activateTool("select"); return; }
     if (selectedLabel) return setSelectedLabel(null);
     if (selectionRef.current.length) return setSelection([]);
@@ -1535,20 +1636,35 @@ export function IsometricEditor({
       event.clipboardData.setData("text/plain", text);
       event.preventDefault();
     }
-    setNotice({ text: `${cut ? "Cut" : "Copied"} ${clip.runs.length} pipe${clip.runs.length === 1 ? "" : "s"} · ${KEYS.paste} pastes them as a new spool` });
+    setNotice({ text: `${cut ? "Cut" : "Copied"} ${clip.runs.length} pipe${clip.runs.length === 1 ? "" : "s"} · ${KEYS.paste} places them where you pick` });
     if (cut) erase(clip.runs.map((r) => r.id));
   };
+  /**
+   * Paste, as AutoCAD's: the pieces follow the pointer from their base point (a copied branch's olet, else the first
+   * connection) and go where it is picked; a branch put on a pipe goes onto it with its olet. Enter instead pastes them
+   * beside the pieces they were copied from.
+   */
   const paste = (clip: Clipboard) => {
     if (clip.units !== latest.current.units) setNotice({ text: "Pasted from a drawing in other units; lengths are kept as measured." });
+    activateTool("select");
+    const pipes = new Set(clip.runs.map((r) => r.id));
+    const base = clip.nodes.find((n) => n.kind === "olet" && n.associatedRunId && !pipes.has(n.associatedRunId)) ?? clip.nodes.find((n) => n.id === clip.runs[0]?.from);
+    if (!base) return;
+    setTransform({ mode: "paste", base: [...base.position], ids: [], clip });
+    setTool("copy");
+  };
+  /** Enter in Paste: beside the pieces they were copied from, clear of the last paste. */
+  const pasteBeside = (clip: Clipboard) => {
     const held = clipboard.current?.clip === clip ? clipboard.current : (clipboard.current = { clip, pastes: 0 });
     held.pastes++;
-    // Each paste lands clear of the last, beside the pieces it was copied from.
     const [lo, hi] = clipboardExtent(clip), step = hi[0] - lo[0] + DEFAULT_ROUTE_BLOCKS * drafting.spacing / 2;
     let made: { ids: string[]; spools: string[] } | undefined;
     if (commit((d) => { made = pastePieces(d, clip, [step * held.pastes, 0, 0]); }) && made) {
       setSelection(made.ids);
       setNotice({ text: `Pasted as ${made.spools.join(", ")} · Move (M) puts it where it belongs` });
     }
+    setTransform(null);
+    setTool("select");
   };
   /** A command started by its command-line name or alias. */
   const runCommand = (id: CommandId) => {
@@ -1571,6 +1687,7 @@ export function IsometricEditor({
   /** Enter or Space with nothing typed: finish the command in progress, else repeat the last one. */
   const enter = () => {
     if (tool === "pipe" && routing) return finishRun();
+    if (tool === "copy" && transform?.mode === "paste" && transform.clip && !transform.pasted) return pasteBeside(transform.clip);
     if (tool === "measure" || tool === "move" || tool === "copy") return activateTool("select");
     if (lastCommand.current) runCommand(lastCommand.current);
   };
@@ -1614,10 +1731,12 @@ export function IsometricEditor({
     if (tool === "insert") return armed ? `INSERT  ${armed.type.angle ? "Click a 90° elbow for the" : "Click a pipe to place the"} ${armed.type.label}` : "INSERT  Choose a component in the palette";
     if (tool === "measure") return !measure || measure.to ? "MEASURE  Pick the first point" : "MEASURE  Pick the second point";
     if (tool === "move" || tool === "copy") {
+      if (transform?.mode === "paste") return "PASTE  Pick the insertion point (a branch on a pipe goes onto it), type an offset, or Enter to paste beside the original";
       const name = tool.toUpperCase(), n = transform?.ids.length ?? selection.length;
       return transform?.base ? `${name}  Pick the second point, or type a distance the cursor's way, N 10' or @E,N,EL` : `${name} ${n} object${n === 1 ? "" : "s"}  Pick the base point, or type an offset (N 1500, @0,0,300)`;
     }
     if (tool === "zoom-window") return "ZOOM  Drag a window around what to see";
+    if (tool === "split") return "SPLIT SHEET  Click a pipe where the line goes on to a new sheet, or a weld, flange or fitting to break at · Esc cancels";
     if (tool === "pan") return "PAN  Drag the drawing · Esc returns to Select";
     if (selection.length > 1) return `${selection.length} objects selected · Move (M), Copy (C), Erase (Del), or edit what they share in the properties`;
     if (surface === "paper" && labelsEditable) return "Select a pipe, component or label · drag left to right for a window, right to left for a crossing · double-click a label to edit it";
@@ -2022,6 +2141,11 @@ export function IsometricEditor({
     if (armed && tool === "insert") {
       const hit = armed.type.angle ? null : insertionTarget(e.clientX, e.clientY, target.closest("[data-owner]")?.getAttribute("data-owner") ?? "");
       patch.insertHover = hit && snapHit(hit);
+    } else if (tool === "split") {
+      const branch = !target.closest("[data-node]") ? branchTarget(e.clientX, e.clientY) : null;
+      patch.insertHover = branch && snapHit(branch);
+      patch.snap = null;
+      patch.cursor = null;
     } else if (tool === "pipe" || tool === "measure" || tool === "move" || tool === "copy") {
       const snap = snapAt(p);
       patch.snap = snap;
@@ -2192,6 +2316,9 @@ export function IsometricEditor({
           onUnitsChange={(units, previous) => {
             try { setSpan(lengthInputValue(parseLength(span, previous), units)); }
             catch { setSpan(lengthInputValue(DEFAULT_ROUTE_BLOCKS * defaultBlockSpacing(units), units)); }
+            // A block still at the old units' default takes the new units' (100 mm becomes 1'-0"), so the grid keeps
+            // stepping in round lengths of the units drawn in.
+            if (Math.abs(drafting.spacing - defaultBlockSpacing(previous)) < 1e-6) setBlock(defaultBlockSpacing(units));
           }} />
         <ProfileSettings doc={doc} commit={commit} onError={setError} />
         <ExportSettings onError={setError} />
@@ -2203,9 +2330,21 @@ export function IsometricEditor({
                 choices={[0.125, 0.1875, 0.25, 0.375].map((v) => ({ value: String(v), label: ({ 0.125: "⅛″", 0.1875: "³⁄₁₆″", 0.25: "¼″", 0.375: "⅜″" } as Record<number, string>)[v] }))} />
             </KitRow>
           )}
-          <KitRow label="Grid block" keywords="block grid snap model isometric scale" hint="An editing preference, not part of the drawing: one block of the grid is this centreline length, and Snap steps by it.">
-            <LengthInput aria="Grid block length" mm={drafting.spacing} units={doc.units} positive onError={setError} onCommit={(spacing) => { if (spacing) setDrafting({ spacing }); }} />
+          <KitRow label={sheetStyle.layout === "schematic" ? "One paper cell routes" : "Grid block"} keywords="block grid snap model isometric scale routing"
+            hint={sheetStyle.layout === "schematic"
+              ? "The routing scale: each cell of the isometric paper is this length of pipe, and Snap steps a cell at a time. Dimensions always give the true lengths."
+              : "Each block of the grid is this centreline length, and Snap steps by it."}>
+            <LengthInput aria="Grid block length" mm={drafting.spacing} units={doc.units} positive onError={setError} onCommit={(spacing) => { if (spacing) setBlock(spacing); }} />
           </KitRow>
+          {sheetStyle.layout === "scale" && (
+            <KitRow label="Drawing scale" keywords="scale ratio to scale fit" hint="Automatic draws at the largest standard scale the drawing fits at.">
+              <select aria-label="Drawing scale" value={String(sheetStyle.scale ?? "")}
+                onChange={(e) => commit((d) => { d.style = { ...styleOf(d), scale: e.target.value ? Number(e.target.value) : undefined }; })}>
+                <option value="">Automatic (fit the sheet)</option>
+                {standardScales(doc.units).map(([n, label]) => <option key={n} value={n}>{label}</option>)}
+              </select>
+            </KitRow>
+          )}
           {VIEWS.map((v) => (
             <Toggle key={v.value} label={`${v.label} PDF sheet`} aria={`${v.label} PDF sheet`} checked={(doc.outputViews ?? ["iso"]).includes(v.value)}
               onChange={(on) => commit((d) => { d.outputViews = on ? [...(d.outputViews ?? ["iso"]), v.value] : (d.outputViews ?? ["iso"]).filter((x) => x !== v.value); })} />
@@ -2372,13 +2511,14 @@ export function IsometricEditor({
           </div>
           <div className="iso-ribbon-group">
             <div className="iso-ribbon-controls">
-              <RibbonField label="Spool">
+              <RibbonField label="Sheet · spool">
                 <SpoolInput aria="Active spool" value={spool} spools={spools} onChange={setSpool} />
               </RibbonField>
-              <ToolButton name="New spool" icon={Plus} onClick={newSpool} />
+              <ToolButton name="New sheet" icon={Plus} onClick={newSpool} />
+              <ToolButton name="Split sheet" icon={Scissors} active={tool === "split"} onClick={() => activateTool(tool === "split" ? "select" : "split")} />
               <ToolButton name="Finish run" icon={CircleStop} shortcut="Enter" disabled={!start && !pending} onClick={finishRun} />
             </div>
-            <small>Spools</small>
+            <small>Sheets</small>
           </div>
           <div className="iso-ribbon-group">
             <div className="iso-axis-buttons">
@@ -2482,9 +2622,9 @@ export function IsometricEditor({
                   onChange={(e) => commit((d) => { d.style = { ...styleOf(d), layout: e.target.value as "scale" | "schematic" }; })}>
                   {SCALES.map((s) => <option key={s.value} value={s.value} title={s.title}>{s.label}</option>)}
                 </select>
-                <select aria-label="Visible spool" value={filter} onChange={(e) => setFilter(e.target.value)}>
-                  <option value="">All spools</option>
-                  {[...new Set(doc.runs.map((r) => r.spool))].map((s) => <option key={s}>{s}</option>)}
+                <select aria-label="Visible spool" value={filter} title="Each spool is issued on a sheet of its own" onChange={(e) => setFilter(e.target.value)}>
+                  <option value="">All sheets</option>
+                  {[...new Set([...doc.runs.map((r) => r.spool), ...(filter ? [filter] : [])])].map((s, i) => <option key={s} value={s}>{`Sheet ${i + 1} · ${s}`}</option>)}
                 </select>
                 {sheetKinds.length > 1 && (
                   <select aria-label="Sheet" value={shownSheet} title="This spool is issued on more than one sheet: its drawing, then its material list"
@@ -2545,9 +2685,9 @@ export function IsometricEditor({
                     selection={selectionSet} editing={lengthEdit} onEditLength={openLength} highlight={labelHighlight} />
                   <Grips store={viewStore} frame={frame} positions={drawing.positions} nodeGrips={tool === "pipe" ? [] : nodeGrips} endGrips={tool === "pipe" ? [] : ends}
                     paths={tool === "select" ? editablePaths : []} routeAnchor={routeAnchor} />
-                  <PointerLayer store={transient} view={viewStore} frame={frame} doc={doc} drawing={drawing} project={routeDrawing.project}
+                  <PointerLayer store={transient} view={viewStore} frame={frame} doc={doc} drawing={drawing} project={latticeRoute.project}
                     routeFrom={tool === "pipe" && routing ? anchor : null} prompt={tool === "pipe" && !routing ? "Start " + spool : null}
-                    pending={pending?.position ?? null} insertPreview={!!armed || tool === "pipe"}
+                    pending={pending?.position ?? null} insertPreview={!!armed || tool === "pipe" || tool === "split"}
                     measure={tool === "measure" ? measure : null} moveBase={tool === "move" || tool === "copy" ? transform?.base ?? null : null}
                     labelLayer={labelsEditable ? (
                       <LabelLayer store={transient} view={viewStore} frame={frame} labels={drawing.labels ?? []} index={paperLabels} selected={selectedLabel}
@@ -2617,7 +2757,7 @@ export function IsometricEditor({
       <footer className="iso-status">
         <span><Layers size={12} />{doc.runs.length} pipes · {doc.nodes.length} connections · {weldCount} welds{busy ? ` · Preparing ${busy}…` : ""}</span>
         <CursorReadout store={transient} doc={doc} drawing={drawing} toScale={surface === "grid" || sheetStyle.layout === "scale"} />
-        <DraftingSettings drafting={drafting} units={doc.units} onChange={setDrafting} open={settingsOpen} onOpen={setSettingsOpen} onError={setError} />
+        <DraftingSettings drafting={drafting} units={doc.units} onChange={(patch) => { const { spacing, ...rest } = patch; if (spacing) setBlock(spacing); if (Object.keys(rest).length) setDrafting(rest); }} open={settingsOpen} onOpen={setSettingsOpen} onError={setError} />
         <span className={issues.length ? "warning" : doc.runs.length ? "valid" : undefined}>
           {issues.length ? `${issues.length} error${issues.length === 1 ? "" : "s"}${warningCount > 0 ? ` · ${warningCount} warning${warningCount === 1 ? "" : "s"}` : ""}`
             : warningCount > 0 ? `${warningCount} warning${warningCount === 1 ? "" : "s"}` : doc.runs.length ? "Dimensions checked" : "No pipe drawn"}

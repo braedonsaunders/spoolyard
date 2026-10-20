@@ -3,6 +3,7 @@ import type { Drawing } from "../core/drawing";
 import type { EndPrep, IsoDocument } from "../core/model";
 import { TextInput } from "./inspector/kit";
 import type { LibrarySpecSummary } from "./library";
+import { useSavedSpecs } from "./spec-library";
 
 /**
  * Choices offered in more than one place, defined once so the ribbon, the properties and the menus use the same
@@ -50,10 +51,17 @@ export function SpecSelect({ doc, value, onChange, library, libraryError, busy, 
   doc: IsoDocument; value: string; onChange: (value: string) => void; library: LibrarySpecSummary[] | null;
   libraryError?: string; busy: string; aria: string;
 }) {
-  const extra = (library ?? []).filter((l) => !doc.specs.some((s) => s.id === l.id));
+  const own = useSavedSpecs().filter((l) => !doc.specs.some((s) => s.id === l.id));
+  // A specification the drafter keeps in their library is offered from there, in place of the standard one it refines.
+  const extra = (library ?? []).filter((l) => !doc.specs.some((s) => s.id === l.id) && !own.some((o) => o.id === l.id));
   return (
     <select aria-label={aria} value={value} disabled={!!busy} onChange={(e) => onChange(e.target.value)} title={libraryError || undefined}>
       {doc.specs.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+      {own.length > 0 && (
+        <optgroup label="Add from my library">
+          {own.map((l) => <option value={"saved:" + l.id} key={l.id}>{busy === "saved:" + l.id ? "Adding " + l.id + "…" : l.id + " · " + (l.service || l.material)}</option>)}
+        </optgroup>
+      )}
       {extra.length > 0 && (
         <optgroup label="Add from standard library">
           {extra.map((l) => <option value={"library:" + l.slug} key={l.slug}>{busy === l.slug ? "Adding " + l.id + "…" : l.id + " · " + l.service}</option>)}

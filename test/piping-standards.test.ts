@@ -20,15 +20,12 @@ const DELIBERATE: Array<{ key: RegExp; nps?: number[]; reason: string }> = [
   { key: /^[bc]\/W-CRS\/branchTakeout$/, nps: [18], reason: 'library branch C 13 in contradicts its own run C 13-1/2 in; B16.9 straight cross C = 13-1/2 in' },
   { key: /^[abc]\/SW-45ELL\/takeout$/, nps: [1.5], reason: 'B16.11 Class 3000 45° elbow NPS 1-1/2 is 21 mm to the socket bottom; the library row derives 18.25 from an inconsistent socket depth' },
   { key: /^[abc]\/SW-45ELL\/socketDepth$/, reason: 'library 45° socket depths are shallower than its own 90° elbows and tees of the same size; one forged socket depth is used for every fitting' },
-  { key: /^d1\/SW-(90ELL|45ELL|TEE|CRS|RTEE|RCRS)\/(takeout|branchTakeout|socketDepth)$/, reason: 'spec D1 Class 6000 rows reuse the Class 3000 centre-to-socket-bottom and back-calculate deeper sockets; B16.11 Class 6000 dimensions are one size larger' },
   { key: /\/SC-45ELL\/takeout$/, reason: 'library threaded 45° elbows carry the B16.11 Class 2000 centre-to-end; Class 3000 and 6000 are larger' },
   { key: /\/SC-R?CRS\/(takeout|branchTakeout)$/, reason: 'library threaded crosses are shorter than its own tees; B16.11 crosses share the tee centre-to-end' },
   { key: /\/[FH]-CPLGSC\/(takeout|faceToFace)$/, reason: 'library threaded couplings reuse the socket-weld coupling length; B16.11 threaded coupling length W (48 mm at NPS 1/2) gives a longer effective takeout' },
-  { key: /^d1\/CHECK-FL\/(takeout|faceToFace)$/, reason: 'spec D1 lists manufacturer check-valve lengths (its duplicate rows disagree with each other); B16.10 Class 900 check valves take the gate length' },
-  { key: /^d1\/WOL\/takeout$/, nps: [6, 8, 10, 12], reason: 'spec D1 lists standard-weight weldolets on its Schedule 80 branches; an extra-strong weldolet suits a wall heavier than standard' },
   { key: /\/(SOL|UNION-SW)\/(takeout|socketDepth)$/, reason: 'library sockolets and socket-weld unions take the B16.11 minimum socket depth J while its socket-weld fittings take the deeper as-made depth; one as-made depth is used for every socket-weld item so derived takeouts agree' },
   { key: /\/FLG-RFSO\/takeout$/, reason: 'library slip-on rows set the pipe back by its full wall plus 1/16 in (their catalogue value, used as given); the calculated default with no row is the face-side fillet weld of ASME B31.3 Fig. 328.5.2B, the lesser of the wall and 1/4 in' },
-  { key: /^(c|d1)\/W-CAP\/takeout$/, reason: 'library caps keep length E on walls heavier than the B16.9 limiting (XS) wall; ASME B16.9 gives the longer E1 there' },
+  { key: /^c\/W-CAP\/takeout$/, reason: 'library caps keep length E on walls heavier than the B16.9 limiting (XS) wall; ASME B16.9 gives the longer E1 there' },
   { key: /^c\/CHECK-FL\/(takeout|faceToFace)$/, nps: [24], reason: 'spec C lists a 55-1/2 in Class 600 NPS 24 swing check (a manufacturer length); ASME B16.10 gives 55 in' }
 ];
 
@@ -210,7 +207,7 @@ test('valve, fitting and small-bore spot values', () => {
 test('standards agree with the carbon-steel library specs within 1 mm wherever both define a value', () => {
   const found = new Map<string, string[]>(), unexplained: string[] = [];
   let compared = 0;
-  for (const slug of ['a', 'b', 'c', 'd1']) {
+  for (const slug of ['a', 'b', 'c']) {
     const spec = load(slug);
     for (const f of spec.fittings) {
       if (f.takeoutMissing) continue;

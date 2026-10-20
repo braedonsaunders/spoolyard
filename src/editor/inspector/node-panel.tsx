@@ -131,6 +131,12 @@ export function NodePanel(props: NodePanelProps) {
   const catalogue = getSpec(doc, oletHost?.specId ?? header?.specId ?? fallback.specId).fittings.filter((f) =>
     (node.component ? rowComponent(f)?.code === node.component : f.kind === node.kind) &&
     (oletHost ? (f.smallerNps ?? f.nps) < oletHost.nps && (f.smallerNps == null || f.nps === oletHost.nps) : f.nps === (header?.nps ?? fallback.nps)));
+  // A row from another specification (the pipe was moved to a new one, or the row was picked elsewhere) is shown as
+  // what it is, so the drafter can see it and choose this pipe's row.
+  const foreign = (() => {
+    const row = node.catalogId && !catalogue.some((f) => f.id === node.catalogId) ? doc.specs.flatMap((s) => s.fittings.map((f) => ({ f, s }))).find((x) => x.f.id === node.catalogId) : undefined;
+    return row ? { row: row.f, spec: row.s.id } : undefined;
+  })();
 
   // Flanged joints and flanged-end bodies.
   const joints = flangedJoints(doc).filter((j) => j.nodeId === node.id);
@@ -171,6 +177,11 @@ export function NodePanel(props: NodePanelProps) {
               if (!ECCENTRIC.test(n.component ?? "")) delete n.flatSide;
             })}>
             <option value="">Custom / measured</option>
+            {foreign && (
+              <option value={foreign.row.id}>
+                {[foreign.row.smallerNps ? sizeFor(doc, foreign.row.nps, foreign.row.smallerNps) : oletHost ? sizeFor(doc, oletHost.nps, foreign.row.nps) : sizeFor(doc, foreign.row.nps), foreign.row.description].filter(Boolean).join(" · ")} — from spec {foreign.spec}, not this pipe's
+              </option>
+            )}
             {catalogue.map((f) => (
               <option key={f.id} value={f.id}>{[f.smallerNps ? sizeFor(doc, f.nps, f.smallerNps) : oletHost ? sizeFor(doc, oletHost.nps, f.nps) : "", f.rating, f.schedule, f.description].filter(Boolean).join(" · ")}</option>
             ))}

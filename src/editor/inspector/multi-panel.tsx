@@ -5,6 +5,7 @@ import { END_PREPS, KIND_LABELS } from "../choices";
 import { routingSizes, type LibrarySpecSummary } from "../library";
 import { Actions, Note, Row, Section, Segmented, TextInput, tri, untri } from "./kit";
 import { fitOletToBranch } from "../edit-ops";
+import { setRunSpec } from "../../core/component-position";
 
 /** The one value every item shares, or undefined when they differ. */
 function shared<T>(values: T[]): T | undefined {
@@ -48,8 +49,8 @@ export function MultiPanel({ doc, ids, commit, onError, library, libraryError, s
                 if (value.startsWith("library:")) return onError("Add the library specification from one pipe's properties first, then apply it to the selection.");
                 editRuns((r, d) => {
                   const chosen = getSpec(d, value);
-                  r.specId = value;
                   if (!chosen.sizes.some((s) => s.nps === r.nps)) throw new Error(`Specification ${chosen.name} has no ${sizeFor(d, r.nps)} size for every selected pipe.`);
+                  setRunSpec(d, r.id, value);
                 });
               }}>
               {spec == null && <option value={VARIES}>Varies</option>}

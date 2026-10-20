@@ -674,3 +674,20 @@ kbd {
   color: #fff;
   cursor: pointer;
 }
+.sy-subhead {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 18px 0 8px;
+}
+.sy-row-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.sy-empty-note {
+  font-size: 12px;
+  opacity: 0.6;
+  padding: 12px 14px;
+  border: 1px dashed rgb(var(--ch-border));
+  border-radius: 10px;
+}
