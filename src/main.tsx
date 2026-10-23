@@ -3,6 +3,9 @@ import { createRoot } from "react-dom/client";
 import { App } from "./app/app";
 import { EmbeddedEditor } from "./app/embed";
 import "./app/app.css";
+import { watchForUpdates } from "./app/update-reload";
+
+watchForUpdates();
 
 const params = new URLSearchParams(location.search);
 if (params.get("theme")) document.documentElement.classList.toggle("dark", params.get("theme") === "dark");

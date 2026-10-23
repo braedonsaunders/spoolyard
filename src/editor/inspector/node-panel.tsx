@@ -2,10 +2,10 @@ import { useRef, useState, type ReactNode } from "react";
 import { COMPONENT_TYPE_BY_CODE, COMPONENT_TYPES, KIND_SYMBOL, SYMBOL_FAMILIES, type SymbolFamily } from "../../core/components";
 import { symbolOf } from "../../core/iso/valve-conventions";
 import { drawingReference } from "../../core/references";
-import { flangedJoints, isLapJoint, nodeCode, nodeItem } from "../../core/joints";
+import { defaultFlangeCode, flangedJoints, isLapJoint, nodeCode, nodeItem } from "../../core/joints";
 import { boltSizeText, draftLength, sizeFor } from "../../core/format";
 import { sheetMaterials } from "../../core/material-list";
-import { directionName, moveComponentAlongPipe, placeAtTurn, type ComponentTrack } from "../../core/component-position";
+import { directionName, moveComponentAlongPipe, placeAtTurn, sizePipesToRow, type ComponentTrack } from "../../core/component-position";
 import {
   applyComponent,
   connected,
@@ -146,6 +146,12 @@ export function NodePanel(props: NodePanelProps) {
   const specFlanges = spec?.fittings.filter((f) => f.kind === "flange" && f.nps === edges[0]?.nps && mating(f.component)).map((f) => f.component!) ?? [];
   const flangeChoices = [...new Set(specFlanges.length ? specFlanges : COMPONENT_TYPES.filter((t) => t.kind === "flange" && mating(t.code)).map((t) => t.code))];
   const flangeJoint = node.kind === "flange" && edges.length === 1 && type?.endPrep !== "FL";
+  /** The flange the specification mates a flanged end with at a pipe's size, by name. */
+  const specDefault = (run?: PipeRun) => {
+    if (!run) return "";
+    const code = defaultFlangeCode(getSpec(doc, run.specId), run.nps);
+    return COMPONENT_TYPES.find((t) => t.code === code)?.label ?? code;
+  };
   const supply = { gasket: true, bolts: true, ...node.jointSupply };
   const setSupply = (change: Partial<NonNullable<PipeNode["jointSupply"]>>) => edit((n) => { n.jointSupply = { ...supply, ...change }; });
   const lap = isLapJoint(code);
@@ -174,6 +180,8 @@ export function NodePanel(props: NodePanelProps) {
               const row = d.specs.flatMap((s) => s.fittings).find((f) => f.id === e.target.value);
               if (row?.component) applyComponent(d, n, row.component, row);
               else n.catalogId = e.target.value || undefined;
+              // A reducer, tee or olet row of other sizes resizes its pipes to match.
+              if (row) sizePipesToRow(d, n.id);
               if (!ECCENTRIC.test(n.component ?? "")) delete n.flatSide;
             })}>
             <option value="">Custom / measured</option>
@@ -269,7 +277,22 @@ export function NodePanel(props: NodePanelProps) {
       )}
 
       {type?.endPrep === "FL" && edges.length > 0 && (
-        <Section id="node.ends" title="Flanged ends" defaultOpen>
+        <Section id="node.ends" title="Flanged ends" defaultOpen
+          summary={(() => { const all = [...new Set(edges.map((r) => node.portFlanges?.[r.id]?.component ?? ""))]; return all.length === 1 ? all[0] === "NONE" ? "Not supplied" : all[0] ? COMPONENT_TYPES.find((t) => t.code === all[0])?.label ?? all[0] : "Specification flanges" : "Mixed"; })()}>
+          {edges.length > 1 && (
+            <Row label="Both ends" keywords="flange mating weld neck slip on both" hint="The flanges this component bolts to, at every end. Choose an end below to set it on its own.">
+              <select aria-label="Mating flanges at both ends" value={(() => { const all = [...new Set(edges.map((r) => node.portFlanges?.[r.id]?.component ?? ""))]; return all.length === 1 ? all[0] : "__mixed"; })()}
+                onChange={(e) => e.target.value !== "__mixed" && edit((n) => {
+                  const component = e.target.value || undefined;
+                  n.portFlanges = Object.fromEntries(edges.map((r) => [r.id, { ...n.portFlanges?.[r.id], component }]));
+                })}>
+                <option value="__mixed" disabled hidden>Mixed</option>
+                <option value="">Specification flange{specDefault(edges[0]) ? ` · ${specDefault(edges[0])}` : ""}</option>
+                {flangeChoices.map((c) => <option key={c} value={c}>{COMPONENT_TYPES.find((t) => t.code === c)?.label ?? c}</option>)}
+                <option value="NONE">Not supplied (existing)</option>
+              </select>
+            </Row>
+          )}
           {edges.map((run, i) => {
             const choice = node.portFlanges?.[run.id];
             const set = (change: Partial<NonNullable<PipeNode["portFlanges"]>[string]>) =>
@@ -278,7 +301,7 @@ export function NodePanel(props: NodePanelProps) {
               <Group key={run.id} title={`End ${i + 1} · ${port(run)}`}>
                 <Row label="Mates with" keywords="flange mating">
                   <select aria-label={`Mating flange ${i + 1}`} value={choice?.component ?? ""} onChange={(e) => set({ component: e.target.value || undefined })}>
-                    <option value="">Specification flange</option>
+                    <option value="">Specification flange{specDefault(run) ? ` · ${specDefault(run)}` : ""}</option>
                     {flangeChoices.map((c) => <option key={c} value={c}>{COMPONENT_TYPES.find((t) => t.code === c)?.label ?? c}</option>)}
                     <option value="NONE">Not supplied (existing)</option>
                   </select>

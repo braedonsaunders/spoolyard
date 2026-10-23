@@ -550,7 +550,10 @@ export function drawDimensions(ctx: IsoContext) {
       emitters(ctx).text(at, 'CUT ' + valueOf({mm:cut},format), T, 'DIM', editable.id, { rotation: t.rotation, oblique: t.oblique, anchor: 'middle', role: 'cut', label: {...handle(key, at),dimension:{axis:ext,offset}} })
       return
     }
-    emitters(ctx).text(at, value, T, 'DIM', editable?.id ?? owner, { rotation: t.rotation, oblique: t.oblique, anchor: 'middle', label: {...handle(key, at),dimension:{axis:ext,offset}}, ...(editable ? { role: 'overall' as const } : {}) })
+    // Any other dimension between two connections is edited in place too: the second connection moves along its straight.
+    const from = pa.node ?? pa.of, to = pb.node ?? pb.of
+    const edits = !editable && from && to && from !== to ? { span: { from, to, mm } } : {}
+    emitters(ctx).text(at, value, T, 'DIM', editable?.id ?? owner, { rotation: t.rotation, oblique: t.oblique, anchor: 'middle', label: {...handle(key, at),dimension:{axis:ext,offset}}, ...(editable ? { role: 'overall' as const } : edits) })
     // Drawings set to show both put the cut length under the line, opposite the centreline length.
     if (editable && mode === 'both' && Number.isFinite(cut) && Math.abs(cut - mm) > 0.5)
       emitters(ctx).text(add2(lerp2(a, b, 0.5), scale2(up, -(T * 0.8 + 0.38 * T))), 'CUT ' + valueOf({mm:cut},format), T * 0.8, 'DIM', editable.id,

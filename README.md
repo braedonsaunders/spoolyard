@@ -62,8 +62,11 @@ where it powers piping isometrics in Files and Tools.
   drawing, the default), so the pointer steps cell by cell as the grid shows it; to-scale sheets draw at the largest
   standard scale that fits, or at one you choose. Bends and branches get the specification's elbows and tees
   automatically; rolling offsets route in XYZ. Click a pipe to branch off it, place olets on a header, fit reducers
-  either way round, and put a valve, coupling or union on an open end with no pipe after it. Esc puts a tool down
-  in one press, as in AutoCAD.
+  either way round, and put a valve, coupling or union on an open end with no pipe after it. A flange, cap or plug
+  clicked near an open end closes it, a valve's open outlet included. Drag one fitting up against the next, or turn
+  on "No pipe: fittings welded together", to weld fittings straight to each other. Choose the mating flanges a
+  flanged valve comes with as you insert it, or later for both ends at once. Double-click any dimension on the sheet
+  to type its length in place. Esc puts a tool down in one press, as in AutoCAD.
 - **Sheets.** Each spool is a sheet. **New sheet** starts the next one; **Split sheet** (or right-click › Continue
   on a new sheet here) breaks a line onto a new sheet at a point or a connection. Window and crossing selection,
   and Copy, Ctrl+C and Ctrl+V, place copies where you pick; a branch copied with its olet goes onto the pipe it is
@@ -99,7 +102,7 @@ where it powers piping isometrics in Files and Tools.
 - **One numbering system.** The sheet's item numbers run through the cut list, material schedule, weld map and
   CSVs.
 - **Paper or model space.** Draw directly on the issued sheet, or switch to an infinite isometric grid. A 3D
-  review checks the routing.
+  review checks the routing; on a machine or browser without WebGL it opens a simplified view drawn without it.
 - **Outputs:**
   - a full-page PDF package: one sheet per spool and view (and its material-list sheet), plus material, cut and
     weld schedules;

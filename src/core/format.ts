@@ -241,6 +241,23 @@ export function scheduleText(text = ''): string {
   const bare = text.trim().toUpperCase().replace(/\.$/, '').replace(/^SCH(EDULE)?\.?\s*/, '')
   return /^\d+S?$/.test(bare) ? 'SCH ' + bare : bare
 }
+/**
+ * A specification's pipe schedules by size range, as a drafter reads them: `SCH 80S 1/2"–2" · SCH 10S 2 1/2"–24"`. A
+ * specification commonly buys small bore heavier than its header schedule says; this says so. Sizes without their own
+ * schedule take the specification's.
+ */
+export function scheduleRanges(spec: { schedule: string; sizes: Array<{ nps: number; schedule?: string }> }): string {
+  const sizes = [...spec.sizes].sort((a, b) => a.nps - b.nps)
+  if (!sizes.length) return scheduleText(spec.schedule)
+  const runs: Array<{ schedule: string; from: number; to: number }> = []
+  for (const z of sizes) {
+    const s = scheduleText(z.schedule || spec.schedule), last = runs.at(-1)
+    if (last && last.schedule === s) last.to = z.nps
+    else runs.push({ schedule: s, from: z.nps, to: z.nps })
+  }
+  if (runs.length === 1) return runs[0].schedule
+  return runs.map(r => `${r.schedule} ${npsText(r.from)}"${r.to !== r.from ? `–${npsText(r.to)}"` : ''}`).join(' · ')
+}
 /** A schedule as BOM text (alias of `scheduleText`). */
 export const schedule = (text?: string) => scheduleText(text)
 export const angleText = (degrees: number, plane: 'H' | 'V') => `${round(degrees, 1)}° ${plane}`

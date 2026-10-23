@@ -4,7 +4,7 @@ import { BookOpen, BookmarkCheck, BookmarkPlus, ChevronDown, Copy, Download, Fil
 import { cn } from "./cn";
 import { clone, DEFAULT_SOCKET_GAP, getSpec, STARTER_ROOT_GAP, lengthInputValue, type CatalogItem, type IsoDocument, type PipeSpec } from "../core/model";
 import { designValue, type SpecDesign, type SpecDesignField } from "../core/spec-design";
-import { dnOf, npsOfDn, sizeFor, sizeHeader } from "../core/format";
+import { dnOf, npsOfDn, scheduleRanges, scheduleText, sizeFor, sizeHeader } from "../core/format";
 import { COMPONENT_CATEGORIES, COMPONENT_TYPES, type ComponentType } from "../core/components";
 import { loadLibrarySpec, loadSavedSpec, loadSpecIndex, namespaceSpec, uniqueSpecId, type LibrarySpecSummary } from "./library";
 import { librarySpec, onSpecLibraryChange, specText, specLibrary, specLibraryChanged, type SavedSpecSummary } from "./spec-library";
@@ -325,7 +325,7 @@ export function SpecManager({
             <b>{s.id}</b>
             <span>{s.name}</span>
             <small>
-              {s.service || s.material} · {s.fittings.length + s.sizes.length} rows
+              {s.service || s.material} · {scheduleRanges(s)} · {s.fittings.length + s.sizes.length} rows
               {inUse(s.id) ? " · in use" : ""}
             </small>
           </button>
@@ -469,8 +469,8 @@ export function SpecManager({
             <h2>{spec.name.startsWith(spec.id + " ") ? spec.name : `${spec.id} · ${spec.name}`}</h2>
             <div className="iso-specs-form">
               {(["name", "material", "service", "rating", "schedule", "revision"] as const).map((k) => (
-                <label key={k} className="iso-field">
-                  <span>{k}</span>
+                <label key={k} className="iso-field" title={k === "schedule" ? `The specification's nominal schedule. Each pipe size is bought in its own schedule (Pipe): ${scheduleRanges(spec)}.` : undefined}>
+                  <span>{k === "schedule" && scheduleRanges(spec) !== scheduleText(spec.schedule) ? `schedule · by size ${scheduleRanges(spec)}` : k}</span>
                   <TextInput
                     aria={"Specification " + k}
                     value={spec[k] ?? ""}

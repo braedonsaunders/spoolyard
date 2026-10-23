@@ -90,7 +90,7 @@ import { createDrawing, drawingSheets, type Drawing, type Point, type SheetFit, 
 import { defaultBlockSpacing, defaultGrid, gridAnchor, pickGridPoint, pickOrthoPoint } from "../core/grid";
 import { standardScales } from "../core/iso/sheet-frame";
 import { exportPcfPackage } from "../core/pcf";
-import { coordinateText, sizeFor, sizeHeader } from "../core/format";
+import { coordinateText, scheduleText, sizeFor, sizeHeader } from "../core/format";
 import { unitsPerMm } from "../core/paper";
 import { cutSchedule, labourCsv, materialCsv, materialSchedule, weldSchedule } from "../core/schedules";
 import { download } from "./download";
@@ -116,6 +116,7 @@ import {
   placeAtTurn,
   endCapable,
   placeAtOpenEnd,
+  capOpenEnd,
   terminalCapable,
   legPoint,
   moveComponentAlongPipe,
@@ -131,7 +132,8 @@ import {
   snapNearFace,
   type ComponentTrack,
 } from "../core/component-position";
-import { nodeItem } from "../core/joints";
+import { defaultFlangeCode, nodeItem } from "../core/joints";
+import { isStaleBuild, UPDATE_MESSAGE } from "../app/update-reload";
 import { reviewIso } from "../core/review";
 import { createStore, useStore, type Store } from "./store";
 import { paperUnits as paperUnitsOf } from "./paper";
@@ -143,7 +145,7 @@ import { DIRECTIONS, dominantAxis, inputDelta, parseCommand, parsePointInput, ty
 import { CommandBar, type CommandOption } from "./command-bar";
 import { resolveSnap, snapPoints, type Snap } from "./snaps";
 import { clickSelect, existing, normaliseBox, pickInBox, boxMode, sameSelection, selectables } from "./selection";
-import { CLIPBOARD_MIME, clipboardExtent, copySelection, eraseSelection, extendRun, fitOletToBranch, moveSelection, nextSpool, oletBranchSize, pastePieces, readClipboard, splitSheet, stretchLeg, type Clipboard } from "./edit-ops";
+import { CLIPBOARD_MIME, clipboardExtent, copySelection, eraseSelection, extendRun, fitOletToBranch, moveSelection, nextSpool, oletBranchSize, pastePieces, readClipboard, splitSheet, setSpanLength, stretchLeg, type Clipboard } from "./edit-ops";
 import { EditorDialog, ask, type DialogRequest } from "./dialogs";
 import { KEYS, ShortcutHelp, isMac } from "./shortcuts";
 import { MenuButton } from "./menu-button";
@@ -209,6 +211,8 @@ export type IsometricEditorProps = {
   controller?: MutableRefObject<EditorController | null>;
 };
 
+/** A length edited in place: a pipe's own, or a dimension between two connections (`Primitive.span`). */
+type LengthEdit = { runId: string; role: "overall" | "cut" } | { key: string; span: { from: string; to: string; mm: number } };
 type Tool = "select" | "pan" | "pipe" | "insert" | "measure" | "move" | "copy" | "zoom-window" | "split";
 /** Paper shown around the sheet at zoom 1, as a fraction of its height. */
 const PAPER_PAD = 0.06;
@@ -218,6 +222,8 @@ const DEFAULT_ROUTE_BLOCKS = 10;
 const DRAG_PX = 4;
 /** Pointer travel before a left press in a drawing command pans instead of clicking. */
 const PAN_PX = 6;
+/** A flange, cap or end valve clicked this close to an open end (or within a fifth of its pipe) goes on the end. */
+const END_SNAP_PX = 36;
 const DOUBLE_CLICK_MS = 400;
 /** Arrow-key nudges of a picked label, in printed millimetres (Shift for the larger). */
 const NUDGE_MM = 0.5, NUDGE_LARGE_MM = 2.5;
@@ -248,7 +254,8 @@ const componentName = (node: PipeNode) => COMPONENT_TYPES.find((t) => t.code ===
 /** Why a pipe cannot start from a connection that has no free end. */
 const noFreeEnd = (d: IsoDocument, nodeId: string) =>
   `The ${componentName(getNode(d, nodeId)).toLowerCase()} has no free end to route from. Select an open end, or click a pipe with the Pipe tool to branch from it.`;
-const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+/** An error as the drafter reads it; a part of an updated build that will not load says the page is reloading. */
+const message = (e: unknown) => (isStaleBuild(e) ? UPDATE_MESSAGE : e instanceof Error ? e.message : String(e));
 /** A fabrication check as listed; checks that are not text are described, not dumped. */
 const issueText = (issue: unknown): string =>
   typeof issue === "string" ? issue
@@ -345,12 +352,15 @@ export function IsometricEditor({
   const [library, setLibrary] = useState<LibrarySpecSummary[] | null>(null),
     [libraryError, setLibraryError] = useState(""),
     [specBusy, setSpecBusy] = useState(""),
-    [armed, setArmed] = useState<{ type: ComponentType; row?: CatalogItem } | null>(null);
+    [armed, setArmed] = useState<{ type: ComponentType; row?: CatalogItem } | null>(null),
+    // The mating flanges a flanged component is inserted with: the specification's ("") or a chosen flange type.
+    [insertMates, setInsertMates] = useState("");
   // A Pipe-tool start not in the drawing yet: a new run's first point, or the point on a pipe a branch will leave.
   const [pending, setPending] = useState<{ position: Vec3; runId?: string; fraction?: number } | null>(null);
   const [editMenu, setEditMenu] = useState<{ x: number; y: number; title: string; items: EditMenuItem[] } | null>(null);
   const closeEditMenu = useCallback(() => setEditMenu(null), []);
-  const [lengthEdit, setLengthEdit] = useState<{ runId: string; role: "overall" | "cut" } | null>(null);
+  // A length edited in place on the sheet: a pipe's own (overall or cut), or another dimension between two connections.
+  const [lengthEdit, setLengthEdit] = useState<LengthEdit | null>(null);
   const [counts, setCounts] = useState({ undo: 0, redo: 0 }),
     [busy, setBusy] = useState("");
   const [drafting, setDraftingState] = useState<Drafting>(() => initialDrafting(newIso()));
@@ -668,6 +678,8 @@ export function IsometricEditor({
     heldFit.current = d.fit;
     return d;
   }, [doc, filter, surface, view, holding, shownSheet]);
+  const latestDrawing = useRef(drawing);
+  latestDrawing.current = drawing;
   // Each component's body on the sheet, for picking it apart from the pipes beside it.
   const bodies = useMemo(() => bodyHulls(drawing.primitives, new Set(doc.nodes.map((n) => n.id))), [drawing, doc.nodes]);
   const frame = useMemo<Frame>(() => (surface === "paper"
@@ -951,10 +963,18 @@ export function IsometricEditor({
     let dispose: (() => void) | undefined,
       cancelled = false;
     const element = three.current;
+    // The WebGL review; without WebGL (or if it fails to draw), the simplified canvas review, which runs anywhere.
+    const fallback = (reason: unknown) => import("./preview-canvas").then(({ mountPreviewCanvas }) => {
+      console.warn("3D review: using the canvas view", reason);
+      element.replaceChildren();
+      if (!cancelled) dispose = mountPreviewCanvas(element, doc, filter);
+    });
     void import("./preview3d").then(({ mountPreview3d }) => {
-      if (!cancelled) dispose = mountPreview3d(element, doc, filter);
-    }).catch(() => {
-      if (!cancelled) setError("3D review could not start. Enable hardware acceleration or use a WebGL-capable browser. Your drawing is still available in Draw.");
+      if (cancelled) return;
+      try { dispose = mountPreview3d(element, doc, filter); }
+      catch (e) { return fallback(e); }
+    }).catch((e) => (isStaleBuild(e) ? Promise.reject(e) : fallback(e))).catch((e) => {
+      if (!cancelled) setError(isStaleBuild(e) ? UPDATE_MESSAGE : "3D review could not start: " + message(e) + ". Your drawing is still available in Draw.");
     });
     return () => {
       cancelled = true;
@@ -1033,11 +1053,36 @@ export function IsometricEditor({
     // A dimension also identifies its pipe, even when its label is offset from the centreline.
     return nearest ?? (owner ? pipeAtPoint(doc, drawing, [clientX, clientY], toClient, owner, 32) : null);
   };
+  /**
+   * What closes a line (a flange, cap, plug, or a valve on its end) clicked near a pipe's open end goes on the end: a
+   * flange put just short of the end would otherwise be a flange pair with a stub of pipe beyond it.
+   */
+  const endward = (hit: PipeHit | null, type: ComponentType, clientX: number, clientY: number): PipeHit | null => {
+    if (!hit || hit.end != null || !(endCapable(type) || terminalCapable(type))) return hit;
+    const run = doc.runs.find((r) => r.id === hit.runId);
+    if (!run) return hit;
+    const ends = ([0, 1] as const).flatMap((end) => {
+      const id = end === 0 ? run.from : run.to, n = getNode(doc, id), p = drawing.positions.get(id);
+      if (!p || n.kind !== "end" || n.associatedRunId || connected(doc, id).length !== 1) return [];
+      const q = toClient(p), a = drawing.positions.get(end === 0 ? run.to : run.from), ta = a && toClient(a), span = ta ? Math.hypot(ta[0] - q[0], ta[1] - q[1]) : 0;
+      const distance = Math.hypot(q[0] - clientX, q[1] - clientY);
+      return distance <= Math.max(END_SNAP_PX, span * 0.2) ? [{ end, distance }] : [];
+    });
+    const nearest = ends.sort((x, y) => x.distance - y.distance)[0];
+    return nearest ? { ...hit, end: nearest.end, fraction: nearest.end } : hit;
+  };
+  /** The mating flanges chosen in the Insert panel, on each flanged end of a component just placed that has a pipe. */
+  const matesAt = (d: IsoDocument, nodeId: string) => {
+    const n = getNode(d, nodeId);
+    for (const r of connected(d, nodeId))
+      if (!r.connector) n.portFlanges = { ...n.portFlanges, [r.id]: { ...n.portFlanges?.[r.id], component: insertMates } };
+  };
   const insertFitting = (runId: string, type: ComponentType, row?: CatalogItem, position = fraction / 100, clicked = false) => {
     const before = latest.current;
     let placed: PipeNode | undefined;
     commit((d) => {
       placed = placeComponentOnPipe(d, runId, type, position, row);
+      if (insertMates && type.endPrep === "FL" && type.kind !== "flange") matesAt(d, placed.id);
       if (clicked) snapNearFace(d, placed.id);
       setSelection([placed.id]);
     });
@@ -1273,7 +1318,16 @@ export function IsometricEditor({
       return;
     }
     if (armed && tool === "insert") {
-      const hit = insertionTarget(clientX, clientY, owner ?? "");
+      // A flange, blind, cap or plug clicked on an open end itself caps it, even one with no pipe of its own (a valve's
+      // open outlet).
+      const clickedNode = node ?? (owner && doc.nodes.some((n) => n.id === owner) ? owner : undefined), at = clickedNode && getNode(doc, clickedNode);
+      if (at && endCapable(armed.type) && at.kind === "end" && !at.associatedRunId && connected(doc, at.id).length === 1) {
+        const before = latest.current;
+        commit((d) => setSelection([capOpenEnd(d, at.id, armed.type, armed.row).id]));
+        if (latest.current !== before) { setArmed(null); transient.patch({ insertHover: null }); }
+        return;
+      }
+      const hit = endward(insertionTarget(clientX, clientY, owner ?? ""), armed.type, clientX, clientY);
       if (hit) {
         // Flanges, blinds and caps dropped on an open pipe end become that end.
         const run = doc.runs.find((r) => r.id === hit.runId)!, endNode = hit.end == null ? undefined : getNode(doc, hit.end === 0 ? run.from : run.to);
@@ -1282,7 +1336,11 @@ export function IsometricEditor({
         // A valve, coupling or union on an open end closes the line there, with no pipe after it.
         if (open && !onEnd && terminalCapable(armed.type)) {
           const before = latest.current;
-          commit((d) => setSelection([placeAtOpenEnd(d, hit.runId, hit.end!, armed.type, armed.row).id]));
+          commit((d) => {
+            const placed = placeAtOpenEnd(d, hit.runId, hit.end!, armed.type, armed.row);
+            if (insertMates && armed.type.endPrep === "FL") matesAt(d, placed.id);
+            setSelection([placed.id]);
+          });
           if (latest.current !== before) {
             setArmed(null);
             transient.patch({ insertHover: null });
@@ -1445,6 +1503,7 @@ export function IsometricEditor({
   }, [setSelection]);
   const lengthDraft = useMemo(() => {
     if (!lengthEdit) return "";
+    if ("key" in lengthEdit) return lengthInputValue(lengthEdit.span.mm, doc.units);
     const run = doc.runs.find((r) => r.id === lengthEdit.runId);
     if (!run) return "";
     const result = runResult(doc, run);
@@ -1456,6 +1515,10 @@ export function IsometricEditor({
     if (!edit || raw.trim() === lengthDraft) return;
     try {
       const value = parseLength(raw, doc.units);
+      if ("key" in edit) {
+        if (Math.abs(value - edit.span.mm) > 0.001) commit((d) => setSpanLength(d, edit.span.from, edit.span.to, edit.span.mm, value));
+        return;
+      }
       const run = doc.runs.find((r) => r.id === edit.runId);
       if (!run || run.connector) throw new Error("Select a pipe to change its length.");
       const current = runResult(doc, run), target = edit.role === "cut" ? current.cut : current.overall;
@@ -1470,7 +1533,18 @@ export function IsometricEditor({
     el.focus();
     el.select();
   }, []);
-  const editingText = lengthEdit ? lengthText(drawing.primitives, lengthEdit.runId, lengthEdit.role) : undefined;
+  const editingText = !lengthEdit ? undefined : "key" in lengthEdit
+    ? drawing.primitives.find((p): p is Extract<typeof p, { type: "text" }> => p.type === "text" && p.label?.key === lengthEdit.key && !!p.span)
+    : lengthText(drawing.primitives, lengthEdit.runId, lengthEdit.role);
+  /** A dimension between two connections opened for editing in place, by its label. */
+  const openSpan = useCallback((key: string) => {
+    const p = latestDrawing.current.primitives.find((q): q is Extract<typeof q, { type: "text" }> => q.type === "text" && q.label?.key === key && !!q.span);
+    if (!p?.span) return;
+    setTool("select");
+    setArmed(null);
+    setSelectedLabel(null);
+    setLengthEdit({ key, span: p.span });
+  }, []);
   useEffect(() => { if (lengthEdit && !editingText) setLengthEdit(null); }, [lengthEdit, editingText]);
 
   /** Opens the properties on a field, by name: the explicit way the inspector is brought back. */
@@ -2140,7 +2214,7 @@ export function IsometricEditor({
     const patch: Partial<Transient> = { sheet: p, hoverLabel: over };
     if (armed && tool === "insert") {
       const hit = armed.type.angle ? null : insertionTarget(e.clientX, e.clientY, target.closest("[data-owner]")?.getAttribute("data-owner") ?? "");
-      patch.insertHover = hit && snapHit(hit);
+      patch.insertHover = hit && snapHit(endward(hit, armed.type, e.clientX, e.clientY)!);
     } else if (tool === "split") {
       const branch = !target.closest("[data-node]") ? branchTarget(e.clientX, e.clientY) : null;
       patch.insertHover = branch && snapHit(branch);
@@ -2493,7 +2567,11 @@ export function IsometricEditor({
               <RibbonField label={sizeHeader(doc)}>
                 <select aria-label="Pipe nominal size" value={nps} onChange={(e) => setNps(Number(e.target.value))}
                   title={activeSizes.listed ? undefined : `Specification ${activeSpec?.name ?? ""} lists no pipe sizes, so the sizes its pipes are drawn at are offered. Add its sizes under Specifications for their outside diameters, walls and weights.`}>
-                  {activeSizes.sizes.map((size) => <option value={size} key={size}>{sizeFor(doc, size)}{activeSizes.listed ? "" : " (not in spec)"}</option>)}
+                  {activeSizes.sizes.map((size) => {
+                    // The schedule each size is bought in: small bore is often heavier than the specification's header.
+                    const listed = activeSpec?.sizes.find((z) => z.nps === size);
+                    return <option value={size} key={size}>{sizeFor(doc, size)}{activeSizes.listed ? listed?.schedule ? ` · ${scheduleText(listed.schedule)}` : "" : " (not in spec)"}</option>;
+                  })}
                 </select>
               </RibbonField>
               <RibbonField label={"Length · " + (doc.units === "mm" ? "mm" : "ft / in")}>
@@ -2584,6 +2662,22 @@ export function IsometricEditor({
                   </select>
                 </RibbonField>
               )}
+              {armed && armed.type.endPrep === "FL" && armed.type.kind !== "flange" && (() => {
+                const mating = (code?: string) => !!code && !/BL$|ORFC|SBLND/.test(code);
+                const listed = paletteSpec?.fittings.filter((f) => f.kind === "flange" && f.nps === paletteNps && mating(f.component)).map((f) => f.component!) ?? [];
+                const choices = [...new Set(listed.length ? listed : COMPONENT_TYPES.filter((t) => t.kind === "flange" && mating(t.code)).map((t) => t.code))];
+                const own = paletteSpec ? defaultFlangeCode(paletteSpec, paletteNps) : "";
+                return (
+                  <RibbonField label="Mating flanges">
+                    <select aria-label="Mating flanges for the component" value={insertMates} onChange={(e) => setInsertMates(e.target.value)}
+                      title="The flanges the component bolts to at each end; change them later under Flanged ends">
+                      <option value="">Specification · {COMPONENT_TYPES.find((t) => t.code === own)?.label ?? own}</option>
+                      {choices.map((c) => <option key={c} value={c}>{COMPONENT_TYPES.find((t) => t.code === c)?.label ?? c}</option>)}
+                      <option value="NONE">Not supplied (existing)</option>
+                    </select>
+                  </RibbonField>
+                );
+              })()}
               {armed && selectedRun && !selectedRun.connector && (() => {
                 const overall = pipeLeg(doc, selectedRun.id)?.length ?? 0;
                 return (
@@ -2682,7 +2776,7 @@ export function IsometricEditor({
                   {surface === "paper" && <rect x="0" y="0" width={drawing.width} height={drawing.height} className="iso-paper" />}
                   {drafting.grid && <GridLayer store={viewStore} frame={frame} drawing={drawing} lattice={paperLattice} anchor={gridOrigin} grid={grid} units={doc.units} mask={gridMask} model={surface === "grid"} />}
                   <SheetLayer primitives={drawing.primitives} lettering={drawing.lettering} weights={drawing.weights} background={surface === "paper" ? "white" : "var(--iso-canvas)"}
-                    selection={selectionSet} editing={lengthEdit} onEditLength={openLength} highlight={labelHighlight} />
+                    selection={selectionSet} editing={lengthEdit} onEditLength={openLength} onEditSpan={openSpan} highlight={labelHighlight} />
                   <Grips store={viewStore} frame={frame} positions={drawing.positions} nodeGrips={tool === "pipe" ? [] : nodeGrips} endGrips={tool === "pipe" ? [] : ends}
                     paths={tool === "select" ? editablePaths : []} routeAnchor={routeAnchor} />
                   <PointerLayer store={transient} view={viewStore} frame={frame} doc={doc} drawing={drawing} project={latticeRoute.project}
@@ -2712,8 +2806,8 @@ export function IsometricEditor({
                 </CanvasSvg>
               )}
               {lengthEdit && editingText && (
-                <InlineLength key={lengthEdit.runId + ":" + lengthEdit.role} view={viewStore} frame={frame} text={editingText} draft={lengthDraft}
-                  aria={lengthEdit.role === "cut" ? "Pipe cut length" : "Pipe overall length"} inputRef={bindLengthInput}
+                <InlineLength key={"key" in lengthEdit ? lengthEdit.key : lengthEdit.runId + ":" + lengthEdit.role} view={viewStore} frame={frame} text={editingText} draft={lengthDraft}
+                  aria={"key" in lengthEdit ? "Dimension length" : lengthEdit.role === "cut" ? "Pipe cut length" : "Pipe overall length"} inputRef={bindLengthInput}
                   onFinish={finishLength} onCancel={() => setLengthEdit(null)} />
               )}
               <div className="iso-bottom-controls">

@@ -15,8 +15,8 @@ import {
   type PipeRun,
   type Vec3,
 } from "../../core/model";
-import { directionName, setDimensionAxis, setDimensionReverse, setLineFlow } from "../../core/component-position";
-import { sizeFor, sizeHeader } from "../../core/format";
+import { closeCouple, directionName, setDimensionAxis, setDimensionReverse, setLineFlow } from "../../core/component-position";
+import { scheduleText, sizeFor, sizeHeader } from "../../core/format";
 import { routingSizes, type LibrarySpecSummary } from "../library";
 import { END_PREPS, SpecSelect, endPrepName } from "../choices";
 import { DIRECTIONS } from "../command-line";
@@ -69,7 +69,7 @@ export function PipePanel({ doc, run, commit, onError, library, libraryError, sp
 
   const fabrication = (
     <>
-      <Section id="pipe.pipe" title="Pipe" defaultOpen summary={`${sizeFor(doc, run.nps)} · ${spec.name}`}>
+      <Section id="pipe.pipe" title="Pipe" defaultOpen summary={`${sizeFor(doc, run.nps)} · ${scheduleText(spec.sizes.find((z) => z.nps === run.nps)?.schedule || spec.schedule)} · ${spec.name}`}>
         <Row label="Specification">
           <SpecSelect doc={doc} aria="Pipe specification" value={run.specId} library={library} libraryError={libraryError} busy={specBusy} onChange={(v) => void chooseSpec(v, run.id)} />
         </Row>
@@ -84,6 +84,9 @@ export function PipePanel({ doc, run, commit, onError, library, libraryError, sp
             })()}
           </select>
         </Row>
+        <Toggle label="No pipe: fittings welded together" keywords="close coupled fitting to fitting connector makeup no pipe"
+          hint={run.connector ? "The fittings at its ends are welded (or screwed) straight to each other; turn off to put pipe back, then set its length." : "Weld the fittings at its ends straight to each other: the length becomes their makeup and nothing is cut. Dragging a fitting up to the next does the same."}
+          checked={!!run.connector} onChange={(on) => commit((d) => { if (on) closeCouple(d, run.id); else { const r = d.runs.find((x) => x.id === run.id); if (r) delete r.connector; } })} />
         {!run.connector && (
           <>
             <Row label="Material text" keywords="bill of materials bom description" modified={!!run.description} onReset={() => edit((r) => { delete r.description; })}>

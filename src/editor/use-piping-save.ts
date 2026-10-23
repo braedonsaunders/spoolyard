@@ -3,6 +3,7 @@ import { flushSync } from "react-dom";
 import type { IsoDocument } from "../core/model";
 import { serialise } from "./history";
 import { SaveQueue } from "./save-queue";
+import { UPDATE_RELOAD_EVENT, type UpdateReloadDetail } from "../app/update-reload";
 
 export type SaveStatus = "opening" | "saved" | "unsaved" | "saving" | "error";
 /**
@@ -169,6 +170,12 @@ export function usePipingSave(doc: IsoDocument, ready: boolean, options: {
         void (e.shiftKey && state.current.options.saveFile ? saveAs() : save()).catch(() => undefined);
       }
     };
+    // Reloading onto an update of Spoolyard: the drawing's copy is written first, then the page reopens it.
+    const updating = (e: Event) => {
+      commitField();
+      (e as CustomEvent<UpdateReloadDetail>).detail?.pending.push(flush());
+    };
+    window.addEventListener(UPDATE_RELOAD_EVENT, updating);
     window.addEventListener("online", keep);
     window.addEventListener("keydown", key);
     window.addEventListener("beforeunload", leaving);
@@ -176,6 +183,7 @@ export function usePipingSave(doc: IsoDocument, ready: boolean, options: {
     return () => {
       state.current.mounted = false;
       keep();
+      window.removeEventListener(UPDATE_RELOAD_EVENT, updating);
       window.removeEventListener("online", keep);
       window.removeEventListener("keydown", key);
       window.removeEventListener("beforeunload", leaving);

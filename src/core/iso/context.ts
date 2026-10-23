@@ -313,7 +313,7 @@ export function emitters(ctx: LabelHost) {
     ctx.place.add(box, 'symbol', owner)
   }
   const text = (p: Point, value: string, size: number, layer: string, owner?: string,
-    options: { rotation?: number; oblique?: number; anchor?: 'start' | 'middle' | 'end'; role?: 'overall' | 'cut'; label?: Extract<Primitive,{type:'text'}>['label'] } = {}): Poly => {
+    options: { rotation?: number; oblique?: number; anchor?: 'start' | 'middle' | 'end'; role?: 'overall' | 'cut'; span?: Extract<Primitive,{type:'text'}>['span']; label?: Extract<Primitive,{type:'text'}>['label'] } = {}): Poly => {
     const held=layer!=='TAG'&&options.label&&ctx.spool?ctx.doc?.sheets?.[ctx.spool]?.labelStyles?.[options.label.key]:undefined
     if(held){size=held.size??size;options={...options,...(held.rotation!=null?{rotation:held.rotation}:{}),...(held.oblique!=null?{oblique:held.oblique}:{})}}
     const primitive: Primitive = { type: 'text', p, text: value, size, layer, owner, ...options }

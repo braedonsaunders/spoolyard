@@ -1,6 +1,6 @@
 import { COMPONENT_TYPES, COMPONENT_TYPE_BY_CODE, type ComponentType } from './components';
 import { catalogRow, defaultCode, flangedJoints, nodeCode } from './joints';
-import { connected, fitting, getNode, getSpec, id, length, sub, add, mul, prepAt, runResult, insertComponent, attachComponent, applyComponent, makeNipple, setAutoFitting, takeout, type CatalogItem, type IsoDocument, type PipeNode, type PipeRun, type PipeSpec, type Vec3 } from './model';
+import { connected, fitting, getNode, getSpec, id, length, resizeRun, sub, add, mul, prepAt, runResult, insertComponent, attachComponent, applyComponent, makeNipple, setAutoFitting, takeout, type CatalogItem, type IsoDocument, type PipeNode, type PipeRun, type PipeSpec, type Vec3 } from './model';
 
 export interface ComponentTrack {
   /** Ends of the whole straight leg, between changes of direction, branches and open ends. */
@@ -224,6 +224,26 @@ export function refitToSpec(doc: IsoDocument, node: PipeNode): void {
 }
 
 /**
+ * The pipes at a sized fitting follow the catalogue row chosen for it: a reducer's two ends, a tee's branch and an
+ * olet's branch take the row's sizes, carried along the line beyond (see `carrySize`), so choosing a 4"×2" row in
+ * place of 4"×3" redraws and recuts the line at 2".
+ */
+export function sizePipesToRow(doc: IsoDocument, nodeId: string): void {
+  const node = getNode(doc, nodeId), row = fitting(doc, node);
+  if (!row) return;
+  const edges = connected(doc, nodeId).filter(r => !r.connector || r.from === nodeId || r.to === nodeId);
+  if (node.kind === 'reducer' && row.smallerNps != null && edges.length === 2) {
+    const [large, small] = edges[0].nps >= edges[1].nps ? edges : [edges[1], edges[0]];
+    if (small.nps !== row.smallerNps) carrySize(doc, nodeId, small.id, row.smallerNps);
+    if (large.nps !== row.nps) carrySize(doc, nodeId, large.id, row.nps);
+    return;
+  }
+  const branch = node.kind === 'olet' ? edges[0] : node.kind === 'tee' ? edges.find(r => r.id === node.branchEdgeId) : undefined;
+  const size = node.kind === 'olet' ? row.smallerNps ?? row.nps : row.smallerNps ?? row.nps;
+  if (branch && branch.nps !== size) carrySize(doc, nodeId, branch.id, size);
+}
+
+/**
  * Carry a new size along the line beyond a fitting: the pipe leaving `fromId` and the pipes it runs on into through
  * joints, elbows and in-line components, up to the next reducer, branch or open end.
  */
@@ -306,6 +326,37 @@ export function placeComponentOnPipe(doc: IsoDocument, runId: string, type: Comp
     if (!edge.connector && Number.isFinite(cut) && cut <= 0)
       throw new Error('That position leaves no pipe after fitting takeouts and root gaps. Choose a point farther from the end.');
   }
+  return node;
+}
+
+/**
+ * Weld the fittings at a pipe's ends straight to each other (close-coupled): the pipe becomes their makeup, its two
+ * takeouts and the root gap, with no pipe piece cut; what lies beyond moves up to keep every other length.
+ */
+export function closeCouple(doc: IsoDocument, runId: string): void {
+  const run = doc.runs.find(r => r.id === runId);
+  if (!run) throw new Error('Select a pipe.');
+  if (run.connector) return;
+  const { overall, cut } = runResult(doc, run), makeup = overall - cut;
+  if (!Number.isFinite(makeup) || makeup <= 0)
+    throw new Error('The fittings at the ends of this pipe have no known lengths, so they cannot be welded together. Give them a takeout first.');
+  if (Math.abs(overall - makeup) > 0.01) resizeRun(doc, runId, makeup);
+  run.connector = true;
+}
+
+/**
+ * Close an open end with a flange, blind, cap or plug: the end becomes the component, sized and specified by the
+ * pipe or component it is the end of. Unlike a click on a pipe, this reaches an end with no pipe of its own: a valve's
+ * open outlet takes a threaded plug or a blind there.
+ */
+export function capOpenEnd(doc: IsoDocument, nodeId: string, type: ComponentType, row?: CatalogItem): PipeNode {
+  const node = getNode(doc, nodeId), edges = connected(doc, nodeId);
+  if (!endCapable(type)) throw new Error(`${type.label} does not close a line. Click a pipe to place it.`);
+  if (node.kind !== 'end' || node.associatedRunId || edges.length !== 1) throw new Error('That end already has a fitting. Click an open end.');
+  const run = edges[0], spec = getSpec(doc, run.specId);
+  const match = (row && row.nps === run.nps && spec.fittings.includes(row) ? row : undefined) ??
+    spec.fittings.find(f => f.component === type.code && f.nps === run.nps && (f.smallerNps == null || f.smallerNps === f.nps));
+  applyComponent(doc, node, type.code, match);
   return node;
 }
 

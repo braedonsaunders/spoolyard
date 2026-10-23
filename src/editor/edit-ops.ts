@@ -1,4 +1,5 @@
 import { formatLength, parseLength } from "../core/format";
+import { componentTrack, moveComponentAlongPipe } from "../core/component-position";
 import { pipeOd } from "../core/standards";
 import {
   add,
@@ -408,6 +409,7 @@ export function pipeThrough(d: IsoDocument, point: Vec3): PipeRun | undefined {
  * when a length is typed. Components on the stretched pipe keep their place along it from its fixed end.
  */
 export function stretchLeg(d: IsoDocument, runId: string, nodeId: string, delta: Vec3) {
+  delta = [...delta] as Vec3;
   const run = d.runs.find((r) => r.id === runId);
   if (!run || (run.from !== nodeId && run.to !== nodeId)) throw new Error("Drag a connection along one of its own pipes.");
   const fixed = run.from === nodeId ? run.to : run.from;
@@ -421,8 +423,53 @@ export function stretchLeg(d: IsoDocument, runId: string, nodeId: string, delta:
   const a = getNode(d, fixed).position, b0 = getNode(d, nodeId).position, along = sub(b0, a);
   const next = Math.hypot(...sub(add(b0, delta), a));
   if (!(next > 0.001) || along.reduce((s, v, i) => s + v * (b0[i] + delta[i] - a[i]), 0) <= 0) throw new Error("The pipe would close up to nothing. Drag a shorter distance.");
+  // Dragged up against the fitting at the pipe's other end, the two fittings weld straight together: the pipe stops at
+  // their makeup (both takeouts and the root gap) and becomes a connector, with no pipe piece cut. Dragged apart
+  // again, it is pipe.
+  const result = runResult(d, run), makeup = result.overall - result.cut;
+  if (Number.isFinite(makeup) && makeup > 0) {
+    const span = Math.hypot(...along) || 1;
+    if (next < makeup - 0.01) {
+      delta = sub(add(a, along.map((v) => (v / span) * makeup) as Vec3), b0);
+      run.connector = true;
+    } else if (run.connector && next > makeup + 0.5) delete run.connector;
+  }
   // The components on the stretched pipe stay where they are; those beyond, with their branches, move with the line.
   displace(d, new Map([...moving].map((key) => [key, delta])), new Set([fixed]), false);
+}
+
+/**
+ * A dimension between two connections typed in place: the second connection moves along its straight by the change,
+ * an in-line component sliding along its pipe, a turn, branch or end stretching its pipe and taking everything beyond
+ * it along (`stretchLeg`). Where the second cannot move (a closed loop), the first moves the other way.
+ */
+export function setSpanLength(d: IsoDocument, fromId: string, toId: string, shown: number, wanted: number) {
+  if (!(wanted > 0)) throw new Error("Enter a positive length.");
+  const delta = wanted - shown;
+  if (Math.abs(delta) < 1e-6) return;
+  const move = (fixedId: string, movingId: string) => {
+    const a = getNode(d, fixedId).position, b = getNode(d, movingId).position, v = sub(b, a), l = Math.hypot(...v);
+    if (!(l > 0)) throw new Error("These two points are at the same place.");
+    const u = v.map((x) => x / l) as Vec3;
+    const track = componentTrack(d, movingId);
+    if (track) {
+      const t = track.to.map((x, i) => x - track.from[i]), tl = Math.hypot(...t) || 1;
+      const at = (p: Vec3) => p.reduce((s, x, i) => s + (x - track.from[i]) * t[i] / tl, 0);
+      return moveComponentAlongPipe(d, movingId, track.distance + delta * Math.sign(at(b) - at(a) || 1));
+    }
+    // The pipe from the moving connection back toward the fixed one, stretched or shortened at the moving end.
+    const run = connected(d, movingId).find((r) => {
+      const o = getNode(d, r.from === movingId ? r.to : r.from).position, w = sub(o, b), wl = Math.hypot(...w);
+      return wl > 0 && w.reduce((s, x, i) => s - x * u[i], 0) / wl > 0.999;
+    });
+    if (!run) throw new Error("This dimension is not along one straight, so it cannot be set here. Edit the pipe lengths instead.");
+    stretchLeg(d, run.id, movingId, u.map((x) => x * delta) as Vec3);
+  };
+  try { move(fromId, toId); }
+  catch (e) {
+    if (!/closed loop|cannot slide/i.test(e instanceof Error ? e.message : "")) throw e;
+    move(toId, fromId);
+  }
 }
 
 /** The branch size an olet is for: its row's branch (a header-by-branch row's smaller end), or a standard row's size. */

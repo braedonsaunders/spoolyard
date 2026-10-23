@@ -34,6 +34,11 @@ export type Primitive = (
       label?: { key: string; at: Point; spool: string; dimension?: { axis: Point; offset: number } }
       /** Set on a pipe dimension so the editor can edit that length in place. */
       role?: 'overall' | 'cut'
+      /**
+       * Set on any other dimension between two connections (a component face to an elbow, an overall run): editing it in
+       * place moves the second connection along its straight (see `setSpanLength`).
+       */
+      span?: { from: string; to: string; mm: number }
       /** Degrees counter-clockwise on the page. */
       rotation?: number
       /** Slant in degrees, positive leaning right; isometric lettering uses the same angle as the rotation. */

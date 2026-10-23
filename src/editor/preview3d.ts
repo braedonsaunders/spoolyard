@@ -16,6 +16,11 @@ import { valveOperatorOf } from "../core/iso/valve-conventions";
 
 /** Physical pipe and fitting envelopes for spatial review; dimensions remain governed by the piping model. */
 export function mountPreview3d(container: HTMLElement, doc: IsoDocument, spool = ""): () => void {
+  // three.js draws with WebGL 2; a browser or machine without it (acceleration off, some virtual machines) gets the
+  // canvas review instead (preview-canvas.ts).
+  const probe = document.createElement("canvas").getContext("webgl2");
+  if (!probe) throw Object.assign(new Error("WebGL 2 is not available in this browser."), { name: "WebGLUnavailable" });
+  probe.getExtension("WEBGL_lose_context")?.loseContext();
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(2, window.devicePixelRatio));
   renderer.setClearColor(0xf2f5f8);

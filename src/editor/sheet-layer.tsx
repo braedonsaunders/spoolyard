@@ -50,13 +50,17 @@ export interface SheetLayerProps {
   background: string;
   /** What is selected; its ink is drawn in the selection colour. */
   selection: ReadonlySet<string>;
-  /** The pipe length being edited in place; its label hides under the input. */
-  editing: { runId: string; role: Role } | null;
+  /** The length being edited in place (a pipe's, or a dimension's by its label); its label hides under the input. */
+  editing: { runId: string; role: Role } | { key: string } | null;
   onEditLength?: (runId: string, role: Role) => void;
+  /** Opens a dimension between two connections (`span`) for editing in place, by its label. */
+  onEditSpan?: (key: string) => void;
   /** Ink of the paper label picked on its own, drawn in the label selection colour. */
   highlight?: ReadonlySet<Primitive>;
 }
 const NO_SELECTION: ReadonlySet<string> = new Set();
+/** Layers of the callouts a selected item's labels are drawn on. */
+const CALLOUT_LAYERS: ReadonlySet<string> = new Set(["TAG", "LEADER", "TEXT"]);
 
 /** Whether two values are the same plain data (primitives are plain objects of numbers, strings and arrays). */
 function same(a: unknown, b: unknown): boolean {
@@ -83,11 +87,12 @@ interface Drawn { p: Primitive; element: ReactElement; selected: boolean; lit: b
  * primitive it was drawn for, and given again while the new primitive is the same and it is selected, highlighted and
  * hidden alike, so React leaves its ink alone and only what changed is drawn again.
  */
-export const SheetLayer = memo(function SheetLayer({ primitives, lettering, weights, background, selection = NO_SELECTION, editing, onEditLength, highlight }: SheetLayerProps) {
+export const SheetLayer = memo(function SheetLayer({ primitives, lettering, weights, background, selection = NO_SELECTION, editing, onEditLength, onEditSpan, highlight }: SheetLayerProps) {
   const keys = useMemo(() => primitiveKeys(primitives), [primitives]);
   // The length editor opens through the latest handler, so a kept element never calls an old one.
-  const editLength = useRef(onEditLength);
+  const editLength = useRef(onEditLength), editSpan = useRef(onEditSpan);
   editLength.current = onEditLength;
+  editSpan.current = onEditSpan;
   const editable = !!onEditLength;
   // What every element is drawn with besides its own primitive; a change draws them all again.
   const setting = `${lettering}|${background}|${editable}|${weights ? Object.entries(weights).join(";") : ""}`;
@@ -121,15 +126,17 @@ export const SheetLayer = memo(function SheetLayer({ primitives, lettering, weig
     return (
       <g key={key} data-label={p.label?.key}>
         {glyphs}
-        {p.role && p.owner && !hidden ? (
-          <rect data-owner={p.owner} data-length={p.role} x={box.left - 4} y={box.top} width={Math.max(MIN_LENGTH_PICK, box.width + 8)} height={box.height + 8}
+        {((p.role && p.owner) || (p.span && p.label)) && !hidden ? (
+          // A length's pick box is larger than its lettering, so a double-click lands on it easily.
+          <rect data-owner={p.owner} data-length={p.role ?? "span"} data-label={p.span ? p.label?.key : undefined} x={box.left - 6} y={box.top - 4} width={Math.max(MIN_LENGTH_PICK, box.width + 12)} height={box.height + 12}
             transform={transform} fill="transparent" className="iso-length-hit"
             onDoubleClick={editable ? (event) => {
               event.preventDefault();
               event.stopPropagation();
-              editLength.current?.(p.owner!, p.role!);
+              if (p.role) editLength.current?.(p.owner!, p.role);
+              else if (p.label) editSpan.current?.(p.label.key);
             } : undefined}>
-            <title>{p.role === "cut" ? "Double-click to edit the cut length" : "Double-click to edit the centreline length"}</title>
+            <title>{p.role === "cut" ? "Double-click to edit the cut length" : p.role ? "Double-click to edit the centreline length" : "Double-click to edit this dimension; drag to move it"}</title>
           </rect>
         ) : (
           // Single-stroke lettering is too thin to click, so owned CAD text carries a box to pick it by.
@@ -169,9 +176,11 @@ export const SheetLayer = memo(function SheetLayer({ primitives, lettering, weig
   const drawn = new Map<string, Drawn>(), before = kept.current.drawn;
   const elements = primitives.map((p, i) => {
     const key = keys[i];
-    selected = !!p.owner && selection.has(p.owner);
+    // A selected item's own ink is drawn selected; its callouts (tags, leaders, lettering) are not, so the item stands out
+    // from them and each callout is picked and moved on its own.
+    selected = !!p.owner && selection.has(p.owner) && !CALLOUT_LAYERS.has(p.layer);
     lit = !!highlight?.has(p);
-    const hidden = p.type === "text" && editing != null && editing.runId === p.owner && editing.role === p.role;
+    const hidden = p.type === "text" && editing != null && ("key" in editing ? !!p.span && p.label?.key === editing.key : editing.runId === p.owner && editing.role === p.role);
     const last = before.get(key);
     const entry = last && last.selected === selected && last.lit === lit && last.hidden === hidden && same(last.p, p)
       ? last : { p, element: draw(p, key, hidden), selected, lit, hidden };
