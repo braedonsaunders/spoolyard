@@ -557,7 +557,7 @@ export function drawAnnotations(ctx: IsoContext) {
       callout(node.continuation.leaderAt==='node'?at:node.continuation.paperPath?.at(-1) ?? at, lines, node.id, { key: `continuation:${node.id}` })
     }
     // A line broken onto another sheet says where it goes on, as the drafter would letter it, unless the drafter has.
-    else if (ctx.spool && ctx.style.breakCallouts !== false) {
+    else if (ctx.spool && ctx.style.breakCallouts !== false && !node.hideBreakCallout) {
       const others = [...new Set(connected(ctx.doc, node.id).map(r => r.spool))].filter(s => s !== ctx.spool)
       if (others.length && connected(ctx.doc, node.id).some(r => r.spool === ctx.spool))
         callout(at, ["CONT'D ON", ...others.map(s => `DWG# ${sheetInfoOf(ctx.doc, s).drawingNumber}`.toUpperCase())], node.id, { key: `continuation:${node.id}` })

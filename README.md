@@ -60,8 +60,10 @@ where it powers piping isometrics in Files and Tools.
 - **Measured routing.** Click along the six iso directions with Ortho on, or type a length and pick East, North
   or Up. On not-to-scale paper each cell of the isometric paper routes one grid block (1'-0" on a feet-and-inches
   drawing, the default), so the pointer steps cell by cell as the grid shows it; to-scale sheets draw at the largest
-  standard scale that fits, or at one you choose. Bends and branches get the specification's elbows and tees
-  automatically; rolling offsets route in XYZ. Click a pipe to branch off it, place olets on a header, fit reducers
+  standard scale that fits, or at one you choose. Turn on 45° (F10) to also pick at 45° within the routing plane, or
+  type `NE 4'`; choose a 45° elbow in Insert and click a pipe to roll in a 45° offset. The East/North/Up buttons
+  route from the selected end, shown as you point at them. Bends and branches get the specification's elbows and
+  tees automatically; rolling offsets route in XYZ. Click a pipe to branch off it, place olets on a header, fit reducers
   either way round, and put a valve, coupling or union on an open end with no pipe after it. A flange, cap or plug
   clicked near an open end closes it, a valve's open outlet included. Drag one fitting up against the next, or turn
   on "No pipe: fittings welded together", to weld fittings straight to each other. Choose the mating flanges a
@@ -79,6 +81,8 @@ where it powers piping isometrics in Files and Tools.
   - **Joints at drawing breaks:** a joint split across drawings lists each part on one sheet only. That covers a
     stub end with its flange on the next sheet, and a flange that bolts to a lug valve (lug bolts).
   - **Field-fit welds:** they leave a makeup length on the pipe.
+  - **How it is worked out:** each pipe's properties show its cut line by line, and Project profile › Weld gaps in
+    cuts can leave the root gap and socket pull-back out for a shop that takes them up at fit-up.
 - **Standard dimensions built in.** Specifications supply their own rows. Anything they lack falls back to ASME
   B16.5, B16.9, B16.10, B16.11, B16.20/21, MSS SP-43, MSS SP-97 and API 609 tables, so standard components never
   need a length typed in. Where no standard dimensions a size (threaded and socket-weld valves) and a

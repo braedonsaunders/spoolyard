@@ -1,5 +1,6 @@
 import type { Drawing, Point } from "../core/drawing";
-import type { IsoDocument, Vec3 } from "../core/model";
+import { runResult, type IsoDocument, type Vec3 } from "../core/model";
+import { componentFaces, componentTrack } from "../core/component-position";
 import type { ObjectSnap } from "./drafting";
 
 /**
@@ -19,7 +20,7 @@ export interface Snap {
   /** Along the pipe, 0 at its start, for a pipe snap. */
   fraction?: number;
 }
-const PRIORITY: Record<ObjectSnap, number> = { endpoint: 0, centre: 0, midpoint: 1, nearest: 2 };
+const PRIORITY: Record<ObjectSnap, number> = { endpoint: 0, centre: 0, face: 0, midpoint: 1, nearest: 2 };
 /** Kinds whose node is a pipe end or a change of direction rather than a component on the pipe. */
 const JOINTS = new Set(["end", "elbow90", "elbow45", "tee", "weld"]);
 
@@ -38,6 +39,23 @@ export function snapPoints(doc: IsoDocument, drawing: Drawing): Snap[] {
     const a = drawing.positions.get(r.from), b = drawing.positions.get(r.to), pa = node.get(r.from), pb = node.get(r.to);
     if (!a || !b || !pa || !pb || r.connector) continue;
     out.push({ kind: "midpoint", at: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], model: lerp(pa.position, pb.position, 0.5), id: r.id, fraction: 0.5 });
+    // Where the pipe meets its fittings: its cut ends, set back by each fitting's takeout and gap.
+    const span = Math.hypot(...pb.position.map((v, i) => v - pa.position[i]));
+    const result = span > 0 ? runResult(doc, r) : undefined;
+    if (result) for (const [end, back] of [[0, result.takeouts[0] + result.gaps[0]], [1, result.takeouts[1] + result.gaps[1]]] as const) {
+      if (!(back > 0.5) || !Number.isFinite(back) || back >= span) continue;
+      const t = end === 0 ? back / span : 1 - back / span;
+      out.push({ kind: "face", at: [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t], model: lerp(pa.position, pb.position, t), id: r.id, fraction: t });
+    }
+  }
+  // A flanged component's faces on its straight.
+  for (const n of doc.nodes) {
+    const faces = componentFaces(doc, n.id), track = faces && componentTrack(doc, n.id), at = drawing.positions.get(n.id);
+    if (!faces || !track || !at) continue;
+    for (const f of faces) {
+      const model = lerp(track.from, track.to, f / track.length);
+      out.push({ kind: "face", at: drawing.project(model), model, id: n.id });
+    }
   }
   return out;
 }

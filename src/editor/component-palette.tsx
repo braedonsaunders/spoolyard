@@ -11,8 +11,11 @@ import { specRating } from "../core/joints";
 import { npsText } from "../core/format";
 import { sized, sizeChoices, type SizeChoice } from "../core/component-position";
 
-/** Bends, laterals and crosses are created by routing; the palette inserts what sits on a straight pipe, and tees. */
-export const insertable = (t: ComponentType) => !["pipe", "elbow90", "elbow45", "gasket", "bolt"].includes(t.kind) &&
+/**
+ * Bends, laterals and crosses are created by routing; the palette inserts what sits on a straight pipe, and tees. A 45°
+ * elbow is offered too: clicked on a pipe, two of them roll in a 45° offset (`insertOffset45`).
+ */
+export const insertable = (t: ComponentType) => !["pipe", "elbow90", "gasket", "bolt"].includes(t.kind) &&
   (t.kind === "tee" ? t.ports === 3 && !/LAT$/.test(t.code) : t.ports === 2 || t.ports === 1 || ['support', 'annotation'].includes(t.kind));
 
 /** A nominal size as drawn: 1/8″, 1 1/4″, 2 1/2″. */
@@ -135,7 +138,9 @@ export function ComponentPalette({
                 <span>
                   {t.label}
                   <small>
-                    {t.angle
+                    {t.kind === "elbow45"
+                      ? "Click a pipe: two 45s make an offset · or route with 45° on (F10)"
+                      : t.angle
                       ? "Angle body · click a 90° elbow"
                       : rows[0]
                       ? [rows[0].rating, rows[0].schedule, rows[0].description].filter(Boolean).join(" · ")

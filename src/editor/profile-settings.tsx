@@ -44,6 +44,11 @@ export function ProfileSettings({ doc, commit, onError }: { doc: IsoDocument; co
         <LengthInput aria="Field-fit makeup" mm={doc.fieldFitMakeup} units={units} allowEmpty placeholder={lengthInputValue(fieldFitMakeup({ ...doc, fieldFitMakeup: undefined }), units)}
           onError={onError} onCommit={(v) => commit((d) => setFieldFitMakeup(d, v))} />
       </Row>
+      <Row label="Weld gaps in cuts" keywords="root gap socket pull back cut deduct" group
+        hint="Deduct takes each butt weld's root gap (the specification's) and the socket pull-back off the cut. Ignore cuts to the fitting takeouts only.">
+        <Segmented aria="Weld gaps in cuts" value={own.weldGaps ?? resolved.weldGaps} onChange={(v) => set("weldGaps", v === "deduct" ? undefined : v)}
+          choices={[{ value: "deduct", label: "Deduct" }, { value: "ignore", label: "Ignore" }]} />
+      </Row>
       <Row label="Cut length in the material list" keywords="cut note description" group>
         <Segmented aria="Cut length in the material list" value={own.cutNote ?? resolved.cutNote} onChange={(v) => set("cutNote", v)}
           choices={[{ value: "description", label: "After the description" }, { value: "none", label: "Cut list only" }]} />

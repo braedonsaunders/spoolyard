@@ -19,8 +19,16 @@ export const DIRECTIONS: Array<{ name: string; words: string[]; vector: Vec3 }> 
   { name: "Up", words: ["U", "UP"], vector: [0, 0, 1] },
   { name: "Down", words: ["D", "DN", "DOWN"], vector: [0, 0, -1] },
 ];
-const direction = (word: string) => DIRECTIONS.find((d) => d.words.includes(word.toUpperCase()))?.vector;
-const DIRECTION_WORDS = DIRECTIONS.flatMap((d) => d.words).sort((a, b) => b.length - a.length).join("|");
+const R = Math.SQRT1_2;
+/** The 45° directions in plan a typed length can go ("NE 4'"): the pipe's own length, through 45° elbows. */
+const DIAGONALS: Array<{ name: string; words: string[]; vector: Vec3 }> = [
+  { name: "North-east", words: ["NE", "NORTHEAST", "NORTH-EAST"], vector: [R, R, 0] },
+  { name: "North-west", words: ["NW", "NORTHWEST", "NORTH-WEST"], vector: [-R, R, 0] },
+  { name: "South-east", words: ["SE", "SOUTHEAST", "SOUTH-EAST"], vector: [R, -R, 0] },
+  { name: "South-west", words: ["SW", "SOUTHWEST", "SOUTH-WEST"], vector: [-R, -R, 0] },
+];
+const direction = (word: string) => [...DIRECTIONS, ...DIAGONALS].find((d) => d.words.includes(word.toUpperCase()))?.vector;
+const DIRECTION_WORDS = [...DIRECTIONS, ...DIAGONALS].flatMap((d) => d.words).sort((a, b) => b.length - a.length).join("|");
 const LEADING = new RegExp(`^(${DIRECTION_WORDS})(?![a-z])\\s*(.+)$`, "i");
 const TRAILING = new RegExp(`^(.+?)\\s*(?<![a-z])(${DIRECTION_WORDS})$`, "i");
 

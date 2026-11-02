@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import {
+  type CatalogItem,
   type IsoDocument,
   type Vec3,
   getNode,
@@ -13,6 +14,9 @@ import {
   connected,
 } from "../core/model";
 import { valveOperatorOf } from "../core/iso/valve-conventions";
+import { flangedJoints, nodeCode, nodeItem } from "../core/joints";
+import { flange as standardFlange } from "../core/standards";
+import { COMPONENT_TYPE_BY_CODE } from "../core/components";
 
 /** Physical pipe and fitting envelopes for spatial review; dimensions remain governed by the piping model. */
 export function mountPreview3d(container: HTMLElement, doc: IsoDocument, spool = ""): () => void {
@@ -48,6 +52,9 @@ export function mountPreview3d(container: HTMLElement, doc: IsoDocument, spool =
     color: 0xf4aa45,
     roughness: 0.6,
   });
+  const gasketMaterial = new THREE.MeshStandardMaterial({ color: 0x2f3a44, roughness: 0.8 });
+  // What the line bolts to beyond the drawing (equipment, an existing flange): shown faint, it is not this spool's.
+  const existingMaterial = new THREE.MeshStandardMaterial({ color: 0xc9d2d9, roughness: 0.7, transparent: true, opacity: 0.55 });
   const vector = (p: Vec3) => new THREE.Vector3(p[0], p[2], -p[1]);
   const mesh = (geometry: THREE.BufferGeometry, at: THREE.Vector3, material = fittingMaterial) => {
     const m = new THREE.Mesh(geometry, material);
@@ -67,6 +74,39 @@ export function mountPreview3d(container: HTMLElement, doc: IsoDocument, spool =
     m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), axis.normalize());
     return m;
   };
+  /** A solid (capped) cylinder or cone from `a` to `b`: a fitting's body, a flange plate or hub, a gasket. */
+  const solid = (a: THREE.Vector3, b: THREE.Vector3, r1: number, r2 = r1, material = fittingMaterial) => {
+    const axis = b.clone().sub(a), length = axis.length();
+    if (length < 0.001) return;
+    const m = mesh(new THREE.CylinderGeometry(r2, r1, length, 32, 1, false), a.clone().add(b).multiplyScalar(0.5), material);
+    m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), axis.normalize());
+  };
+  /**
+   * A flange whose face is at `face`, its hub running back along `axis` (unit, away from the gasket) toward the pipe it
+   * is welded to: the plate (its outside diameter and thickness), a raised face where it has one, and a weld-neck's
+   * tapered hub or a slip-on's or socket's collar, down to the pipe.
+   */
+  const flange = (face: THREE.Vector3, axis: THREE.Vector3, code: string, row: CatalogItem | undefined, pipeR: number, nps?: number, rating?: string | number) => {
+    const { od, t } = flangeSize(row, pipeR, nps, rating), item = row as (CatalogItem & { lengthThroughHub?: number }) | undefined, blind = /BL$|BLND/.test(code);
+    const std = nps ? standardFlange(nps, rating ?? row?.rating) : undefined;
+    const raised = /RF/.test(code) ? 1.6 : 0;
+    if (raised) solid(face, face.clone().addScaledVector(axis, raised), Math.min(od / 2 * 0.62, pipeR * 1.7));
+    const back = face.clone().addScaledVector(axis, raised), plate = back.clone().addScaledVector(axis, t);
+    solid(back, plate, od / 2);
+    if (blind) return;
+    const weldNeck = /WN|MSS/.test(code);
+    const hub = weldNeck ? Math.max(t * 1.2, (item?.lengthThroughHub ?? std?.wnLength ?? item?.takeout ?? t * 2.5) - t - raised)
+      : Math.max(t * 0.45, (item?.lengthThroughHub ?? std?.soLength ?? t * 1.4) - t - raised);
+    solid(plate, plate.clone().addScaledVector(axis, hub), Math.min(od / 2 * 0.8, pipeR * (weldNeck ? 1.45 : 1.3)), pipeR * (weldNeck ? 1.02 : 1.3));
+  };
+  /** A flange's outside diameter and thickness: its row's, else ASME B16.5's for its size and class, else in proportion. */
+  function flangeSize(row: CatalogItem | undefined, pipeR: number, nps?: number, rating?: string | number) {
+    const own = row as (CatalogItem & { flangeOd?: number }) | undefined, std = nps ? standardFlange(nps, rating ?? row?.rating) : undefined;
+    return { od: own?.flangeOd ?? std?.od ?? pipeR * 4, t: row?.flangeThickness ?? std?.thickness ?? Math.max(10, pipeR * 0.45) };
+  }
+  /** A gasket between two faces, and the studs through both flanges of a bolted joint. */
+  const gasket = (centre: THREE.Vector3, axis: THREE.Vector3, thickness: number, r: number) =>
+    solid(centre.clone().addScaledVector(axis, -thickness / 2), centre.clone().addScaledVector(axis, thickness / 2), r, r, gasketMaterial);
   const runs = doc.runs.filter((r) => !spool || r.spool === spool);
   for (const r of runs.filter((r) => !r.connector)) {
     const a = getNode(doc, r.from),
@@ -85,7 +125,30 @@ export function mountPreview3d(container: HTMLElement, doc: IsoDocument, spool =
       ring.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), end.clone().sub(start).normalize());
     }
   }
-  for (const n of doc.nodes.filter((n) => n.kind !== "end" && n.kind !== "weld")) {
+  // Bolted joints: each flange the joint has, back to back across its gasket, hubs running to their pipes.
+  const jointNodes = new Set<string>();
+  const joints = flangedJoints(doc).filter((j) => j.runIds.some((id) => runs.some((r) => r.id === id)));
+  const pipeRadius = (r: (typeof runs)[number]) => (getSpec(doc, r.specId).sizes.find((s) => s.nps === r.nps)?.od ?? r.nps * 25.4 + 10) / 2;
+  for (const j of joints) {
+    const centre = vector(j.position), g = j.gasket?.thickness ?? 3;
+    const sides = j.runIds.map((id) => runs.find((r) => r.id === id)).filter((r): r is (typeof runs)[number] => !!r);
+    let gasketR = 0, gasketAxis: THREE.Vector3 | undefined;
+    sides.forEach((r, i) => {
+      const far = getNode(doc, r.from === j.nodeId ? r.to : r.from).position, axis = vector(far).sub(centre).normalize();
+      if (!Number.isFinite(axis.x)) return;
+      const f = j.flanges[i] ?? j.flanges[0];
+      if (!f) return;
+      gasketAxis ??= axis;
+      const pipeR = pipeRadius(r), size = flangeSize(f.item, pipeR, j.nps, j.rating);
+      flange(centre.clone().addScaledVector(axis, g / 2), axis, f.code, f.item, pipeR, j.nps, j.rating);
+      gasketR = Math.max(gasketR, Math.min(size.od / 2 * 0.62, pipeR * 1.7));
+      // Equipment, or an existing flange beyond the drawing: its plate across the gasket.
+      if (j.kind === "equipment") solid(centre.clone().addScaledVector(axis, -g / 2), centre.clone().addScaledVector(axis, -g / 2 - size.t), size.od / 2, undefined, existingMaterial);
+    });
+    if (j.gasket && gasketR && gasketAxis) gasket(centre, gasketAxis, g, gasketR);
+    if (getNode(doc, j.nodeId).kind === "flange") jointNodes.add(j.nodeId);
+  }
+  for (const n of doc.nodes.filter((n) => n.kind !== "end" && n.kind !== "weld" && !jointNodes.has(n.id))) {
     const edges = connected(doc, n.id).filter((r) => runs.includes(r)),
       host = edges[0] ?? runs.find((r) => r.id === n.associatedRunId);
     if (!host) continue;
@@ -149,8 +212,35 @@ export function mountPreview3d(container: HTMLElement, doc: IsoDocument, spool =
     } else if (n.kind === "reducer" && ports.length === 2) {
       cylinder(ports[0].point, ports[1].point, ports[0].radius, ports[1].radius);
     } else if (n.kind === "valve" && ports.length === 2) {
-      cylinder(ports[0].point, ports[1].point, radius * 1.3);
+      const code = nodeCode(doc, n) ?? "", type = COMPONENT_TYPE_BY_CODE[code], item = nodeItem(doc, n);
       const axis = ports[1].point.clone().sub(ports[0].point).normalize();
+      // Couplings and unions are sleeves the pipe screws or sockets into; they have no operator.
+      if (/CPLG|UNION|NIPPLE|ADPT/.test(code)) {
+        const into = item?.threadEngagement ?? item?.socketDepth ?? radius * 0.6;
+        const reach = Math.max(...ports.map((p) => (p.t ?? 0) + into));
+        solid(center.clone().addScaledVector(axis, -reach), center.clone().addScaledVector(axis, reach), radius * 1.22);
+        if (/UNION/.test(code)) solid(center.clone().addScaledVector(axis, -radius * 0.45), center.clone().addScaledVector(axis, radius * 0.45), radius * 1.55);
+        continue;
+      }
+      if (type?.endPrep === "FL") {
+        // A flanged body: its own flanges at its faces, the gasket and mating flange beyond each (drawn with the joint).
+        const g = joints.find((j) => j.nodeId === n.id)?.gasket?.thickness ?? 3;
+        const ftf = item?.faceToFace;
+        const faces = ports.map((p) => {
+          const joint = joints.find((j) => j.nodeId === n.id && j.runIds.includes(p.r.id));
+          const out = p.point.clone().sub(center).normalize();
+          return joint ? vector(joint.position).addScaledVector(out, -g / 2) : center.clone().addScaledVector(out, ftf ? ftf / 2 : (p.t ?? radius));
+        });
+        const disc = type.symbol === "butterfly", od = flangeSize(item, radius, host.nps, item?.rating).od;
+        if (disc) solid(faces[0], faces[1], od / 2 * 0.86);
+        else {
+          solid(faces[0], faces[1], radius * 1.35);
+          for (const face of faces) {
+            const inward = center.clone().sub(face).normalize(), t = Math.max(8, radius * 0.4);
+            solid(face, face.clone().addScaledVector(inward, t), od / 2);
+          }
+        }
+      } else cylinder(ports[0].point, ports[1].point, radius * 1.3);
       const up = Math.abs(axis.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
       const stem = up.addScaledVector(axis, -up.dot(axis)).normalize(),
         tip = center.clone().addScaledVector(stem, radius * 4.5);
@@ -165,6 +255,10 @@ export function mountPreview3d(container: HTMLElement, doc: IsoDocument, spool =
         const body = mesh(operator === "box" ? new THREE.BoxGeometry(radius * 2.4, radius * 1.6, radius * 2.4) : new THREE.CylinderGeometry(radius * 1.4, radius * 1.4, radius * 1.6, 24), tip);
         body.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), stem);
       }
+    } else if (n.kind === "flange" && ports[0]) {
+      // A flange in no bolted joint (a blind on its own, a flange with nothing bolted to it).
+      const axis = ports[0].point.clone().sub(center).normalize();
+      flange(center, axis, nodeCode(doc, n) ?? "", nodeItem(doc, n), ports[0].radius, host.nps, nodeItem(doc, n)?.rating);
     } else if (n.kind === "flange" || n.kind === "gasket") {
       const axis = (
         ports[0]?.point.clone().sub(center) ??
@@ -240,6 +334,8 @@ export function mountPreview3d(container: HTMLElement, doc: IsoDocument, spool =
     metal.dispose();
     fittingMaterial.dispose();
     warning.dispose();
+    gasketMaterial.dispose();
+    existingMaterial.dispose();
     renderer.dispose();
     renderer.domElement.remove();
   };

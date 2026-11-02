@@ -65,6 +65,7 @@ import {
   fitting,
   id,
   insertComponent,
+  formatLength,
   lengthInputValue,
   newIso,
   parseIsoJson,
@@ -116,6 +117,7 @@ import {
   placeAtTurn,
   endCapable,
   placeAtOpenEnd,
+  insertOffset45,
   capOpenEnd,
   terminalCapable,
   legPoint,
@@ -354,7 +356,11 @@ export function IsometricEditor({
     [specBusy, setSpecBusy] = useState(""),
     [armed, setArmed] = useState<{ type: ComponentType; row?: CatalogItem } | null>(null),
     // The mating flanges a flanged component is inserted with: the specification's ("") or a chosen flange type.
-    [insertMates, setInsertMates] = useState("");
+    [insertMates, setInsertMates] = useState(""),
+    // The connection a direction button would route from, while the pointer is over the button.
+    [routeHint, setRouteHint] = useState<string | null>(null),
+    // A 45° offset's size and the way it goes across, chosen before clicking the pipe.
+    [offset45, setOffset45] = useState<{ length: string; toward: string }>({ length: "", toward: "Up" });
   // A Pipe-tool start not in the drawing yet: a new run's first point, or the point on a pipe a branch will leave.
   const [pending, setPending] = useState<{ position: Vec3; runId?: string; fraction?: number } | null>(null);
   const [editMenu, setEditMenu] = useState<{ x: number; y: number; title: string; items: EditMenuItem[] } | null>(null);
@@ -412,7 +418,8 @@ export function IsometricEditor({
   const grid = useMemo(() => gridSettings(drafting), [drafting]);
   const setDrafting = (patch: Partial<Drafting>) =>
     setDraftingState((d) => {
-      const next = { ...d, ...patch };
+      // 45° picking goes with Ortho: switching it on switches Ortho on.
+      const next = { ...d, ...patch, ...(patch.polar ? { ortho: true } : {}) };
       storeDrafting(next);
       return next;
     });
@@ -711,6 +718,21 @@ export function IsometricEditor({
       // Lines moved out of a callout go back into it with the callout.
       for (const k of Object.keys(held)) if (k.startsWith(key + "#")) delete held[k];
     });
+  /**
+   * Deletes a continuation note by its label: the drafter's own note comes off its connection; an automatic CONT'D ON
+   * at a break onto another sheet is left off at that break. Its held position goes too. One undo step.
+   */
+  const deleteContinuation = (key: string, spool: string) => {
+    const nodeId = key.slice("continuation:".length);
+    return commit((d) => {
+      const n = d.nodes.find((x) => x.id === nodeId);
+      if (!n) return;
+      if (n.continuation) delete n.continuation;
+      else n.hideBreakCallout = true;
+      const held = d.sheets?.[spool]?.labelPositions;
+      if (held) for (const k of Object.keys(held)) if (k === key || k === `leader:${key}` || k.startsWith(key + "#")) delete held[k];
+    });
+  };
   const resetLeader = (key: string, spool: string) => commit((d) => { const held = d.sheets?.[spool]?.labelPositions; if (held) delete held[`leader:${key}`]; });
   const resetDimension = (key: string, spool: string) =>
     commit((d) => { const info = d.sheets?.[spool]; if (info?.dimensionLayout) delete info.dimensionLayout[key]; if (info?.labelPositions) delete info.labelPositions[key]; });
@@ -983,28 +1005,54 @@ export function IsometricEditor({
   }, [tab, doc, filter]);
 
   /** Routes a pipe by a plant offset from the routing start; one undo step. */
-  const add = (delta: Vec3) =>
+  /**
+   * Where a direction button routes from: the connection selected, or the open end of the pipe selected, else the
+   * routing start (the end last routed to). Undefined starts a new line (or the pending start). Says why when the
+   * selection has nothing to route from.
+   */
+  const buttonOrigin = (): string | undefined => {
+    if (pending) return undefined;
+    const ids = selectionRef.current, d = latest.current;
+    if (ids.length === 1) {
+      const node = d.nodes.find((n) => n.id === ids[0]);
+      if (node) {
+        if (!canRouteFrom(d, node.id)) throw new Error(noFreeEnd(d, node.id));
+        return node.id;
+      }
+      const run = d.runs.find((r) => r.id === ids[0]);
+      if (run) {
+        const open = [run.to, run.from].filter((id) => { const n = getNode(d, id); return n.kind === "end" && !n.associatedRunId && connected(d, id).length === 1; });
+        const chosen = open.find((id) => id === start) ?? open[0];
+        if (!chosen) throw new Error("This pipe has no open end to route from. Select the fitting or end to route from.");
+        return chosen;
+      }
+    }
+    return d.nodes.some((n) => n.id === start) ? start : undefined;
+  };
+  /** `origin` routes from that connection instead of the routing start (the direction buttons' selected end). */
+  const add = (delta: Vec3, origin?: string) =>
     commit((d) => {
-      let from = d.nodes.some((n) => n.id === start) ? start : null;
-      if (pending?.runId) {
+      const pend = origin ? null : pending;
+      let from = origin ?? (d.nodes.some((n) => n.id === start) ? start : null);
+      if (pend?.runId) {
         // A branch's tee goes into its pipe once the branch has somewhere to go.
-        from = insertComponent(d, pending.runId, "tee", pending.fraction!).id;
-      } else if (pending) {
-        const origin = { id: id(), kind: "end" as const, position: pending.position };
-        d.nodes.push(origin);
-        from = origin.id;
+        from = insertComponent(d, pend.runId, "tee", pend.fraction!).id;
+      } else if (pend) {
+        const start = { id: id(), kind: "end" as const, position: pend.position };
+        d.nodes.push(start);
+        from = start.id;
       } else if (!from && d.nodes.length) {
         // A new run typed by length starts beside the existing work rather than on top of it.
         const gap = DEFAULT_ROUTE_BLOCKS * drafting.spacing;
-        const origin = { id: id(), kind: "end" as const, position: [Math.max(...d.nodes.map((n) => n.position[0])) + gap, 0, 0] as Vec3 };
-        d.nodes.push(origin);
-        from = origin.id;
+        const start = { id: id(), kind: "end" as const, position: [Math.max(...d.nodes.map((n) => n.position[0])) + gap, 0, 0] as Vec3 };
+        d.nodes.push(start);
+        from = start.id;
       }
-      if (from && !pending && !canRouteFrom(d, from)) throw new Error(noFreeEnd(d, from));
+      if (from && !pend && !canRouteFrom(d, from)) throw new Error(noFreeEnd(d, from));
       const problem = from && routeError(d, from, delta);
       if (problem) throw new Error(problem);
       // Straight on from an open end at the same size, the pipe lengthens: there is no joint to weld.
-      const extended = from && !pending ? extendRun(d, from, delta, { specId: activeSpec.id, nps, spool, line, prep: routingPrep }) : null;
+      const extended = from && !pend ? extendRun(d, from, delta, { specId: activeSpec.id, nps, spool, line, prep: routingPrep }) : null;
       const node = extended ? getNode(d, from!) : appendRun(d, from, delta, activeSpec.id, nps, spool, line, routingPrep);
       // An olet takes the row for the branch actually routed from it (header by branch size).
       if (from && !extended) fitOletToBranch(d, from);
@@ -1243,7 +1291,12 @@ export function IsometricEditor({
     `${offsetText(a, b, doc.units)}  ·  from ${coordinateText(doc, a).join(" ")} to ${coordinateText(doc, b).join(" ")}`;
   const measureClick = (clientX: number, clientY: number) => {
     try {
-      const at = commandPoint(clientX, clientY, measure && !measure.to ? measure.from : null);
+      // On a not-to-scale sheet the paper between pipes stands for no plant point: measure between points on the work.
+      const snapped = transient.get().snap;
+      if (!snapped && surface === "paper" && sheetStyle.layout === "schematic")
+        return setError("This sheet is not to scale, so open paper has no true position. Click a pipe end, fitting, face or pipe (the snap marker shows where).");
+      const p = sheetAt(clientX, clientY);
+      const at = pickFor(p, snapped, measure && !measure.to ? measure.from : gridOrigin, false);
       if (!measure || measure.to) setMeasure({ from: at });
       else {
         setMeasure({ from: measure.from, to: at });
@@ -1306,6 +1359,23 @@ export function IsometricEditor({
     if (!ready) return;
     const owner = target.closest("[data-owner]")?.getAttribute("data-owner"),
       node = target.closest("[data-node]")?.getAttribute("data-node");
+    if (armed && tool === "insert" && armed.type.kind === "elbow45") {
+      // Two 45° elbows roll an offset into the pipe clicked, across toward the direction chosen in the ribbon.
+      const hit = insertionTarget(clientX, clientY, owner ?? "");
+      if (!hit) return setError("Click a straight pipe where the 45° offset starts.");
+      try {
+        const amount = parseLength(offset45.length || lengthInputValue(2 * defaultBlockSpacing(doc.units), doc.units), doc.units);
+        const at = snapAlongLeg(doc, hit.runId, hit.fraction), toward = DIRECTIONS.find((x) => x.name === offset45.toward)!.vector;
+        if (commit((d) => { const [first, second] = insertOffset45(d, at.runId, at.fraction, toward, amount); setSelection([first.id, second.id]); })) {
+          setArmed(null);
+          transient.patch({ insertHover: null });
+          setNotice({ text: `45° offset of ${formatLength(amount, doc.units)} ${offset45.toward.toLowerCase()} put in · Ctrl+Z takes it out` });
+        }
+      } catch (e) {
+        setError(message(e));
+      }
+      return;
+    }
     if (armed && tool === "insert" && armed.type.angle) {
       // An angle or relief valve goes at a square turn: click the elbow it replaces.
       const turn = node ?? (owner && doc.nodes.some((n) => n.id === owner) ? owner : undefined);
@@ -1611,6 +1681,8 @@ export function IsometricEditor({
       };
       items.push({ label: labelText(doc, label) ? "Edit text" : "Edit lettering", shortcut: "Double-click", action: () => editLabel(label.key) });
       items.push({ label: "Move label", action: () => move() });
+      if (label.key.startsWith("continuation:"))
+        items.push({ label: "Delete note", shortcut: "Del", danger: true, action: () => { if (deleteContinuation(label.key, label.spool)) setSelectedLabel(null); } });
       if (label.dimension) items.push({ label: "Move dimension line", action: () => move(true) });
       items.push({ label: "Reset label position", shortcut: "Del", danger: true, disabled: !held[label.key] && !Object.keys(held).some((k) => k.startsWith(label.key + "#")), action: () => resetLabel(label.key, label.spool, false) });
       if (label.leader) items.push({ label: "Reset leader bend", danger: true, disabled: !label.leader.held, action: () => resetLeader(label.key, label.spool) });
@@ -1802,7 +1874,8 @@ export function IsometricEditor({
       if (routing) return "PIPE  Pick the next point, or type a length the cursor's way, a direction and length (N 10'), or @E,N,EL";
       return `PIPE  Pick an open end to continue from it, a pipe to branch from it, or open sheet to start ${spool}`;
     }
-    if (tool === "insert") return armed ? `INSERT  ${armed.type.angle ? "Click a 90° elbow for the" : "Click a pipe to place the"} ${armed.type.label}` : "INSERT  Choose a component in the palette";
+    if (tool === "insert") return armed ? armed.type.kind === "elbow45" ? `45° OFFSET  Click the pipe where the offset starts; it moves ${offset45.toward.toLowerCase()} by the offset set in the ribbon`
+      : `INSERT  ${armed.type.angle ? "Click a 90° elbow for the" : "Click a pipe to place the"} ${armed.type.label}` : "INSERT  Choose a component in the palette";
     if (tool === "measure") return !measure || measure.to ? "MEASURE  Pick the first point" : "MEASURE  Pick the second point";
     if (tool === "move" || tool === "copy") {
       if (transform?.mode === "paste") return "PASTE  Pick the insertion point (a branch on a pipe goes onto it), type an offset, or Enter to paste beside the original";
@@ -1824,7 +1897,7 @@ export function IsometricEditor({
     const inField = typing(e.target), ctrl = e.ctrlKey || e.metaKey;
     if (e.key === "F1" || (e.key === "?" && !inField)) { e.preventDefault(); setHelp(true); return; }
     // Drafting aids, as AutoCAD's function keys.
-    const aid = ({ F3: "osnap", F7: "grid", F8: "ortho", F9: "snap" } as const)[e.key as "F3"];
+    const aid = ({ F3: "osnap", F7: "grid", F8: "ortho", F9: "snap", F10: "polar" } as const)[e.key as "F3"];
     if (aid) { e.preventDefault(); setDrafting({ [aid]: !drafting[aid] }); return; }
     if (e.key === "F2") { e.preventDefault(); commandInput.current?.focus(); return; }
     // In a field with nothing typed since it was filled (a specification cell just committed, a list), undo and redo
@@ -1849,7 +1922,13 @@ export function IsometricEditor({
       const step = (e.shiftKey ? NUDGE_LARGE_MM : NUDGE_MM) * unitsPerMm(doc.paper);
       const arrows: Record<string, Point> = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
       if (arrows[e.key]) { e.preventDefault(); nudgeLabel(...arrows[e.key]); return; }
-      if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); resetLabel(selectedLabelInfo.key, selectedLabelInfo.spool); return; }
+      if (e.key === "Delete" || e.key === "Backspace") {
+        e.preventDefault();
+        // A continuation note is deleted; any other label goes back to its automatic place.
+        if (selectedLabelInfo.key.startsWith("continuation:")) { if (deleteContinuation(selectedLabelInfo.key, selectedLabelInfo.spool)) setSelectedLabel(null); }
+        else resetLabel(selectedLabelInfo.key, selectedLabelInfo.spool);
+        return;
+      }
     }
     if (ctrl && e.key.toLowerCase() === "a") { e.preventDefault(); selectAll(); return; }
     // On a Mac ⌘C and ⌘V reach the system clipboard (the copy and paste events below); Ctrl+C and Ctrl+V, which
@@ -2228,7 +2307,8 @@ export function IsometricEditor({
       patch.insertHover = branch && snapHit(branch);
       try {
         const from = tool === "pipe" ? anchor : tool === "measure" ? (measure && !measure.to ? measure.from : gridOrigin) : transform?.base ?? gridOrigin;
-        const ortho = tool === "pipe" ? routing && grid.ortho !== false : (tool === "measure" ? !!measure && !measure.to : !!transform?.base) && grid.ortho !== false;
+        // Measure takes the true distance between its points: it is never held to one axis.
+        const ortho = tool === "pipe" ? routing && grid.ortho !== false : tool === "measure" ? false : !!transform?.base && grid.ortho !== false;
         patch.cursor = pickFor(p, snap, from, ortho);
         lastPickError.current = "";
       } catch (err) {
@@ -2372,7 +2452,8 @@ export function IsometricEditor({
   // --- Render ------------------------------------------------------------------------------------------------------------
   const ends = useMemo(() => (selectedRun ? [selectedRun.from, selectedRun.to].map((key) => drawing.positions.get(key)).filter((p): p is Point => !!p) : []), [selectedRun, drawing]);
   const nodeGrips = useMemo(() => selection.map((key) => (doc.nodes.some((n) => n.id === key) ? drawing.positions.get(key) : undefined)).filter((p): p is Point => !!p), [selection, doc.nodes, drawing]);
-  const routeAnchor = tool === "pipe" && !pending && start ? drawing.positions.get(start) ?? null : null;
+  const routeAnchor = tool === "pipe" && !pending && start ? drawing.positions.get(start) ?? null
+    : routeHint ? drawing.positions.get(routeHint) ?? null : null;
   const statusLabel = persistence.status === "error" ? "Save failed"
     : persistence.status === "opening" ? "Opening…"
       : persistence.status === "saving" ? "Saving…"
@@ -2580,7 +2661,9 @@ export function IsometricEditor({
                   onKeyDown={(e) => { if (e.key === "Escape") e.currentTarget.blur(); }} />
               </RibbonField>
               <RibbonField label="Preparation">
-                <select aria-label="Routing end preparation" value={routingPrep} onChange={(e) => setRoutingPrep(e.target.value as EndPrep)}>
+                <select aria-label="Routing end preparation" value={routingPrep}
+                  title="Kept for every pipe routed until you change it, the size or the specification"
+                  onChange={(e) => routeWith(e.target.value as EndPrep, activeSpec?.id ?? spec, nps)}>
                   {END_PREPS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
                 </select>
               </RibbonField>
@@ -2603,11 +2686,14 @@ export function IsometricEditor({
               {RIBBON_DIRECTIONS.map(({ name, vector }) => {
                 const Icon = ICONS[name];
                 return (
-                  <button key={name} aria-label={"Route " + name} disabled={!ready} title={`Route ${name.toLowerCase()} by the entered length (or type ${name[0]} and a length)`}
+                  <button key={name} aria-label={"Route " + name} disabled={!ready} title={`Route a pipe ${name.toLowerCase()} by the Length (${span || "set in the ribbon"}) from the selected end, highlighted on the drawing (or type ${name[0]} and a length)`}
+                    onMouseEnter={() => { try { setRouteHint(buttonOrigin() ?? null); } catch { setRouteHint(null); } }}
+                    onMouseLeave={() => setRouteHint(null)}
                     onClick={() => {
                       try {
-                        const distance = parseLength(span, doc.units);
-                        add(vector.map((v) => v * distance) as Vec3);
+                        const distance = parseLength(span || lengthInputValue(DEFAULT_ROUTE_BLOCKS * defaultBlockSpacing(doc.units), doc.units), doc.units);
+                        const origin = buttonOrigin();
+                        if (add(vector.map((v) => v * distance) as Vec3, origin)) setRouteHint(null);
                       } catch (e) {
                         setError(message(e));
                       }
@@ -2661,6 +2747,19 @@ export function IsometricEditor({
                     {armedChoices.map((c) => <option key={c.row.id} value={c.row.id}>{sizeLabel(armed.type, c, paletteNps)}</option>)}
                   </select>
                 </RibbonField>
+              )}
+              {armed && armed.type.kind === "elbow45" && (
+                <>
+                  <RibbonField label="Offset">
+                    <input aria-label="45° offset distance" value={offset45.length} placeholder={lengthInputValue(2 * defaultBlockSpacing(doc.units), doc.units)}
+                      title="How far across the line moves; it also takes this much run along the pipe" onChange={(e) => setOffset45({ ...offset45, length: e.target.value })} />
+                  </RibbonField>
+                  <RibbonField label="Toward">
+                    <select aria-label="45° offset direction" value={offset45.toward} onChange={(e) => setOffset45({ ...offset45, toward: e.target.value })}>
+                      {DIRECTIONS.map((x) => <option key={x.name} value={x.name}>{x.name}</option>)}
+                    </select>
+                  </RibbonField>
+                </>
               )}
               {armed && armed.type.endPrep === "FL" && armed.type.kind !== "flange" && (() => {
                 const mating = (code?: string) => !!code && !/BL$|ORFC|SBLND/.test(code);

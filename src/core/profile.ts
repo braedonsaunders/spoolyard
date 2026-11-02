@@ -23,6 +23,12 @@ export interface FabricationProfile {
   uncutTolerance?: number
   /** Extra length added to a pipe piece for each formed bend (grip or springback allowance), mm. Default 0. */
   bendAllowance?: number
+  /**
+   * Whether a pipe's cut deducts its weld gaps: each butt weld's root gap (the specification's) and the pull-back from
+   * a socket's bottom. 'deduct' (default) cuts the pipe short by them, as B31.3 fit-up leaves them; 'ignore' cuts to the
+   * fitting takeouts only, for a shop that takes up the gap at fit-up.
+   */
+  weldGaps?: 'deduct' | 'ignore'
   /** Pipe rows give their cut after the description (" - CUT TO …"), or leave the cut to the cut list. Default 'description'. */
   cutNote?: 'description' | 'none'
   /**
@@ -72,6 +78,7 @@ export function profileOf(doc: Pick<IsoDocument, 'units' | 'profile'>): Resolved
     uncutTolerance: p.uncutTolerance ?? (metric ? 0.8 : INCH / 32),
     bendAllowance: p.bendAllowance ?? 0,
     cutNote: p.cutNote ?? 'description',
+    weldGaps: p.weldGaps ?? 'deduct',
     feetFrom: { dimensions: p.feetFrom?.dimensions ?? 24, lists: p.feetFrom?.lists ?? 12 },
     materialOrder: [...new Set([...(p.materialOrder ?? []), ...DEFAULT_MATERIAL_ORDER])],
     flangeOrder: p.flangeOrder ?? DEFAULT_FLANGE_ORDER,
@@ -96,7 +103,7 @@ export function profileError(p: unknown): string | undefined {
   const feet = o.feetFrom as Record<string, unknown> | undefined
   if (!length(o.stockLength, 100000) || (o.stockLength != null && !((o.stockLength as number) > 0))) return 'Enter a positive stock pipe length.'
   if (!length(o.orderIncrement, 1000) || !length(o.kerf, 50) || !length(o.uncutTolerance, 50) || !length(o.bendAllowance, 5000)) return 'Invalid pipe order allowance.'
-  if (!oneOf(o.cutNote, ['description', 'none']) || !oneOf(o.sizeOrder, ['ascending', 'descending']) ||
+  if (!oneOf(o.cutNote, ['description', 'none']) || !oneOf(o.weldGaps, ['deduct', 'ignore']) || !oneOf(o.sizeOrder, ['ascending', 'descending']) ||
     !oneOf(o.weldSequence, ['drawing', 'spool']) || !oneOf(o.spoolBreakWelds, ['field', 'shop']) ||
     !oneOf(o.sizeNotation, ['NPS', 'DN']) || !oneOf(o.materialSections, ['combined', 'shop-field'])) return 'Invalid fabrication profile setting.'
   if (feet != null && (typeof feet !== 'object' || Array.isArray(feet) || !length(feet.dimensions, 1e6) || !length(feet.lists, 1e6)))

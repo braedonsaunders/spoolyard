@@ -204,6 +204,8 @@ export interface PipeNode {
      */
     termination?: ContinuationTermination }
   elevationCallout?: boolean
+  /** Leave off the automatic CONT'D ON note at this break onto another sheet (Drawing setup turns them all off). */
+  hideBreakCallout?: boolean
   tiePoint?: { id: string; label?: string }
   /** Valve operator orientation, e.g. "OPERATOR SOUTH"; the valve tag is `tag`. */
   operator?: string
@@ -1131,8 +1133,10 @@ export function runResult(doc: IsoDocument, run: PipeRun): RunResult {
   const fit = [run.fromFieldFit, run.toFieldFit].map(f => f && !run.connector && !body ? fieldFitMakeup(doc) : 0) as [number, number]
   // Fittings welded face to face (a close-coupled assembly) share one root gap.
   const welded = run.connector && !boltedConnector(doc, run) && !stubInFlange(doc, run) && [a, b].every(n => !['end', 'support', 'annotation', 'gasket', 'bolt'].includes(n.kind))
+  // A shop that takes up its weld gaps at fit-up cuts to the takeouts alone (Project profile › Weld gaps).
+  const ignoreGaps = doc.profile?.weldGaps === 'ignore'
   const gaps = [a, b].map((n, i) => {
-    if (body || fit[i] || ['end', 'support', 'annotation', 'gasket', 'bolt'].includes(n.kind) || isFormedBend(doc, n)) return 0
+    if (ignoreGaps || body || fit[i] || ['end', 'support', 'annotation', 'gasket', 'bolt'].includes(n.kind) || isFormedBend(doc, n)) return 0
     const prep = pipePrepAt(doc, run, i)
     // Fittings welded face to face share one root gap; a pipe-to-pipe butt weld splits its root gap; a socket stops
     // the pipe short of its bottom.
@@ -2174,6 +2178,7 @@ function readPiping(raw: string, where: { at: string }): IsoDocument {
         (n.continuation.coordinates != null && typeof n.continuation.coordinates !== 'boolean') ||
         (n.continuation.coordinateFace != null && !['flange', 'mate'].includes(n.continuation.coordinateFace)))) ||
       (n.elevationCallout != null && typeof n.elevationCallout !== 'boolean') ||
+      (n.hideBreakCallout != null && typeof n.hideBreakCallout !== 'boolean') ||
       (n.equipmentShape != null && !['vessel','pump'].includes(n.equipmentShape)) ||
       (n.showSize != null && typeof n.showSize!=='boolean') ||
       (n.sizeLabelFormat != null && !['standard','compact'].includes(n.sizeLabelFormat)) ||

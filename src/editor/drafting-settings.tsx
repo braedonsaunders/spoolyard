@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { Grid3X3, Magnet, Move3d, Crosshair, SlidersHorizontal } from "lucide-react";
+import { Grid3X3, Magnet, Move3d, Crosshair, Slash, SlidersHorizontal } from "lucide-react";
 import type { IsoDocument } from "../core/model";
 import { cn } from "./cn";
 import { OBJECT_SNAPS, PLANES, type Drafting } from "./drafting";
@@ -29,7 +29,7 @@ export function DraftingSettings({ drafting, units, onChange, open, onOpen, onEr
       window.removeEventListener("keydown", key, true);
     };
   }, [open, onOpen]);
-  const aid = (key: "grid" | "snap" | "ortho" | "osnap", label: string, fn: string, Icon: typeof Grid3X3, title: string) => (
+  const aid = (key: "grid" | "snap" | "ortho" | "polar" | "osnap", label: string, fn: string, Icon: typeof Grid3X3, title: string) => (
     <button type="button" className={cn("iso-aid", drafting[key] && "active")} aria-pressed={drafting[key]} title={`${title} (${fn})`} onClick={() => onChange({ [key]: !drafting[key] })}>
       <Icon size={13} /> {label}
     </button>
@@ -39,6 +39,7 @@ export function DraftingSettings({ drafting, units, onChange, open, onOpen, onEr
       {aid("grid", "Grid", "F7", Grid3X3, "Show the editing grid")}
       {aid("snap", "Snap", "F9", Magnet, "Picks step by whole grid blocks")}
       {aid("ortho", "Ortho", "F8", Move3d, "Route and drag along the plant axes")}
+      {aid("polar", "45°", "F10", Slash, "45° picks: pipe keeps to the routing plane (Plan, or an elevation) and may also go at 45° between its two axes, through 45° elbows. Choose the plane beside it; type U or D for a riser")}
       {aid("osnap", "Osnap", "F3", Crosshair, "Snap to ends, midpoints and centres")}
       <select aria-label="Routing plane" value={drafting.plane} title={PLANES.find((p) => p.value === drafting.plane)?.title}
         onChange={(e) => onChange({ plane: e.target.value as Drafting["plane"] })}>

@@ -20,7 +20,7 @@ export const SHORTCUTS: Array<{ group: string; items: Array<[string, string]> }>
   { group: "Selection", items: [["Click", "Select one object"], ["Shift or Ctrl/⌘ + click", "Add or remove an object"], ["Drag left to right", "Window: what is wholly inside"], ["Drag right to left", "Crossing: what the box touches"], [KEYS.selectAll, "Select all"], ["Del", "Erase the selection"], [KEYS.copy + " / " + KEYS.paste, "Copy and paste pipe pieces"]] },
   { group: "Editing", items: [[KEYS.undo, "Undo"], [KEYS.redo, "Redo"], [KEYS.save, "Save"], ["Double-click a label", "Edit its text"], ["Double-click a length", "Edit the pipe length"], ["Arrow keys", "Nudge a picked label (Shift: more)"]] },
   { group: "View", items: [["Wheel", "Zoom about the pointer (or pan: Drafting settings)"], ["Shift + wheel", "Pan"], ["Middle or right drag, or Space + drag", "Pan"], ["Double middle-click", "Zoom extents"], ["+ / −", "Zoom in and out"], ["Z then E / W / P", "Zoom extents, window, previous (type in the command line)"]] },
-  { group: "Drafting aids", items: [["F3", "Object snap"], ["F7", "Grid"], ["F8", "Ortho"], ["F9", "Snap"], ["F1 or ?", "This list"]] },
+  { group: "Drafting aids", items: [["F3", "Object snap"], ["F7", "Grid"], ["F8", "Ortho"], ["F9", "Snap"], ["F10", "45° picks (with Ortho)"], ["F1 or ?", "This list"]] },
 ];
 
 /** The keyboard and mouse reference. */

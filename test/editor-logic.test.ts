@@ -80,7 +80,7 @@ test('object snaps prefer endpoints, then midpoints, then the nearest point on a
   const a = appendRun(doc, null, [100, 0, 0], 'CS40', 2, 'S', '');
   const start = doc.runs[0].from;
   const drawing = flat(doc), points = snapPoints(doc, drawing);
-  const all = { endpoint: true, midpoint: true, centre: true, nearest: true };
+  const all = { endpoint: true, midpoint: true, centre: true, face: true, nearest: true };
   assert.equal(resolveSnap(points, doc, drawing, [98, 3], 10, all)?.id, a.id);
   assert.equal(resolveSnap(points, doc, drawing, [98, 3], 10, all)?.kind, 'endpoint');
   const mid = resolveSnap(points, doc, drawing, [52, 2], 10, all)!;

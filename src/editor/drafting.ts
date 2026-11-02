@@ -7,17 +7,20 @@ import type { IsoDocument } from "../core/model";
  * Grid, snap, ortho, object snaps and the wheel are remembered across sessions; the routing plane and block length
  * are per drawing session. Drawings saved before this keep their `grid` and open with it.
  */
-export type ObjectSnap = "endpoint" | "midpoint" | "centre" | "nearest";
+export type ObjectSnap = "endpoint" | "midpoint" | "centre" | "face" | "nearest";
 export const OBJECT_SNAPS: Array<{ id: ObjectSnap; label: string; hint: string }> = [
   { id: "endpoint", label: "Endpoint", hint: "Open ends, elbows and every connection" },
   { id: "midpoint", label: "Midpoint", hint: "Middle of a straight pipe" },
   { id: "centre", label: "Centre", hint: "Centre of a component on a pipe" },
+  { id: "face", label: "Face / pipe end", hint: "Where a pipe meets its fitting, and a flanged component's faces: for measuring" },
   { id: "nearest", label: "Nearest", hint: "Nearest point on a pipe" },
 ];
 export interface Drafting {
   grid: boolean;
   snap: boolean;
   ortho: boolean;
+  /** With Ortho, picks may also go at 45° between two plant axes, turning through 45° elbows (F10). */
+  polar: boolean;
   plane: GridPlane;
   /** One isometric block, in millimetres of centreline. */
   spacing: number;
@@ -33,7 +36,7 @@ export const PLANES: Array<{ value: GridPlane; label: string; title: string }> =
 ];
 
 const KEY = "spoolyard.drafting";
-type Stored = Partial<Pick<Drafting, "grid" | "snap" | "ortho" | "wheel" | "osnap" | "snaps">>;
+type Stored = Partial<Pick<Drafting, "grid" | "snap" | "ortho" | "polar" | "wheel" | "osnap" | "snaps">>;
 const read = (): Stored => {
   try {
     const value = JSON.parse(localStorage.getItem(KEY) ?? "{}");
@@ -42,7 +45,7 @@ const read = (): Stored => {
     return {};
   }
 };
-const DEFAULT_SNAPS: Record<ObjectSnap, boolean> = { endpoint: true, midpoint: true, centre: true, nearest: false };
+const DEFAULT_SNAPS: Record<ObjectSnap, boolean> = { endpoint: true, midpoint: true, centre: true, face: true, nearest: false };
 
 /** The drafting aids a drawing opens with. */
 export function initialDrafting(doc: Pick<IsoDocument, "grid" | "units">): Drafting {
@@ -52,6 +55,7 @@ export function initialDrafting(doc: Pick<IsoDocument, "grid" | "units">): Draft
     grid: bool(stored.grid, grid.visible),
     snap: bool(stored.snap, grid.snap),
     ortho: bool(stored.ortho, grid.ortho !== false),
+    polar: bool(stored.polar, false),
     plane: grid.plane,
     spacing: doc.grid?.spacing ?? defaultBlockSpacing(doc.units),
     wheel: stored.wheel === "pan" ? "pan" : "zoom",
@@ -61,8 +65,8 @@ export function initialDrafting(doc: Pick<IsoDocument, "grid" | "units">): Draft
 }
 /** Remembers the drafter's own preferences; the plane and block stay with the session. */
 export function storeDrafting(d: Drafting) {
-  const value: Stored = { grid: d.grid, snap: d.snap, ortho: d.ortho, wheel: d.wheel, osnap: d.osnap, snaps: d.snaps };
+  const value: Stored = { grid: d.grid, snap: d.snap, ortho: d.ortho, polar: d.polar, wheel: d.wheel, osnap: d.osnap, snaps: d.snaps };
   try { localStorage.setItem(KEY, JSON.stringify(value)); } catch { /* private mode: the session keeps them */ }
 }
 /** The settings the grid and pick functions read. */
-export const gridSettings = (d: Drafting): GridSettings => ({ visible: d.grid, snap: d.snap, spacing: d.spacing, plane: d.plane, ortho: d.ortho });
+export const gridSettings = (d: Drafting): GridSettings => ({ visible: d.grid, snap: d.snap, spacing: d.spacing, plane: d.plane, ortho: d.ortho, polar45: d.polar });

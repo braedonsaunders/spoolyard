@@ -609,6 +609,15 @@ function NodeAnnotation({ doc, node, commit, onError, sheetPoint, code, edges, j
               </Group>
             </>
           )}
+          {node.continuation ? (
+            <Actions keywords="continuation delete remove note">
+              <button type="button" className="is-danger" onClick={() => edit((n) => { delete n.continuation; })}>Remove note</button>
+            </Actions>
+          ) : new Set(edges.map((r) => r.spool)).size > 1 && (
+            <Toggle label="Automatic CONT'D ON note at this sheet break" keywords="continuation break sheet contd automatic hide"
+              hint="Lettered where the line goes on to another sheet. Turn them all off under Drawing setup."
+              checked={!node.hideBreakCallout} onChange={(on) => edit((n) => { if (on) delete n.hideBreakCallout; else n.hideBreakCallout = true; })} />
+          )}
         </Section>
       )}
 

@@ -1,4 +1,4 @@
-import { COMPONENT_TYPES } from './components'
+import { COMPONENT_TYPES, COMPONENT_TYPE_BY_CODE } from './components'
 import { formatLength, sizeText } from './format'
 import { materialWarnings, packageSpools } from './material-list'
 import { materialSchedule } from './schedules'
@@ -41,6 +41,7 @@ const where = (doc: IsoDocument, n: PipeNode) => {
  * set-back, the B31.3 socket-weld gap, a standard takeout standing in for a specification row without one) are not
  * warnings.
  */
+const PREP_WORDS: Record<string, string> = { BW: 'butt-weld', SW: 'socket-weld', THD: 'threaded' }
 export function fabricationWarnings(doc: IsoDocument): string[] {
   const out: string[] = []
   // A drawing whose pipes do not resolve has errors to fix first; its warnings wait for them.
@@ -52,6 +53,12 @@ export function fabricationWarnings(doc: IsoDocument): string[] {
     const off = eccentricMisalignment(doc, n)
     if (off > 0.5)
       out.push(`${at}the ${name} has its flat on the ${n.flatSide}, which moves the small pipe ${formatLength(off, doc.units)} across, but the pipes beyond it are drawn on the large end's centreline: their elevations and coordinates are out by that much. Set the flat side again to move them.`)
+    // A pipe end prepared for another joint than its fitting's ends (a socket-weld pipe into a butt-weld elbow).
+    const ends = COMPONENT_TYPE_BY_CODE[n.component ?? fitting(doc, n)?.component ?? '']?.endPrep
+    if (ends && ['BW', 'SW', 'THD'].includes(ends) && ['elbow90', 'elbow45', 'tee', 'reducer', 'cap'].includes(n.kind)) {
+      const odd = connected(doc, n.id).filter(r => !r.connector && ['BW', 'SW', 'THD'].includes(pipePrepAt(doc, r, r.from === n.id ? 0 : 1)) && pipePrepAt(doc, r, r.from === n.id ? 0 : 1) !== ends)
+      if (odd.length) out.push(`${at}the ${name} has ${PREP_WORDS[ends]} ends, but ${odd.length === 1 ? 'a pipe into it is' : 'pipes into it are'} prepared ${odd.map(r => PREP_WORDS[pipePrepAt(doc, r, r.from === n.id ? 0 : 1)]).join(' and ')}. Set the pipe's end preparation, or choose the fitting for it.`)
+    }
     const own = fitting(doc, n)
     const edges = connected(doc, n.id)
     // Threads screwed together are one male and one female: a male part on a (male) threaded pipe end, or two female

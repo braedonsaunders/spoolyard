@@ -402,6 +402,59 @@ export function placeAtOpenEnd(doc: IsoDocument, runId: string, end: 0 | 1, type
   return node;
 }
 
+/**
+ * A 45° offset put into a straight pipe, as a fitter rolls one in: at the point clicked the line turns 45° toward
+ * `toward` (a plant axis square to the pipe), runs on until it has moved `offset` across, and turns back through a
+ * second 45° to carry on parallel. The line beyond keeps its length along the run, so everything beyond moves across
+ * by the offset. Both turns take the specification's 45° elbows. Returns the two elbows.
+ */
+export function insertOffset45(doc: IsoDocument, runId: string, fraction: number, toward: Vec3, offset: number): [PipeNode, PipeNode] {
+  const run = doc.runs.find(r => r.id === runId && !r.connector);
+  if (!run) throw new Error('Click a straight pipe to put the offset in.');
+  if (!(offset > 0)) throw new Error('Enter the offset: how far across the line moves.');
+  const a = getNode(doc, run.from).position, b = getNode(doc, run.to).position, span = length(sub(b, a));
+  const u = mul(sub(b, a), 1 / (span || 1)), t = mul(toward, 1 / (length(toward) || 1));
+  if (Math.abs(dot(u, t)) > 1e-6) throw new Error('The offset goes across the pipe: choose a direction square to it, not along it.');
+  if (!(fraction > 0 && fraction < 1)) throw new Error('Click between the pipe ends to put the offset in.');
+  if ((1 - fraction) * span <= offset) throw new Error('The pipe beyond that point is too short for an offset that size: a 45° offset needs as much run along the pipe as it moves across. Click nearer the start, or enter a smaller offset.');
+  const turn = insertComponent(doc, run.id, 'weld', fraction), onward = doc.runs.find(r => r.from === turn.id)!;
+  // Everything beyond the offset moves across with the line: its connections, and what sits on its pipes.
+  const moving = new Set<string>([onward.to]), queue = [onward.to], runsMoved = new Set<string>([onward.id]);
+  for (let i = 0; i < queue.length; i++) {
+    const here = queue[i];
+    for (const r of connected(doc, here)) {
+      if (r.id === onward.id) continue;
+      runsMoved.add(r.id);
+      for (const other of [r.from, r.to]) {
+        if (other === turn.id || other === run.from) throw new Error('This pipe is in a closed loop: an offset would pull the loop apart. Put the offset in a pipe outside the loop.');
+        if (!moving.has(other)) { moving.add(other); queue.push(other); }
+      }
+    }
+    for (const n of doc.nodes) if (n.associatedRunId && runsMoved.has(n.associatedRunId) && !moving.has(n.id)) { moving.add(n.id); queue.push(n.id); }
+  }
+  const across = mul(t, offset);
+  for (const id of moving) { const n = getNode(doc, id); n.position = add(n.position, across); }
+  // The second turn, one offset along and one across; the pipe beyond it carries on as before.
+  const back: PipeNode = { id: id(), kind: 'end', position: add(turn.position, add(mul(u, offset), across)) };
+  doc.nodes.push(back);
+  const rest: PipeRun = { ...onward, id: id(), from: back.id };
+  delete rest.fromPrep; delete rest.fromField; delete rest.fromFieldFit; delete rest.fromTag;
+  onward.to = back.id;
+  delete onward.toPrep; delete onward.toField; delete onward.toFieldFit; delete onward.toTag;
+  doc.runs.push(rest);
+  for (const n of doc.nodes) if (n.associatedRunId === onward.id) {
+    if (dot(sub(n.position, back.position), u) <= 0) throw new Error('A component on the pipe sits where the offset would go. Click beyond it, or move it first.');
+    n.associatedRunId = rest.id;
+  }
+  setAutoFitting(doc, turn.id);
+  setAutoFitting(doc, back.id);
+  for (const r of [doc.runs.find(r => r.to === turn.id)!, onward, rest]) {
+    const cut = runResult(doc, r).cut;
+    if (Number.isFinite(cut) && cut <= 0) throw new Error('The offset leaves no pipe between its elbows and the fittings beside it. Enter a larger offset, or click farther from the fittings.');
+  }
+  return [getNode(doc, turn.id), back];
+}
+
 /** Whether a connection is a square turn between two pipes, where an angle body (angle or relief valve) can sit. */
 export function isSquareTurn(doc: IsoDocument, nodeId: string): boolean {
   const node = getNode(doc, nodeId), edges = connected(doc, nodeId);

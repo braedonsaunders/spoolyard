@@ -441,3 +441,9 @@
 .dark .insp-checks-group.is-warning h4 { color: #e8b04a; }
 .insp-checks-group ul { margin: 0; padding-left: 16px; font-size: 11px; line-height: 1.45; }
 .iso-editor .insp-issue { padding: 0; min-width: 0; text-align: left; color: inherit; text-decoration: underline dotted; }
+
+/* A pipe's cut, worked out line by line. */
+.insp-working { width: 100%; border-collapse: collapse; font-size: 11.5px; font-variant-numeric: tabular-nums; margin: 2px 0 6px; }
+.insp-working td { padding: 3px 0; }
+.insp-working td:last-child { text-align: right; white-space: nowrap; }
+.insp-working tr.total td { border-top: 1px solid rgb(var(--ch-border)); font-weight: 600; padding-top: 5px; }

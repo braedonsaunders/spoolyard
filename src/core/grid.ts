@@ -12,6 +12,13 @@ export interface GridSettings {
   plane: GridPlane
   /** Constrain picked pipe to the nearest of the six iso directions (default on). */
   ortho?: boolean
+  /**
+   * With Ortho, picks keep to the routing plane and may also go at 45° between its two axes (north-east… on a level,
+   * east and up… in an elevation), as AutoCAD's polar tracking at 45° on an isoplane: a pipe picked that way turns
+   * through 45° elbows. Its travel along each axis steps by whole blocks. (On isometric paper a 45° in plan is drawn
+   * along another axis's line, so the plane says which is meant.)
+   */
+  polar45?: boolean
   /** The drafter's grid origin (a user coordinate system's origin) in model coordinates. */
   origin?: Vec3
 }
@@ -90,23 +97,31 @@ export function pickOrthoPoint(
     throw new Error('Enter a positive grid spacing.')
   const origin = drawing.project(anchor),
     m: Point = [sheet[0] - origin[0], sheet[1] - origin[1]]
-  let best: { axis: number; t: number; residual: number } | null = null
-  for (const axis of [0, 1, 2]) {
-    const unit: Vec3 = [...anchor]
-    unit[axis] += 1
-    const q = drawing.project(unit),
+  let best: { along: Vec3; t: number; residual: number } | null = null
+  for (const along of routingDirections(!!settings.polar45, settings.plane)) {
+    const q = drawing.project(anchor.map((v, i) => v + along[i]) as Vec3),
       d: Point = [q[0] - origin[0], q[1] - origin[1]],
       dd = d[0] * d[0] + d[1] * d[1]
     if (dd < 1e-12) continue // edge-on in this view
     const t = (m[0] * d[0] + m[1] * d[1]) / dd,
       residual = Math.hypot(m[0] - t * d[0], m[1] - t * d[1])
-    if (!best || residual < best.residual) best = { axis, t, residual }
+    if (t >= 0 && (!best || residual < best.residual - 1e-9)) best = { along, t, residual }
   }
   if (!best) throw new Error('No routing direction is visible in this view.')
   const t = settings.snap ? Math.round(best.t / settings.spacing) * settings.spacing : best.t
-  const result: Vec3 = [...anchor]
-  result[best.axis] += t
-  return result
+  return anchor.map((v, i) => v + best!.along[i] * t) as Vec3
+}
+
+/**
+ * The directions a pick routes along: the six plant axes; with `polar45`, the four along the routing plane's two axes
+ * and the four 45° diagonals between them. A diagonal is a step of one along each of its two axes, so its travel along
+ * each axis is whole blocks.
+ */
+export function routingDirections(polar45: boolean, plane: GridPlane = 'xy'): Vec3[] {
+  const out: Vec3[] = [], [a, b] = axes(plane)
+  for (const axis of polar45 ? [a, b] : [0, 1, 2]) for (const s of [1, -1]) { const v: Vec3 = [0, 0, 0]; v[axis] = s; out.push(v) }
+  if (polar45) for (const sa of [1, -1]) for (const sb of [1, -1]) { const v: Vec3 = [0, 0, 0]; v[a] = sa; v[b] = sb; out.push(v) }
+  return out
 }
 
 export interface GridLine {

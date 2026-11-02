@@ -2,9 +2,12 @@ import type { ReactNode } from "react";
 import {
   fieldFitMakeup,
   formatAllowance,
+  formatLength,
   setFieldFit,
   getNode,
   getSpec,
+  itemName,
+  pipePrepAt,
   prepAt,
   resizeRun,
   resizeRunToCut,
@@ -276,7 +279,38 @@ export function PipePanel({ doc, run, commit, onError, library, libraryError, sp
           </Metric>
         </Metrics>
       )}
+      {!run.connector && <CutWorking doc={doc} run={run} />}
       <Tabbed fabrication={fabrication} annotation={annotation} />
     </>
+  );
+}
+
+/**
+ * How a pipe's cut is worked out, line by line as a fitter checks it: the centreline length, less what each fitting
+ * takes up and each weld gap, plus any field-fit makeup, equals the cut.
+ */
+function CutWorking({ doc, run }: { doc: IsoDocument; run: PipeRun }) {
+  const r = runResult(doc, run), units = doc.units;
+  // To the 1/16" (or 0.1 mm) a fitter reads; a deduction under that shows in thousandths so it is not lost.
+  const len = (v: number) => (!Number.isFinite(v) ? "not known" : units === "imperial" && v > 0 && v < 25.4 / 32 ? formatAllowance(v, units) : formatLength(v, units));
+  const ends = [run.from, run.to].map((id, i) => {
+    const n = getNode(doc, id);
+    const what = n.kind === "end" ? "open end" : itemName(doc, n);
+    return { i, what, takeout: r.takeouts[i], gap: r.gaps[i], makeup: r.makeup[i], prep: pipePrepAt(doc, run, i) };
+  });
+  const lines: Array<[string, string]> = [["Centre to centre", len(r.overall)]];
+  for (const e of ends) {
+    if (e.takeout) lines.push([`− ${e.what} takeout (${e.i ? "end" : "start"})`, len(e.takeout)]);
+    if (e.gap) lines.push([`− ${e.prep === "SW" ? "socket pull-back" : "root gap"} (${e.i ? "end" : "start"})`, len(e.gap)]);
+    if (e.makeup) lines.push([`+ field-fit makeup (${e.i ? "end" : "start"})`, len(e.makeup)]);
+  }
+  lines.push(["= Cut", len(r.cut)]);
+  return (
+    <Section id="pipe.cut" title="How the cut is worked out" summary={len(r.cut)}>
+      <table className="insp-working">
+        <tbody>{lines.map(([label, value], i) => <tr key={i} className={i === lines.length - 1 ? "total" : undefined}><td>{label}</td><td>{value}</td></tr>)}</tbody>
+      </table>
+      <Note keywords="cut gap takeout">Takeouts come from the specification, else ASME standards. Weld gaps are the specification's; Project profile › Weld gaps in cuts can leave them out.</Note>
+    </Section>
   );
 }

@@ -255,7 +255,8 @@ function SnapMarker({ snap, px }: { snap: Snap; px: number }) {
   const r = (SNAP_PX / 2) * px, [x, y] = snap.at;
   const d = snap.kind === "endpoint" ? `M${x - r} ${y - r}H${x + r}V${y + r}H${x - r}Z`
     : snap.kind === "midpoint" ? `M${x} ${y - r}L${x + r} ${y + r * 0.8}H${x - r}Z`
-      : snap.kind === "nearest" ? `M${x - r} ${y - r}H${x + r}L${x - r} ${y + r}H${x + r}Z` : "";
+      : snap.kind === "nearest" ? `M${x - r} ${y - r}H${x + r}L${x - r} ${y + r}H${x + r}Z`
+        : snap.kind === "face" ? `M${x - r} ${y - r}V${y + r}M${x + r} ${y - r}V${y + r}M${x - r} ${y}H${x + r}` : "";
   return (
     <g className="iso-snap-marker" pointerEvents="none">
       {snap.kind === "centre" ? <circle cx={x} cy={y} r={r} vectorEffect="non-scaling-stroke" /> : <path d={d} vectorEffect="non-scaling-stroke" />}
