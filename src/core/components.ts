@@ -945,6 +945,36 @@ export const COMPONENT_TYPES: ComponentType[] = [
     description: 'Stud bolt set for one RF flanged joint.'
   },
   {
+    code: 'FERRULE-TC',
+    label: 'Ferrule, tri-clamp',
+    category: 'flanges',
+    kind: 'flange',
+    symbol: 'flange',
+    endPrep: 'BW',
+    ports: 2,
+    description: 'Sanitary tri-clamp ferrule, welded to tube.'
+  },
+  {
+    code: 'GASK-TC',
+    label: 'Gasket, tri-clamp',
+    category: 'gaskets-bolts',
+    kind: 'gasket',
+    symbol: 'gasket',
+    endPrep: 'FL',
+    ports: 2,
+    description: 'Sanitary tri-clamp gasket for one ferrule joint.'
+  },
+  {
+    code: 'CLAMP-TC',
+    label: 'Clamp, tri-clamp',
+    category: 'gaskets-bolts',
+    kind: 'bolt',
+    symbol: 'bolt',
+    endPrep: 'FL',
+    ports: 0,
+    description: 'Sanitary tri-clamp for one ferrule joint.'
+  },
+  {
     code: 'GATE-FL',
     label: 'Gate valve, flanged',
     category: 'valves',

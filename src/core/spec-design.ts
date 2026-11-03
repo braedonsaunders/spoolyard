@@ -68,7 +68,7 @@ const schedule = (v: string) => v.trim() ? v.trim().toUpperCase() : undefined
  */
 export const LEGACY_PARAMETERS: ReadonlyArray<{ key: string; field: SpecDesignField; parse: (v: string) => SpecDesign[SpecDesignField] }> = [
   { key: 'Welded/Flanged General Parameters.ANSI Rating', field: 'flangeClass', parse: v => ratingClass(v) },
-  { key: 'Welded/Flanged General Parameters.Flange Face', field: 'flangeFace', parse: word<FlangeFace>({ FF: 'FF', RF: 'RF' }) },
+  { key: 'Welded/Flanged General Parameters.Flange Face', field: 'flangeFace', parse: word<FlangeFace>({ FF: 'FF', RF: 'RF', TC: 'TC' }) },
   { key: 'Screwed/Socket Weld General Parameters.Pipe Rating', field: 'forgedClass', parse: v => ratingClass(v) },
   { key: 'Welded/Flanged General Parameters.Bolt Type', field: 'boltType', parse: word<BoltType>({ STUD: 'stud', MACH: 'machine', BOLT: 'machine' }) },
   { key: 'Welded/Flanged General Parameters.Gasket Thickness', field: 'gasketThickness', parse: inchesOrMm },
@@ -105,7 +105,7 @@ export function specDesign(spec: PipeSpec): SpecDesign {
 
 const FIELDS: Record<SpecDesignField, (v: unknown) => boolean> = {
   flangeClass: v => typeof v === 'number' && [150, 300, 600, 900, 1500, 2500].includes(v),
-  flangeFace: v => v === 'RF' || v === 'FF',
+  flangeFace: v => v === 'RF' || v === 'FF' || v === 'TC',
   forgedClass: v => typeof v === 'number' && [2000, 3000, 6000, 9000].includes(v),
   boltType: v => v === 'stud' || v === 'machine',
   gasketThickness: v => typeof v === 'number' && v > 0 && v < 50,

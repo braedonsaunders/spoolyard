@@ -91,7 +91,7 @@ import { createDrawing, drawingSheets, type Drawing, type Point, type SheetFit, 
 import { defaultBlockSpacing, defaultGrid, gridAnchor, pickGridPoint, pickOrthoPoint } from "../core/grid";
 import { standardScales } from "../core/iso/sheet-frame";
 import { exportPcfPackage } from "../core/pcf";
-import { coordinateText, scheduleText, sizeFor, sizeHeader } from "../core/format";
+import { coordinateText, scheduleText, sizeFor, sizeHeader, specSizeText } from "../core/format";
 import { unitsPerMm } from "../core/paper";
 import { cutSchedule, labourCsv, materialCsv, materialSchedule, weldSchedule } from "../core/schedules";
 import { download } from "./download";
@@ -117,7 +117,10 @@ import {
   placeAtTurn,
   endCapable,
   placeAtOpenEnd,
-  insertOffset45,
+  insertLateral,
+  insertOffset,
+  throughOutlet,
+  turnAtOpenEnd,
   capOpenEnd,
   terminalCapable,
   legPoint,
@@ -213,6 +216,10 @@ export type IsometricEditorProps = {
   controller?: MutableRefObject<EditorController | null>;
 };
 
+/** An elbow chosen in Insert: it turns an open end, or rolls an offset into a straight. */
+const turnType = (t: ComponentType) => t.kind === "elbow45" || t.kind === "elbow90";
+/** A lateral chosen in Insert: it branches a straight at 45°. */
+const lateralType = (t: ComponentType) => t.kind === "tee" && /^(W|SW|SC)-LAT$/.test(t.code);
 /** A length edited in place: a pipe's own, or a dimension between two connections (`Primitive.span`). */
 type LengthEdit = { runId: string; role: "overall" | "cut" } | { key: string; span: { from: string; to: string; mm: number } };
 type Tool = "select" | "pan" | "pipe" | "insert" | "measure" | "move" | "copy" | "zoom-window" | "split";
@@ -360,7 +367,7 @@ export function IsometricEditor({
     // The connection a direction button would route from, while the pointer is over the button.
     [routeHint, setRouteHint] = useState<string | null>(null),
     // A 45° offset's size and the way it goes across, chosen before clicking the pipe.
-    [offset45, setOffset45] = useState<{ length: string; toward: string }>({ length: "", toward: "Up" });
+    [offset45, setOffset45] = useState<{ length: string; toward: string; roll: string; rollToward: string }>({ length: "", toward: "Up", roll: "", rollToward: "North" });
   // A Pipe-tool start not in the drawing yet: a new run's first point, or the point on a pipe a branch will leave.
   const [pending, setPending] = useState<{ position: Vec3; runId?: string; fraction?: number } | null>(null);
   const [editMenu, setEditMenu] = useState<{ x: number; y: number; title: string; items: EditMenuItem[] } | null>(null);
@@ -1049,6 +1056,9 @@ export function IsometricEditor({
         from = start.id;
       }
       if (from && !pend && !canRouteFrom(d, from)) throw new Error(noFreeEnd(d, from));
+      // Straight on from a fitting's open outlet, the pipe starts at the fitting itself.
+      const through = from && !pend ? throughOutlet(d, from, delta) : undefined;
+      if (through) { from = through.from; delta = through.delta; }
       const problem = from && routeError(d, from, delta);
       if (problem) throw new Error(problem);
       // Straight on from an open end at the same size, the pipe lengthens: there is no joint to weld.
@@ -1092,7 +1102,7 @@ export function IsometricEditor({
   const pickInCycle = (id: string) => (doc.nodes.some((n) => n.id === id) ? selectConnection(id) : setSelection([id]));
   const cycleName = (id: string) => {
     const run = doc.runs.find((r) => r.id === id), node = doc.nodes.find((n) => n.id === id);
-    return run ? `${sizeFor(doc, run.nps)} pipe` : node ? componentName(node) : "object";
+    return run ? `${specSizeText(doc, run.specId, run.nps)} pipe` : node ? componentName(node) : "object";
   };
   const cycleNotice = (c: { ids: string[]; index: number }) =>
     setNotice({ text: `${CYCLE_NOTICE} · ${c.index + 1} of ${c.ids.length}: ${cycleName(c.ids[c.index])} · Tab for the next, Shift+Tab back` });
@@ -1106,7 +1116,7 @@ export function IsometricEditor({
    * flange put just short of the end would otherwise be a flange pair with a stub of pipe beyond it.
    */
   const endward = (hit: PipeHit | null, type: ComponentType, clientX: number, clientY: number): PipeHit | null => {
-    if (!hit || hit.end != null || !(endCapable(type) || terminalCapable(type))) return hit;
+    if (!hit || hit.end != null || !(endCapable(type) || terminalCapable(type) || turnType(type))) return hit;
     const run = doc.runs.find((r) => r.id === hit.runId);
     if (!run) return hit;
     const ends = ([0, 1] as const).flatMap((end) => {
@@ -1114,7 +1124,8 @@ export function IsometricEditor({
       if (!p || n.kind !== "end" || n.associatedRunId || connected(doc, id).length !== 1) return [];
       const q = toClient(p), a = drawing.positions.get(end === 0 ? run.to : run.from), ta = a && toClient(a), span = ta ? Math.hypot(ta[0] - q[0], ta[1] - q[1]) : 0;
       const distance = Math.hypot(q[0] - clientX, q[1] - clientY);
-      return distance <= Math.max(END_SNAP_PX, span * 0.2) ? [{ end, distance }] : [];
+      // An elbow goes on the end only when clicked at it: further along the pipe it puts in an offset.
+      return distance <= (turnType(type) ? END_SNAP_PX : Math.max(END_SNAP_PX, span * 0.2)) ? [{ end, distance }] : [];
     });
     const nearest = ends.sort((x, y) => x.distance - y.distance)[0];
     return nearest ? { ...hit, end: nearest.end, fraction: nearest.end } : hit;
@@ -1359,17 +1370,38 @@ export function IsometricEditor({
     if (!ready) return;
     const owner = target.closest("[data-owner]")?.getAttribute("data-owner"),
       node = target.closest("[data-node]")?.getAttribute("data-node");
-    if (armed && tool === "insert" && armed.type.kind === "elbow45") {
-      // Two 45° elbows roll an offset into the pipe clicked, across toward the direction chosen in the ribbon.
-      const hit = insertionTarget(clientX, clientY, owner ?? "");
-      if (!hit) return setError("Click a straight pipe where the 45° offset starts.");
+    if (armed && tool === "insert" && (turnType(armed.type) || lateralType(armed.type))) {
+      // An elbow on an open end turns it, with its outlet left open; on a straight it rolls in an offset. A lateral
+      // branches the straight at 45°. Direction, offset and roll come from the ribbon.
+      const angle: 45 | 90 = armed.type.kind === "elbow90" ? 90 : 45;
+      const raw = insertionTarget(clientX, clientY, owner ?? ""), hit = raw && endward(raw, armed.type, clientX, clientY);
+      if (!hit) return setError(lateralType(armed.type) ? "Click a straight pipe where the lateral branches off." : "Click an open pipe end to turn it, or a straight pipe to put an offset in.");
       try {
-        const amount = parseLength(offset45.length || lengthInputValue(2 * defaultBlockSpacing(doc.units), doc.units), doc.units);
-        const at = snapAlongLeg(doc, hit.runId, hit.fraction), toward = DIRECTIONS.find((x) => x.name === offset45.toward)!.vector;
-        if (commit((d) => { const [first, second] = insertOffset45(d, at.runId, at.fraction, toward, amount); setSelection([first.id, second.id]); })) {
+        const toward = DIRECTIONS.find((x) => x.name === offset45.toward)!.vector;
+        const run = doc.runs.find((r) => r.id === hit.runId)!, endNode = hit.end == null ? undefined : getNode(doc, hit.end === 0 ? run.from : run.to);
+        const open = !!endNode && endNode.kind === "end" && !endNode.associatedRunId && connected(doc, endNode.id).length === 1;
+        let text = "";
+        const done = commit((d) => {
+          if (lateralType(armed.type)) {
+            const at = snapAlongLeg(d, hit.runId, hit.fraction);
+            setSelection([insertLateral(d, at.runId, at.fraction, toward).id]);
+            text = `45° lateral put in, branching ${offset45.toward.toLowerCase()} · press P on its open end to route the branch`;
+          } else if (open && turnType(armed.type)) {
+            setSelection([turnAtOpenEnd(d, hit.runId, hit.end!, toward, angle).id]);
+            text = `${angle}° elbow turns the end ${offset45.toward.toLowerCase()} · its outlet is open: route on from it later, or leave it as the end`;
+          } else {
+            const amount = parseLength(offset45.length || lengthInputValue(2 * defaultBlockSpacing(d.units), d.units), d.units);
+            const roll = offset45.roll.trim() ? parseLength(offset45.roll, d.units) : 0, rollToward = DIRECTIONS.find((x) => x.name === offset45.rollToward)!.vector;
+            const across = toward.map((v, i) => v * amount + rollToward[i] * roll) as Vec3;
+            const at = snapAlongLeg(d, hit.runId, hit.fraction), [first, second] = insertOffset(d, at.runId, at.fraction, across, angle);
+            setSelection([first.id, second.id]);
+            text = `${roll ? "Rolling" : angle + "°"} offset put in · Ctrl+Z takes it out`;
+          }
+        });
+        if (done) {
           setArmed(null);
           transient.patch({ insertHover: null });
-          setNotice({ text: `45° offset of ${formatLength(amount, doc.units)} ${offset45.toward.toLowerCase()} put in · Ctrl+Z takes it out` });
+          setNotice({ text });
         }
       } catch (e) {
         setError(message(e));
@@ -1874,7 +1906,8 @@ export function IsometricEditor({
       if (routing) return "PIPE  Pick the next point, or type a length the cursor's way, a direction and length (N 10'), or @E,N,EL";
       return `PIPE  Pick an open end to continue from it, a pipe to branch from it, or open sheet to start ${spool}`;
     }
-    if (tool === "insert") return armed ? armed.type.kind === "elbow45" ? `45° OFFSET  Click the pipe where the offset starts; it moves ${offset45.toward.toLowerCase()} by the offset set in the ribbon`
+    if (tool === "insert") return armed ? lateralType(armed.type) ? `LATERAL  Click the pipe where the 45° branch leaves; it leans ${offset45.toward.toLowerCase()}`
+      : turnType(armed.type) ? `${armed.type.kind === "elbow90" ? "90°" : "45°"} ELBOW  Click an open pipe end to turn it ${offset45.toward.toLowerCase()}, or a straight pipe to put an offset in`
       : `INSERT  ${armed.type.angle ? "Click a 90° elbow for the" : "Click a pipe to place the"} ${armed.type.label}` : "INSERT  Choose a component in the palette";
     if (tool === "measure") return !measure || measure.to ? "MEASURE  Pick the first point" : "MEASURE  Pick the second point";
     if (tool === "move" || tool === "copy") {
@@ -2543,7 +2576,7 @@ export function IsometricEditor({
       : selectedRun
         ? {
             glyph: <Ruler size={17} />,
-            title: `${sizeFor(doc, selectedRun.nps)} ${selectedRun.connector ? "connector" : "pipe"}`,
+            title: `${specSizeText(doc, selectedRun.specId, selectedRun.nps)} ${selectedRun.connector ? "connector" : "pipe"}`,
             subtitle: [getSpec(doc, selectedRun.specId).name, selectedRun.spool, selectedRun.line].filter(Boolean).join(" · "),
             actions: (
               <>
@@ -2561,7 +2594,7 @@ export function IsometricEditor({
           ? {
               glyph: <ComponentGlyph code={selectedNode.component ?? ""} kind={selectedNode.kind} size={24} />,
               title: componentName(selectedNode),
-              subtitle: [selectedHeader && sizeFor(doc, selectedHeader.nps), selectedNode.tag, selectedNode.description || nodeItem(doc, selectedNode)?.description].filter(Boolean).join(" · "),
+              subtitle: [selectedHeader && specSizeText(doc, selectedHeader.specId, selectedHeader.nps), selectedNode.tag, selectedNode.description || nodeItem(doc, selectedNode)?.description].filter(Boolean).join(" · "),
               actions: canRouteFrom(doc, selectedNode.id) ? (
                 // Only a connection with a free end can be routed from; an in-line valve has none.
                 <button type="button" className="is-primary" onClick={() => { selectConnection(primary); setPending(null); setTool("pipe"); lastCommand.current = "pipe"; }}>
@@ -2651,7 +2684,7 @@ export function IsometricEditor({
                   {activeSizes.sizes.map((size) => {
                     // The schedule each size is bought in: small bore is often heavier than the specification's header.
                     const listed = activeSpec?.sizes.find((z) => z.nps === size);
-                    return <option value={size} key={size}>{sizeFor(doc, size)}{activeSizes.listed ? listed?.schedule ? ` · ${scheduleText(listed.schedule)}` : "" : " (not in spec)"}</option>;
+                    return <option value={size} key={size}>{specSizeText(doc, spec, size)}{activeSizes.listed ? listed?.schedule ? ` · ${scheduleText(listed.schedule)}` : "" : " (not in spec)"}</option>;
                   })}
                 </select>
               </RibbonField>
@@ -2748,17 +2781,32 @@ export function IsometricEditor({
                   </select>
                 </RibbonField>
               )}
-              {armed && armed.type.kind === "elbow45" && (
+              {armed && (turnType(armed.type) || lateralType(armed.type)) && (
                 <>
-                  <RibbonField label="Offset">
-                    <input aria-label="45° offset distance" value={offset45.length} placeholder={lengthInputValue(2 * defaultBlockSpacing(doc.units), doc.units)}
-                      title="How far across the line moves; it also takes this much run along the pipe" onChange={(e) => setOffset45({ ...offset45, length: e.target.value })} />
-                  </RibbonField>
-                  <RibbonField label="Toward">
+                  {turnType(armed.type) && (
+                    <RibbonField label="Offset">
+                      <input aria-label="45° offset distance" value={offset45.length} placeholder={lengthInputValue(2 * defaultBlockSpacing(doc.units), doc.units)}
+                        title="Clicked on a straight: how far across the line moves (through 45s it takes as much run along). Clicked on an open end the elbow just turns." onChange={(e) => setOffset45({ ...offset45, length: e.target.value })} />
+                    </RibbonField>
+                  )}
+                  <RibbonField label={lateralType(armed.type) ? "Branch toward" : "Toward"}>
                     <select aria-label="45° offset direction" value={offset45.toward} onChange={(e) => setOffset45({ ...offset45, toward: e.target.value })}>
                       {DIRECTIONS.map((x) => <option key={x.name} value={x.name}>{x.name}</option>)}
                     </select>
                   </RibbonField>
+                  {turnType(armed.type) && (
+                    <>
+                      <RibbonField label="Roll">
+                        <input aria-label="Rolling offset distance" value={offset45.roll} placeholder="None"
+                          title="A second amount across, square to both the pipe and Toward, for a rolling offset" onChange={(e) => setOffset45({ ...offset45, roll: e.target.value })} />
+                      </RibbonField>
+                      <RibbonField label="Roll toward">
+                        <select aria-label="Rolling offset direction" value={offset45.rollToward} onChange={(e) => setOffset45({ ...offset45, rollToward: e.target.value })}>
+                          {DIRECTIONS.map((x) => <option key={x.name} value={x.name}>{x.name}</option>)}
+                        </select>
+                      </RibbonField>
+                    </>
+                  )}
                 </>
               )}
               {armed && armed.type.endPrep === "FL" && armed.type.kind !== "flange" && (() => {

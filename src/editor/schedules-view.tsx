@@ -1,6 +1,6 @@
 import { Download } from "lucide-react";
 import { COMPONENT_TYPES } from "../core/components";
-import { sizeFor, sizeHeader } from "../core/format";
+import { sizeHeader, specSizeText } from "../core/format";
 import { connected, round, type IsoDocument, type PipeNode } from "../core/model";
 import { UNKNOWN, allowanceText, cutText, lengthUnits, overallText, pieceText, type cutSchedule, type materialSchedule, type weldSchedule } from "../core/schedules";
 import { NumberInput, TextInput } from "./inspector/kit";
@@ -81,7 +81,7 @@ export function MaterialsView({ doc, materials, pieces, pendingCuts, missingTake
             <tr key={c.run.id + ":" + c.piece} onClick={() => onSelect(c.run.id)}>
               <td>{c.spool}</td>
               <td>{pieceText(c)}</td>
-              <td>{sizeFor(doc, c.run.nps)}</td>
+              <td>{specSizeText(doc, c.run.specId, c.run.nps)}</td>
               <td>{overallText(c.overall, doc.units)}</td>
               <td>{c.takeouts.map((v) => allowanceText(v, doc.units)).join(" + ")}</td>
               <td>{c.gaps.map((v) => allowanceText(v, doc.units)).join(" + ")}</td>

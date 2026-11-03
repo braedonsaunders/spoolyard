@@ -1,7 +1,7 @@
 import { COMPONENT_TYPE_BY_CODE } from './components'
 import { breakOwner, flangedJoints, flangePipePrep, isFlangePair, nodeCode, nodeItem, pairFlangesOn, spansSpools, type FlangedJoint } from './joints'
 import { ratingClass } from './standards'
-import { boltSizeText, compose, draftLength, listLength, purchaseText, orderedLength, scheduleText, sizeFor, sizeText } from './format'
+import { boltSizeText, compose, draftLength, listLength, purchaseText, orderedLength, scheduleText, sizeText, specSizeText } from './format'
 import { profileOf } from './profile'
 import {
   bendArc, connected, deflection, dimensionSource, fitting, isReturnBody, returnPartner, flatSideText, getNode, getSpec, isFormedBend, withIndex, nippleDescription, nippleOf, pipePrepAt, round, runById, runResult, supportListed,
@@ -26,7 +26,7 @@ export interface MaterialIdentity {
   schedule?: string
   material?: string
   /** Flange, gasket and bolting face. */
-  face?: 'RF' | 'FF'
+  face?: 'RF' | 'FF' | 'TC'
   /** An item with no catalogue entry is known only by its measured dimensions (takeout, branch, ports). */
   measured?: Array<number | null | number[]>
 }
@@ -185,7 +185,7 @@ function categoryOf(kind: PipeNode['kind'], code = ''): MaterialCategory {
     default: return 'other'
   }
 }
-const faceOfCode = (code?: string): 'RF' | 'FF' | undefined => /FF/.test(code ?? '') ? 'FF' : /RF/.test(code ?? '') ? 'RF' : undefined
+const faceOfCode = (code?: string): 'RF' | 'FF' | 'TC' | undefined => /-TC$|^FERRULE/.test(code ?? '') ? 'TC' : /FF/.test(code ?? '') ? 'FF' : /RF/.test(code ?? '') ? 'RF' : undefined
 const supplyOf = (flag?: 'S' | 'F'): 'shop' | 'field' => flag === 'F' ? 'field' : 'shop'
 /** The purchased identity as a key: what makes two items the same thing to buy. */
 export const identityKey = (i: MaterialIdentity) =>
@@ -295,7 +295,8 @@ function buildRows(doc: IsoDocument, spool: string, options: SheetMaterialOption
   const profile = profileOf(doc), errors: string[] = [], warnings: string[] = []
   const rows = new Map<string, Draft>()
   let seq = 0
-  const size = (nps: number, small?: number) => sizeFor(doc, nps, small)
+  // Sizes as the specification names them: nominal pipe size, or a sanitary tube's outside diameter.
+  const size = (nps: number, small?: number, specId?: string) => specSizeText(doc, specId, nps, small)
   /**
    * Rows by what the sheet prints for them (category, size, description, shop/field, bolt size): items reached two ways
    * (a gasket read as its own part and one supplied with a joint) that print the same are one purchased item, one row.
@@ -338,7 +339,7 @@ function buildRows(doc: IsoDocument, spool: string, options: SheetMaterialOption
       // A nipple is a bought piece, counted like a fitting.
       const description = nippleDescription(doc, run), own = spec.nipples?.find(n => n.nps === run.nps)
       const identity: MaterialIdentity = { category: 'nipple', code: 'NIPPLE', nps: run.nps, schedule: scheduleText(own?.schedule ?? pipeSize?.schedule ?? spec.schedule), material: own?.material ?? pipeSize?.material ?? spec.material }
-      add(JSON.stringify([identityKey(identity), description]), { category: 'nipple', nd: size(run.nps), description, text: description, qty: 0, size: run.nps, identity, supply: supplyOf(pipeSize?.shopField) },
+      add(JSON.stringify([identityKey(identity), description]), { category: 'nipple', nd: size(run.nps, undefined, run.specId), description, text: description, qty: 0, size: run.nps, identity, supply: supplyOf(pipeSize?.shopField) },
         run.id, 1, JSON.stringify(['nipple', spec.id, run.nps, description]))
       continue
     }
@@ -356,7 +357,7 @@ function buildRows(doc: IsoDocument, spool: string, options: SheetMaterialOption
     const stockLength = spec.stockLength ?? profile.stockLength, uncut = piece.uncut || (known && Math.abs(cut - stockLength) <= profile.uncutTolerance)
     const identity: MaterialIdentity = { category: 'pipe', code: 'PIPE', nps: run.nps, schedule: scheduleText(pipeSize?.schedule ?? spec.schedule), material: pipeSize?.material ?? spec.material }
     const row = add(JSON.stringify([identityKey(identity), spec.id, base, known ? rounded : run.id, ...(uncut ? [run.id] : [])]), {
-      category: 'pipe', nd: size(run.nps), description: base, text: base, qty: 0, size: run.nps, cut: known ? cut : NaN, identity,
+      category: 'pipe', nd: size(run.nps, undefined, run.specId), description: base, text: base, qty: 0, size: run.nps, cut: known ? cut : NaN, identity,
       supply: supplyOf(pipeSize?.shopField),
       pipe: { pieces: [], cut: known ? cut : NaN, uncut, total: 0, ordered: 0, stockLength }
     }, piece.runIds[0], 0, 'pipe:' + piece.runIds[0])
@@ -389,7 +390,7 @@ function buildRows(doc: IsoDocument, spool: string, options: SheetMaterialOption
       // its angle and radius.
       const description = item?.bomDescription ? item.bomDescription.toUpperCase()
         : compose('PIPE BEND', `${degrees}°`, radius ? `${draftLength(radius, doc.units, Infinity)} RADIUS` : 'RADIUS TBD')
-      add(JSON.stringify([identityKey(identity), degrees, radius ?? null, description]), { category: 'bend', nd: size(host.nps), description, text: description, qty: 0, size: host.nps, identity, supply: 'shop' },
+      add(JSON.stringify([identityKey(identity), degrees, radius ?? null, description]), { category: 'bend', nd: size(host.nps, undefined, host.specId), description, text: description, qty: 0, size: host.nps, identity, supply: 'shop' },
         node.id, 1, JSON.stringify(['bend', item?.id ?? code, description, sizeText(host.nps), null, null]))
       continue
     }
@@ -426,7 +427,7 @@ function buildRows(doc: IsoDocument, spool: string, options: SheetMaterialOption
     const group = bolt ? JSON.stringify([bolt.kind, round(bolt.diameter, 2), round(bolt.length, 2), item?.material ?? null, description, supplyOf(item?.shopField)])
       : JSON.stringify([identityKey(identity), description, supplyOf(item?.shopField)])
     const row = add(group, {
-      category, nd: bolt ? boltSizeText(bolt.diameter, bolt.length, bolt.system) : size(nps, node.kind === 'tee' && small === nps ? undefined : small), description, text: description, qty: 0, size: nps, identity,
+      category, nd: bolt ? boltSizeText(bolt.diameter, bolt.length, bolt.system) : size(nps, node.kind === 'tee' && small === nps ? undefined : small, host.specId), description, text: description, qty: 0, size: nps, identity,
       supply: supplyOf(item?.shopField), flangeRank: flangeRank(code), ...(bolt ? { bolt } : {})
     }, node.id, node.quantity ?? (pair ? flanges : 1), JSON.stringify([category, item?.id ?? code, description, sizeText(nps, small), node.takeout ?? null, node.branchTakeout ?? null]))
     assume(row, item?.assumed)
@@ -445,14 +446,14 @@ function buildRows(doc: IsoDocument, spool: string, options: SheetMaterialOption
       const description = rowDescription(flange.item, COMPONENT_TYPE_BY_CODE[flange.code]?.label ?? 'FLANGE')
       const identity: MaterialIdentity = { category: 'flange', code: flange.code, nps: joint.nps, rating: flange.item?.rating, schedule: scheduleText(flange.item?.schedule) || undefined, material: flange.item?.material, face: faceOfCode(flange.code) }
       assume(add(JSON.stringify([identityKey(identity), description, supplyOf(flange.item?.shopField)]), {
-        category: 'flange', nd: size(joint.nps), description, text: description, qty: 0, size: joint.nps, identity, supply: supplyOf(flange.item?.shopField),
+        category: 'flange', nd: size(joint.nps, undefined, joint.specId), description, text: description, qty: 0, size: joint.nps, identity, supply: supplyOf(flange.item?.shopField),
         flangeRank: flangeRank(flange.code)
       }, joint.id + '#flange', 1, JSON.stringify(['flange', flange.item?.id ?? flange.code, description, sizeText(joint.nps), null, null])), flange.item?.assumed)
     }
     for (const stub of joint.stubEnds) {
       const description = rowDescription(stub, 'STUB END')
       const identity: MaterialIdentity = { category: 'stub', code: stub.component ?? 'STUB-END', nps: joint.nps, schedule: scheduleText(stub.schedule) || undefined, material: stub.material }
-      add(JSON.stringify([identityKey(identity), description, supplyOf(stub.shopField)]), { category: 'stub', nd: size(joint.nps), description, text: description, qty: 0, size: joint.nps, identity, supply: supplyOf(stub.shopField) },
+      add(JSON.stringify([identityKey(identity), description, supplyOf(stub.shopField)]), { category: 'stub', nd: size(joint.nps, undefined, joint.specId), description, text: description, qty: 0, size: joint.nps, identity, supply: supplyOf(stub.shopField) },
         joint.id + '#stub', 1, JSON.stringify(['stub', stub.id, description, sizeText(joint.nps), null, null]))
     }
     // Parts supplied on another drawing or by others are neither counted nor named here.
@@ -460,10 +461,17 @@ function buildRows(doc: IsoDocument, spool: string, options: SheetMaterialOption
       const item = joint.gasket.item, description = rowDescription(item, 'GASKET')
       // The gasket bought is its row's: a specification gasket row used at a joint of the other face is the same item.
       const identity: MaterialIdentity = { category: 'gasket', code: item?.component ?? `GASK-${joint.face}`, nps: joint.nps, rating: item?.rating ?? rating, material: item?.material, face: faceOfCode(item?.component) ?? joint.face }
-      assume(add(JSON.stringify([identityKey(identity), description, supplyOf(item?.shopField)]), { category: 'gasket', nd: size(joint.nps), description, text: description, qty: 0, size: joint.nps, identity, supply: supplyOf(item?.shopField) },
+      assume(add(JSON.stringify([identityKey(identity), description, supplyOf(item?.shopField)]), { category: 'gasket', nd: size(joint.nps, undefined, joint.specId), description, text: description, qty: 0, size: joint.nps, identity, supply: supplyOf(item?.shopField) },
         joint.id + '#gasket', 1, JSON.stringify(['gasket', item?.id, description, joint.nps])), joint.gasket.assumed)
     }
-    if (joint.bolts && joint.supplied.bolts) {
+    if (joint.bolts && joint.supplied.bolts && joint.bolts.kind === 'clamp') {
+      // A sanitary clamp joint: one clamp, sized as the tube.
+      const b = joint.bolts, description = rowDescription(b.item, 'CLAMP, TRI-CLAMP'), nd = size(joint.nps, undefined, joint.specId)
+      const identity: MaterialIdentity = { category: 'bolt', code: b.item?.component ?? 'CLAMP-TC', nps: joint.nps, material: b.item?.material }
+      assume(add(JSON.stringify([identityKey(identity), description, supplyOf(b.item?.shopField)]), {
+        category: 'bolt', nd, description, text: description, qty: 0, size: joint.nps, identity, supply: supplyOf(b.item?.shopField)
+      }, joint.id + '#bolts', 1, JSON.stringify(['clamp', b.item?.id, description, joint.nps])), b.assumed)
+    } else if (joint.bolts && joint.supplied.bolts) {
       const b = joint.bolts, own = rowDescription(b.item, b.kind === 'machine' ? 'MACHINE BOLTS C/W NUTS' : 'STUD BOLTS C/W 2 NUTS'), system = b.item?.boltSystem ?? 'inch'
       const description = b.kind === 'lug' ? lugBoltText(own, b.nuts) : own
       // Bolting is written in its own system: ASME bolting in inches on metric drawings too.
@@ -472,7 +480,7 @@ function buildRows(doc: IsoDocument, spool: string, options: SheetMaterialOption
       // Bolting follows joint size, then the joints' order along the line.
       assume(add(JSON.stringify([b.kind, round(b.diameter, 2), round(b.length, 2), b.item?.material ?? null, description, supplyOf(b.item?.shopField)]), {
         category: 'bolt', nd, description, text: description, qty: 0, size: joint.nps, identity, supply: supplyOf(b.item?.shopField),
-        bolt: { kind: b.kind, diameter: b.diameter, length: b.length, system }
+        bolt: { kind: b.kind as 'stud' | 'lug' | 'machine', diameter: b.diameter, length: b.length, system }
       }, joint.id + '#bolts', b.count, JSON.stringify(['bolt', b.kind, description, boltSizeText(b.diameter, b.length)])), b.assumed)
     }
   }

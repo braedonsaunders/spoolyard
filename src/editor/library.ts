@@ -1,4 +1,5 @@
 import { assetUrl } from "./assets";
+import { profileError } from "../core/profile";
 import { specLibrary } from "./spec-library";
 import { defaultBlockSpacing, defaultGrid } from "../core/grid";
 import { newIso, type CatalogItem, type IsoDocument, type PipeSpec } from "../core/model";
@@ -75,6 +76,27 @@ export async function startingSpec(slug: string): Promise<PipeSpec> {
 }
 
 /**
+ * The shop's own project profile (cut conventions, list order…), kept on this device and given to every new drawing:
+ * a drawing still carries its own copy, so it reads the same anywhere.
+ */
+const PROFILE_KEY = "spoolyard.defaultProfile";
+export function saveDefaultProfile(doc: Pick<IsoDocument, "profile" | "fieldFitMakeup"> | null) {
+  try {
+    if (!doc) localStorage.removeItem(PROFILE_KEY);
+    else localStorage.setItem(PROFILE_KEY, JSON.stringify({ profile: doc.profile ?? {}, fieldFitMakeup: doc.fieldFitMakeup ?? null }));
+  } catch { /* storage blocked: the drawing keeps its own profile */ }
+}
+export const hasDefaultProfile = () => { try { return !!localStorage.getItem(PROFILE_KEY); } catch { return false; } };
+function applyDefaultProfile(doc: IsoDocument) {
+  try {
+    const kept = JSON.parse(localStorage.getItem(PROFILE_KEY) ?? "null") as { profile?: IsoDocument["profile"]; fieldFitMakeup?: number | null } | null;
+    if (!kept || profileError(kept.profile)) return;
+    if (kept.profile && Object.keys(kept.profile).length) doc.profile = kept.profile;
+    if (kept.fieldFitMakeup != null) doc.fieldFitMakeup = kept.fieldFitMakeup;
+  } catch { /* no default */ }
+}
+
+/**
  * A new drawing starts on the standard library's general-service spec A, falling back to the built-in spec offline,
  * in feet and inches on tabloid paper: one cell of the isometric paper routes one foot of pipe.
  */
@@ -83,6 +105,7 @@ export async function newIsoWithDefaultSpec(units: IsoDocument["units"] = "imper
   doc.units = units;
   doc.paper = "tabloid";
   doc.grid = { ...defaultGrid(), spacing: defaultBlockSpacing(units) };
+  applyDefaultProfile(doc);
   try {
     doc.specs = [await startingSpec("a")];
   } catch {
@@ -133,6 +156,7 @@ export async function newIsoFromTemplate(template: DrawingTemplate, title = "Pip
   doc.paper = template.paper;
   doc.units = template.units;
   doc.grid = { ...defaultGrid(), spacing: defaultBlockSpacing(template.units) };
+  applyDefaultProfile(doc);
   // Never substitute carbon steel for a requested stainless or pressure-class specification.
   doc.specs = [await startingSpec(template.spec)];
   return doc;

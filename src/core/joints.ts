@@ -145,7 +145,7 @@ export function catalogRow(spec: PipeSpec, code: string, nps: number, smallerNps
   if (row) return row
   if (code === 'NIPPLE') return nippleRow(spec, nps, rows[0], drawing)
   const pipe = spec.sizes.find(s => s.nps === nps), input = standardInputs(spec, code, nps, rows[0])
-  const std = standardRow(code, nps, input.rating, smallerNps, input.schedule, input.options)
+  const std = spec.standardDimensions === false ? undefined : standardRow(code, nps, input.rating, smallerNps, input.schedule, input.options)
   if (!std) return interpolatedRow(spec, code, nps, smallerNps, rows[0]) ?? rows[0]
   const named = rows[0], wrought = /^(W-|STUB-END|[CE]-RED$|REDELL$|LR180R$|SR180R$)/.test(code)
   return {
@@ -220,6 +220,7 @@ export interface MatingFlange { code: string; item?: CatalogItem; stub?: Catalog
 export function defaultFlangeCode(spec: PipeSpec, nps: number): string {
   const face = specFace(spec), chosen = designValue(spec, 'defaultFlange').value
   if (chosen) return chosen
+  if (face === 'TC') return 'FERRULE-TC'
   const has = (code: string) => spec.fittings.some(f => f.nps === nps && f.component === code)
   for (const code of [`FLG-${face}WN`, `FLG-${face}LJ`]) if (has(code)) return code
   if (has('STUB-END') || has('STUB-END-SHORT')) return `FLG-${face}LJ`
@@ -253,6 +254,8 @@ export function jointGasket(spec: PipeSpec, nps: number, face: FlangeFace): Join
   const rowThickness = (f?: CatalogItem) => f && (f.thickness ?? (!f.takeoutMissing && f.takeout > 0 ? f.takeout * 2 : undefined))
   const t = rowThickness(own)
   if (own && t) return { item: own, thickness: t, source: `specification row ${own.id}` }
+  // A tri-clamp gasket seats in the ferrules' grooves and the ferrule faces close on it: the joint takes no length.
+  if (face === 'TC') return { item: own, thickness: own?.thickness ?? 0, source: own ? `specification row ${own.id}` : 'tri-clamp gasket seats in the ferrule grooves' }
   const given = designValue(spec, 'gasketThickness'), std = catalogRow(spec, `GASK-${face}`, nps)
   if (given.value) return { item: own ?? std, thickness: given.value, source: given.source! }
   // A specification of this face whose gasket rows are named for the other face (a flat-faced lap-joint class listing
@@ -355,7 +358,8 @@ export function flangedAllowance(doc: IsoDocument, node: PipeNode, run: PipeRun)
   if (!mate) return boltedDirect(doc, node, run) ? jointGasket(spec, run.nps, faceOf(code, spec)).thickness / 2 : 0
   return jointGasket(spec, run.nps, faceOf(mate.code, spec)).thickness + flangeLength(mate)
 }
-const faceOf = (code: string | undefined, spec: PipeSpec): 'RF' | 'FF' => /FF/.test(code ?? '') ? 'FF' : /RF/.test(code ?? '') ? 'RF' : specFace(spec)
+/** A flange code's face: a sanitary ferrule's is tri-clamp (TC); RF or FF where the code names it; else the specification's. */
+const faceOf = (code: string | undefined, spec: PipeSpec): FlangeFace => /^FERRULE/.test(code ?? '') ? 'TC' : /FF/.test(code ?? '') ? 'FF' : /RF/.test(code ?? '') ? 'RF' : specFace(spec)
 
 /** A continuation may report the mate's surveyed face while the fabrication dimensions end at this flange. */
 export function continuationPoint(doc: IsoDocument, node: PipeNode): Vec3 {
@@ -379,7 +383,7 @@ export function pipeEndPrep(doc: IsoDocument, run: PipeRun, index: number, prep:
 }
 
 export interface JointBolts {
-  kind: 'stud' | 'lug' | 'machine'
+  kind: 'stud' | 'lug' | 'machine' | 'clamp'
   count: number
   /**
    * Nuts on each bolt: two on a stud through a flange pair or wafer body, one on a machine bolt, one on a lug stud
@@ -443,6 +447,12 @@ interface BoltedBody { faceToFace?: number; category?: CatalogItem['valveCategor
  * calculated unless a row is the specification's own lap-joint pair.
  */
 function jointBolts(spec: PipeSpec, nps: number, face: FlangeFace, makeup: BoltMakeup, body: BoltedBody = {}, lapJoint = makeup === 'lj-pair'): JointBolts | null {
+  // A sanitary tri-clamp joint is held by one clamp round both ferrules: the specification's clamp row at the size.
+  if (face === 'TC') {
+    const clamp = spec.fittings.find(f => f.kind === 'bolt' && f.nps === nps && /^CLAMP/.test(f.component ?? ''))
+    return { kind: 'clamp', count: 1, nuts: 0, diameter: 0, length: 0, item: clamp, basis: clamp ? 'specification' : 'standard',
+      source: clamp ? `specification row ${clamp.id}` : 'one tri-clamp per ferrule joint', ...(clamp ? {} : { assumed: `the specification has no clamp row at ${nps}″, so a clamp of the size is listed` }) }
+  }
   const cls = specFlangeClass(spec), type = designValue(spec, 'boltType').value ?? 'stud'
   const want = makeup === 'lug-valve-side' ? 'lug' : makeup === 'flange-pair' || makeup === 'lj-pair' ? type : 'stud'
   const otherFace = face === 'RF' ? 'BOLT-FF' : 'BOLT-RF'
@@ -544,7 +554,7 @@ function findJoints(doc: IsoDocument, spool: string): FlangedJoint[] {
         flanges: pair ? Array(sides).fill(flange) : supply.flange ? [flange] : [],
         stubEnds: stubRuns.map(() => stub!), stubRunIds: stubRuns.map(r => r.id),
         gasket, bolts, supplied: supply, boltsUnknown: supply.bolts && !bolts,
-        assumed: notes(specFlangeClass(spec).assumed, faceNote(code, spec), supply.gasket ? gasket.assumed : undefined, supply.bolts ? bolts?.assumed : undefined),
+        assumed: notes(face === 'TC' ? undefined : specFlangeClass(spec).assumed, face === 'TC' ? undefined : faceNote(code, spec), supply.gasket ? gasket.assumed : undefined, supply.bolts ? bolts?.assumed : undefined),
         ...(stubNode ? {} : { flangeNodeId: node.id })
       })
       continue
@@ -588,7 +598,7 @@ function findJoints(doc: IsoDocument, spool: string): FlangedJoint[] {
         stubEnds: mine && mate?.stub ? [mate.stub] : [], stubRunIds: mine && mate?.stub ? [run.id] : [],
         gasket, bolts, supplied,
         boltsUnknown: owned && choice?.bolts !== false && physical && !bolts,
-        assumed: notes(specFlangeClass(runSpec).assumed, faceNote(choice?.component ?? designValue(runSpec, 'defaultFlange').value, runSpec),
+        assumed: notes(face === 'TC' ? undefined : specFlangeClass(runSpec).assumed, face === 'TC' ? undefined : faceNote(choice?.component ?? designValue(runSpec, 'defaultFlange').value, runSpec),
           supplied.gasket ? gasket.assumed : undefined, supplied.bolts ? bolts?.assumed : undefined, body?.assumed),
         ...(explicit ? { flangeNodeId: other.id } : {})
       })

@@ -21,8 +21,10 @@ const close = (actual: number, expected: number, tolerance = 0.01) => assert.ok(
 test('library specifications leave a 1/16" root gap at butt welds and a 1/16" gap at the bottom of each socket', () => {
   for (const file of readdirSync(dir)) {
     const spec = library(file.replace('.json', ''));
-    assert.equal(spec.rootGap, 1.6, file);
-    assert.equal(spec.socketGap, 1.6, file);
+    // Sanitary tube is orbital-welded square-butt with no gap, and has no socket welds.
+    const gap = spec.sizing === 'tube-od' ? 0 : 1.6;
+    assert.equal(spec.rootGap, gap, file);
+    assert.equal(spec.socketGap, gap, file);
   }
 });
 
@@ -39,7 +41,8 @@ test('library specifications describe what to buy: valve ends, trim and standard
       if (f.kind === 'bolt') assert.equal(f.schedule, undefined, `${file} ${f.id}`);
       if (f.material?.includes('B8')) assert.match(f.material, /A194 GR\. 8/, `${file} ${f.id}`);
     }
-    for (const s of spec.sizes) assert.match(s.description!, /^PIPE, (SMLS|EFW), (BE|PE|TE), ASME B36\.(10|19)M$/, file);
+    for (const s of spec.sizes)
+      assert.match(s.description!, spec.sizing === 'tube-od' ? /^TUBE, SANITARY, POLISHED, ASTM A270$/ : /^PIPE, (SMLS|EFW), (BE|PE|TE), ASME B36\.(10|19)M$/, file);
   }
   const doc = newIso(); doc.specs = [clone(specA)];
   assert.equal(row(doc, 'GATE-FL', 6).description, 'GATE VALVE, FLANGED RF, OS&Y, BB, TRIM 8, API 600');

@@ -1,6 +1,8 @@
 import { DEFAULT_FLANGE_ORDER, DEFAULT_MATERIAL_ORDER, profileOf, type FabricationProfile } from "../core/profile";
 import { fieldFitMakeup, lengthInputValue, setFieldFitMakeup, type IsoDocument } from "../core/model";
-import { LengthInput, Note, Row, Section, Segmented, TextInput } from "./inspector/kit";
+import { useState } from "react";
+import { Actions, LengthInput, Note, Row, Section, Segmented, TextInput } from "./inspector/kit";
+import { hasDefaultProfile, saveDefaultProfile } from "./library";
 
 type Commit = (edit: (d: IsoDocument) => void) => boolean | void;
 const INCH = 25.4;
@@ -11,6 +13,7 @@ const INCH = 25.4;
  */
 export function ProfileSettings({ doc, commit, onError }: { doc: IsoDocument; commit: Commit; onError: (message: string) => void }) {
   const own = doc.profile ?? {}, resolved = profileOf({ ...doc, profile: undefined }), units = doc.units;
+  const [saved, setSaved] = useState(false);
   const set = <K extends keyof FabricationProfile>(key: K, value: FabricationProfile[K] | undefined) => commit((d) => {
     const p: FabricationProfile = { ...d.profile };
     if (value == null || (Array.isArray(value) && !value.length)) delete p[key];
@@ -34,6 +37,11 @@ export function ProfileSettings({ doc, commit, onError }: { doc: IsoDocument; co
   return (
     <Section id="sheet.profile" title="Project profile" summary={Object.keys(own).length ? `${Object.keys(own).length} set` : "Defaults"}>
       <Note keywords="profile fabrication conventions">Fabrication conventions, saved with the drawing and read by every sheet, list and export. Empty fields use the default shown.</Note>
+      <Actions keywords="profile default new drawings shop">
+        <button type="button" onClick={() => { saveDefaultProfile(doc); setSaved(true); }}
+          title="New drawings on this device start with this drawing's project profile">{saved ? "Saved as the default" : "Use for new drawings"}</button>
+        {hasDefaultProfile() && <button type="button" onClick={() => { saveDefaultProfile(null); setSaved(false); }} title="New drawings start with the built-in defaults">Clear default</button>}
+      </Actions>
       {length("stockLength", "Stock pipe length", "Random length pipe is bought in; longer pieces are flagged. A specification's own stock length takes precedence.")}
       {length("orderIncrement", "Order rounding", "Ordered pipe length is rounded up to this; zero orders the exact length.")}
       {length("kerf", "Saw kerf", "Allowed between pieces cut from one length.")}
@@ -44,10 +52,15 @@ export function ProfileSettings({ doc, commit, onError }: { doc: IsoDocument; co
         <LengthInput aria="Field-fit makeup" mm={doc.fieldFitMakeup} units={units} allowEmpty placeholder={lengthInputValue(fieldFitMakeup({ ...doc, fieldFitMakeup: undefined }), units)}
           onError={onError} onCommit={(v) => commit((d) => setFieldFitMakeup(d, v))} />
       </Row>
-      <Row label="Weld gaps in cuts" keywords="root gap socket pull back cut deduct" group
-        hint="Deduct takes each butt weld's root gap (the specification's) and the socket pull-back off the cut. Ignore cuts to the fitting takeouts only.">
+      <Row label="Butt-weld root gap in cuts" keywords="root gap cut deduct heavy carbon tig stt" group
+        hint="Deduct takes the specification's root gap off each butt weld. Heavy carbon only deducts it on carbon pipe of Schedule 80 (XS) and heavier, and fits lighter and stainless pipe tight. Ignore cuts to the fitting takeouts.">
         <Segmented aria="Weld gaps in cuts" value={own.weldGaps ?? resolved.weldGaps} onChange={(v) => set("weldGaps", v === "deduct" ? undefined : v)}
-          choices={[{ value: "deduct", label: "Deduct" }, { value: "ignore", label: "Ignore" }]} />
+          choices={[{ value: "deduct", label: "Deduct" }, { value: "heavy-carbon", label: "Heavy carbon only" }, { value: "ignore", label: "Ignore" }]} />
+      </Row>
+      <Row label="Socket pull-back" keywords="socket weld gap pull back bottom cut" modified={own.socketPullBack != null} onReset={() => set("socketPullBack", undefined)}
+        hint="How far pipe stops short of the socket bottom, taken off the cut with the fitting's centre-to-bottom figure. Empty uses each specification's socket gap (1/16″).">
+        <LengthInput aria="Socket pull-back" mm={own.socketPullBack} units={units} allowEmpty precision="fine" placeholder="From the specification" onError={onError}
+          onCommit={(v) => set("socketPullBack", v)} />
       </Row>
       <Row label="Cut length in the material list" keywords="cut note description" group>
         <Segmented aria="Cut length in the material list" value={own.cutNote ?? resolved.cutNote} onChange={(v) => set("cutNote", v)}

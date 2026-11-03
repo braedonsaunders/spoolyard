@@ -40,8 +40,8 @@ test('a 45° offset rolls two 45° elbows into a straight; the line beyond moves
 
 test('with 45° picking on, a pick may go between two axes, stepping whole blocks along each', () => {
   assert.equal(routingDirections(false).length, 6);
-  assert.equal(routingDirections(true).length, 8);
-  assert.ok(routingDirections(true, 'xz').every(v => v[1] === 0), 'an E–Up elevation keeps to east and up');
+  assert.equal(routingDirections(true).length, 18);
+  assert.ok(routingDirections(true, 'xz').slice(0, 8).every(v => v[1] === 0), 'an E–Up elevation puts east and up first');
   const project = (p: [number, number, number]): Point => [p[0], -p[1]];
   const drawing = { project } as unknown as Drawing;
   const settings = { visible: true, snap: true, spacing: 100, plane: 'xy' as const, ortho: true };

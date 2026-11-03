@@ -3,7 +3,7 @@ import { COMPONENT_TYPE_BY_CODE, COMPONENT_TYPES, KIND_SYMBOL, SYMBOL_FAMILIES, 
 import { symbolOf } from "../../core/iso/valve-conventions";
 import { drawingReference } from "../../core/references";
 import { defaultFlangeCode, flangedJoints, isLapJoint, nodeCode, nodeItem } from "../../core/joints";
-import { boltSizeText, draftLength, sizeFor } from "../../core/format";
+import { boltSizeText, draftLength, sizeFor, specSizeText } from "../../core/format";
 import { sheetMaterials } from "../../core/material-list";
 import { directionName, moveComponentAlongPipe, placeAtTurn, sizePipesToRow, type ComponentTrack } from "../../core/component-position";
 import {
@@ -91,7 +91,7 @@ export function NodePanel(props: NodePanelProps) {
   const edges = connected(doc, node.id), code = nodeCode(doc, node) ?? "", type = COMPONENT_TYPE_BY_CODE[code];
   const item = nodeItem(doc, node), units = doc.units, imperial = units === "imperial";
   const typeLabel = COMPONENT_TYPES.find((t) => t.code === node.component)?.label ?? labels[node.kind];
-  const port = (r: PipeRun) => `${sizeFor(doc, r.nps)} going ${directionName(sub(getNode(doc, r.from === node.id ? r.to : r.from).position, node.position))}`;
+  const port = (r: PipeRun) => `${specSizeText(doc, r.specId, r.nps)} going ${directionName(sub(getNode(doc, r.from === node.id ? r.to : r.from).position, node.position))}`;
   const hasTakeout = !NO_TAKEOUT.includes(node.kind);
   const source = dimensionSource(doc, node);
   const specTakeout = item && !NO_TAKEOUT.includes(node.kind)

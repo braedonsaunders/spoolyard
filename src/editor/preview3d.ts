@@ -87,6 +87,14 @@ export function mountPreview3d(container: HTMLElement, doc: IsoDocument, spool =
    * tapered hub or a slip-on's or socket's collar, down to the pipe.
    */
   const flange = (face: THREE.Vector3, axis: THREE.Vector3, code: string, row: CatalogItem | undefined, pipeR: number, nps?: number, rating?: string | number) => {
+    // A sanitary ferrule: a thin lip at the face, a tube-sized body back to its weld, and the clamp round the lips.
+    if (/^FERRULE/.test(code)) {
+      const od = (row as (CatalogItem & { flangeOd?: number }) | undefined)?.flangeOd ?? pipeR * 2.6, lip = Math.max(3, od * 0.08);
+      solid(face, face.clone().addScaledVector(axis, lip), od / 2);
+      solid(face.clone().addScaledVector(axis, lip), face.clone().addScaledVector(axis, Math.max(lip * 2, row?.takeout ?? pipeR)), pipeR * 1.02);
+      solid(face, face.clone().addScaledVector(axis, lip * 1.6), od / 2 * 1.12, od / 2 * 0.98);
+      return;
+    }
     const { od, t } = flangeSize(row, pipeR, nps, rating), item = row as (CatalogItem & { lengthThroughHub?: number }) | undefined, blind = /BL$|BLND/.test(code);
     const std = nps ? standardFlange(nps, rating ?? row?.rating) : undefined;
     const raised = /RF/.test(code) ? 1.6 : 0;

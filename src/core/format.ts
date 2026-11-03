@@ -218,6 +218,14 @@ export function sizeText(nps: number, smallerNps?: number, notation: 'NPS' | 'DN
 /** A size in the drawing's notation (`profile.sizeNotation`). */
 export const sizeFor = (doc: Pick<IsoDocument, 'units' | 'profile'>, nps: number, smallerNps?: number) =>
   sizeText(nps, smallerNps, profileOf(doc).sizeNotation)
+/** A sanitary tube size as written: its outside diameter in decimal inches, `1.5" OD` (`2"X1.5" OD` reducing). */
+export const tubeSizeText = (od: number, smaller?: number) => {
+  const d = (v: number) => `${+v.toFixed(3)}"`
+  return smaller != null && smaller !== od ? `${d(od)}X${d(smaller)} OD` : `${d(od)} OD`
+}
+/** A size as the specification names it: nominal pipe size (the drawing's notation), or a tube's outside diameter. */
+export const specSizeText = (doc: Pick<IsoDocument, 'units' | 'profile' | 'specs'>, specId: string | undefined, nps: number, smallerNps?: number) =>
+  doc.specs.find(s => s.id === specId)?.sizing === 'tube-od' ? tubeSizeText(nps, smallerNps) : sizeFor(doc, nps, smallerNps)
 /** Column heading for nominal sizes in the drawing's notation. */
 export const sizeHeader = (doc: Pick<IsoDocument, 'units' | 'profile'>) => profileOf(doc).sizeNotation === 'DN' ? 'DN' : 'NPS'
 

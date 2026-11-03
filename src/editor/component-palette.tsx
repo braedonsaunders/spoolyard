@@ -12,11 +12,12 @@ import { npsText } from "../core/format";
 import { sized, sizeChoices, type SizeChoice } from "../core/component-position";
 
 /**
- * Bends, laterals and crosses are created by routing; the palette inserts what sits on a straight pipe, and tees. A 45°
- * elbow is offered too: clicked on a pipe, two of them roll in a 45° offset (`insertOffset45`).
+ * Crosses and bends are created by routing; the palette inserts what sits on a straight pipe, and tees. Elbows are
+ * offered too: on an open end one turns it with its outlet left open (`turnAtOpenEnd`), on a straight two roll in an
+ * offset (`insertOffset`); a lateral branches a straight at 45° (`insertLateral`).
  */
-export const insertable = (t: ComponentType) => !["pipe", "elbow90", "gasket", "bolt"].includes(t.kind) &&
-  (t.kind === "tee" ? t.ports === 3 && !/LAT$/.test(t.code) : t.ports === 2 || t.ports === 1 || ['support', 'annotation'].includes(t.kind));
+export const insertable = (t: ComponentType) => !["pipe", "gasket", "bolt"].includes(t.kind) && !/180R$|BEND/.test(t.code) &&
+  (t.kind === "tee" ? t.ports === 3 && (!/LAT$/.test(t.code) || /^(W|SW|SC)-LAT$/.test(t.code)) : t.ports === 2 || t.ports === 1 || ['support', 'annotation'].includes(t.kind));
 
 /** A nominal size as drawn: 1/8″, 1 1/4″, 2 1/2″. */
 export const inches = (nps: number) => npsText(nps) + "″";
@@ -138,8 +139,10 @@ export function ComponentPalette({
                 <span>
                   {t.label}
                   <small>
-                    {t.kind === "elbow45"
-                      ? "Click a pipe: two 45s make an offset · or route with 45° on (F10)"
+                    {t.kind === "elbow45" || t.kind === "elbow90"
+                      ? `Click an open end to turn it, or a pipe for a${t.kind === "elbow45" ? " 45°" : " 90°"} offset`
+                      : /LAT$/.test(t.code)
+                      ? "Click a pipe: a 45° branch, routed on from its open end"
                       : t.angle
                       ? "Angle body · click a 90° elbow"
                       : rows[0]

@@ -19,7 +19,7 @@ import {
   type Vec3,
 } from "../../core/model";
 import { closeCouple, directionName, setDimensionAxis, setDimensionReverse, setLineFlow } from "../../core/component-position";
-import { scheduleText, sizeFor, sizeHeader } from "../../core/format";
+import { scheduleText, sizeHeader, specSizeText } from "../../core/format";
 import { routingSizes, type LibrarySpecSummary } from "../library";
 import { END_PREPS, SpecSelect, endPrepName } from "../choices";
 import { DIRECTIONS } from "../command-line";
@@ -72,7 +72,7 @@ export function PipePanel({ doc, run, commit, onError, library, libraryError, sp
 
   const fabrication = (
     <>
-      <Section id="pipe.pipe" title="Pipe" defaultOpen summary={`${sizeFor(doc, run.nps)} · ${scheduleText(spec.sizes.find((z) => z.nps === run.nps)?.schedule || spec.schedule)} · ${spec.name}`}>
+      <Section id="pipe.pipe" title="Pipe" defaultOpen summary={`${specSizeText(doc, run.specId, run.nps)} · ${scheduleText(spec.sizes.find((z) => z.nps === run.nps)?.schedule || spec.schedule)} · ${spec.name}`}>
         <Row label="Specification">
           <SpecSelect doc={doc} aria="Pipe specification" value={run.specId} library={library} libraryError={libraryError} busy={specBusy} onChange={(v) => void chooseSpec(v, run.id)} />
         </Row>
@@ -82,7 +82,7 @@ export function PipePanel({ doc, run, commit, onError, library, libraryError, sp
               // A specification with no size table (read from a PCF) offers the sizes its pipes are drawn at.
               const { sizes, listed } = routingSizes(doc, spec);
               return [...new Set([...sizes, run.nps])].sort((a, b) => a - b).map((v) => (
-                <option key={v} value={v}>{sizeFor(doc, v)}{listed && spec.sizes.some((s) => s.nps === v) ? "" : " (not in spec)"}</option>
+                <option key={v} value={v}>{specSizeText(doc, run.specId, v)}{listed && spec.sizes.some((s) => s.nps === v) ? "" : " (not in spec)"}</option>
               ));
             })()}
           </select>

@@ -61,7 +61,9 @@ where it powers piping isometrics in Files and Tools.
   or Up. On not-to-scale paper each cell of the isometric paper routes one grid block (1'-0" on a feet-and-inches
   drawing, the default), so the pointer steps cell by cell as the grid shows it; to-scale sheets draw at the largest
   standard scale that fits, or at one you choose. Turn on 45° (F10) to also pick at 45° within the routing plane, or
-  type `NE 4'`; choose a 45° elbow in Insert and click a pipe to roll in a 45° offset. The East/North/Up buttons
+  type `NE 4'`. Choose a 45° or 90° elbow in Insert and click a pipe to put in an offset (with a Roll amount, a
+  rolling offset), or click an open end to turn it with the outlet left open. A lateral clicked on a pipe puts in a
+  45° branch, open to route on from. The East/North/Up buttons
   route from the selected end, shown as you point at them. Bends and branches get the specification's elbows and
   tees automatically; rolling offsets route in XYZ. Click a pipe to branch off it, place olets on a header, fit reducers
   either way round, and put a valve, coupling or union on an open end with no pipe after it. A flange, cap or plug
@@ -81,15 +83,18 @@ where it powers piping isometrics in Files and Tools.
   - **Joints at drawing breaks:** a joint split across drawings lists each part on one sheet only. That covers a
     stub end with its flange on the next sheet, and a flange that bolts to a lug valve (lug bolts).
   - **Field-fit welds:** they leave a makeup length on the pipe.
-  - **How it is worked out:** each pipe's properties show its cut line by line, and Project profile › Weld gaps in
-    cuts can leave the root gap and socket pull-back out for a shop that takes them up at fit-up.
+  - **How it is worked out:** each pipe's properties show its cut line by line. Project profile sets the shop's
+    conventions: root gap deducted always, on heavy-wall carbon (Sch 80 and up) only, or never, and the socket
+    pull-back (the specification's, or a set amount such as 1/8"). Use for new drawings makes a profile the default.
 - **Standard dimensions built in.** Specifications supply their own rows. Anything they lack falls back to ASME
   B16.5, B16.9, B16.10, B16.11, B16.20/21, MSS SP-43, MSS SP-97 and API 609 tables, so standard components never
   need a length typed in. Where no standard dimensions a size (threaded and socket-weld valves) and a
   specification skips one size of a series, it is interpolated between the sizes either side and reported as
   calculated. Seven general-service specifications ship ready to use: carbon steel Class 150, 300 and 600 and
-  stainless steel Class 150 to 900, with about 11,000 rows and complete purchase descriptions. Every row is
-  editable, and you can add your own specifications, sizes and components.
+  stainless steel Class 150 to 900, with about 11,000 rows and complete purchase descriptions. SAN-A is 316L
+  sanitary tube, ½" to 6" OD, sized by tube OD (`1.5" OD TUBE`), with orbital-weld fittings and tri-clamp joints
+  (each listed as two ferrules, a gasket and a clamp). Every row is editable, and you can add your own
+  specifications, sizes and components.
 - **Your own specification library.** Save a specification you have refined to your library and every new drawing
   starts from it in place of the standard one; other drawings add it from the specification lists. In the browser
   and the desktop app the library is kept on your device; inside BidWright it is your organisation's, shared by

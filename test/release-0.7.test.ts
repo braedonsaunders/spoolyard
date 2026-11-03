@@ -52,9 +52,9 @@ test('a size missing from an otherwise complete series is interpolated between i
 
 test('the default library is the general-service carbon and stainless families, each with a sensible name', () => {
   const index = JSON.parse(readFileSync(new URL('../public/library/index.json', import.meta.url), 'utf8')) as Array<{ slug: string; id: string; name: string; service: string }>;
-  assert.deepEqual(index.map(s => s.id), ['A', 'B', 'C', 'SS-A', 'SS-B', 'SS-C', 'SS-D']);
+  assert.deepEqual(index.map(s => s.id), ['A', 'B', 'C', 'SS-A', 'SS-B', 'SS-C', 'SS-D', 'SAN-A']);
   assert.deepEqual(readdirSync(dir).filter(f => f.endsWith('.json')).sort(), index.map(s => s.slug + '.json').sort());
-  for (const s of index) assert.match(s.service, /^General \d+#$/, s.id);
+  for (const s of index) assert.match(s.service, s.id === 'SAN-A' ? /^Sanitary$/ : /^General \d+#$/, s.id);
 });
 
 test('a pipe moved to another specification takes its outlets and fittings with it', () => {

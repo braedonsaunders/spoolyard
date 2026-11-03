@@ -14,7 +14,8 @@ import type { Kind } from './model'
  * wall), the row is still returned but `assumed` says what was assumed, so validation can ask for it. Nothing
  * falls back silently.
  */
-export type FlangeFace = 'RF' | 'FF'
+/** A flange's face: raised, flat, or a sanitary tri-clamp ferrule's (TC), joined by a clamp rather than bolts. */
+export type FlangeFace = 'RF' | 'FF' | 'TC'
 export type BoltType = 'stud' | 'machine'
 export type ValvePattern = 'long' | 'short' | 'regular' | 'venturi'
 export type ButterflyBody = 'wafer' | 'lug' | 'double-flanged'

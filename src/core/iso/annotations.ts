@@ -1,6 +1,6 @@
 import type { Point } from '../drawing'
 import { COMPONENT_TYPE_BY_CODE } from '../components'
-import { coordinateText, draftLength, elevationText, fieldFitNote, sizeFor } from '../format'
+import { coordinateText, draftLength, elevationText, fieldFitNote, sizeFor, tubeSizeText } from '../format'
 import { profileOf } from '../profile'
 import { continuationPoint, nodeCode, type FlangedJoint } from '../joints'
 import { findMaterialRow, materialId } from '../material-list'
@@ -44,7 +44,11 @@ export function drawAnnotations(ctx: IsoContext) {
   const familyOf = (node: PipeNode) => symbolOf(ctx.doc, node)
   /** A nominal size callout in the drawing's notation: `3" NS`, or `DN80`. */
   const notation = profileOf(ctx.doc).sizeNotation
-  const nominal = (size: string, compact = false) => notation === 'DN' ? size : compact ? size.replace('X', 'x') + 'NS' : size + ' NS'
+  const nominal = (size: string, compact = false) => notation === 'DN' || / OD$/.test(size) ? size : compact ? size.replace('X', 'x') + 'NS' : size + ' NS'
+  /** A pipe's size callout: its nominal size, or a sanitary tube's outside diameter (`1.5" OD TUBE`). */
+  const isTube = (specId?: string) => ctx.doc.specs.find(s => s.id === specId)?.sizing === 'tube-od'
+  const runSize = (run: PipeRun, smaller?: number, compact = false) =>
+    isTube(run.specId) ? tubeSizeText(run.nps, smaller) + (smaller == null ? ' TUBE' : '') : nominal(sizeFor(ctx.doc, run.nps, smaller), compact)
   const handle = (key: string, at: Point) => ({ key, at: [...at] as Point, spool: ctx.spool })
   // Room for the labels already known to land clear, so the labels drawn before them keep off it.
   for (const r of ctx.reserved ?? []) ctx.place.reserve(r.poly, r.key)
@@ -367,8 +371,10 @@ export function drawAnnotations(ctx: IsoContext) {
     if (sizes.length < 2 || node.kind === 'tee' && !node.branchEdgeId) return []
     const outlet = COMPONENT_TYPE_BY_CODE[code]?.angle ? edges.find(r => r.id === node.branchEdgeId) : undefined
     const inlet = outlet && edges.find(r => r !== outlet)
-    const value=inlet ? sizeFor(ctx.doc, inlet.nps, outlet!.nps) : sizeFor(ctx.doc, Math.max(...sizes), Math.min(...sizes))
-    return [nominal(value, node.sizeLabelFormat==='compact')]
+    const compact = node.sizeLabelFormat === 'compact'
+    if (inlet) return [runSize(inlet, outlet!.nps, compact)]
+    const large = edges.find(r => r.nps === Math.max(...sizes))!
+    return [runSize(large, Math.min(...sizes), compact)]
   }
   // Flanged joints name the parts this drawing supplies, unless the drafter explicitly references another BOM item:
   // a balloon for each item, or (style `jointCallout: 'combined'`) one line of prefixed items with the bolting boxed
@@ -429,7 +435,7 @@ export function drawAnnotations(ctx: IsoContext) {
         const out = run.from === node.id ? g.dir : scale2(g.dir, -1)
         const at = add2(target, scale2(out, 0.76 * T)), key = `${run.line}|${run.nps}`
         if (stubSizeJoints.get(key) === joint.id && !stubSizes.has(key)) {
-          itemBlock(at, stub, [nominal(sizeFor(ctx.doc, run.nps))], joint.nodeId, true, `stub:${joint.id}:${run.id}`)
+          itemBlock(at, stub, [runSize(run)], joint.nodeId, true, `stub:${joint.id}:${run.id}`)
           stubSizes.add(key)
         } else tag(at, stub, joint.nodeId, undefined, `stub:${joint.id}:${run.id}`)
       }
@@ -483,7 +489,7 @@ export function drawAnnotations(ctx: IsoContext) {
       // A leg's first label sits near its start; after a change, on the first pipe, near the change.
       const g = ctx.geometry.get((changed && stretch.find(r => !r.connector) || run).id)!
       const near = !changed || [g.run.from, g.run.to].indexOf(leg.nodes[leg.runs.indexOf(g.run)]) === 0
-      callout(lerp2(g.a, g.b, changed && !near ? 0.75 : 0.2), [nominal(sizeFor(ctx.doc, run.nps))], g.run.id, { head: false, key: `size:${g.run.id}` })
+      callout(lerp2(g.a, g.b, changed && !near ? 0.75 : 0.2), [runSize(run)], g.run.id, { head: false, key: `size:${g.run.id}` })
     })
   }
   // Any other size change not called out with its item.

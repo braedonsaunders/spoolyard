@@ -1,5 +1,5 @@
 import { COMPONENT_TYPES } from "../../core/components";
-import { sizeFor, sizeHeader } from "../../core/format";
+import { sizeFor, sizeHeader, specSizeText } from "../../core/format";
 import { getSpec, prepAt, type EndPrep, type IsoDocument, type PipeNode, type PipeRun } from "../../core/model";
 import { END_PREPS, KIND_LABELS } from "../choices";
 import { routingSizes, type LibrarySpecSummary } from "../library";
@@ -32,7 +32,7 @@ export function MultiPanel({ doc, ids, commit, onError, library, libraryError, s
   const preps = runs.flatMap((r) => [prepAt(r, 0), prepAt(r, 1)]), prep = shared(preps);
   const name = (key: string) => {
     const run = doc.runs.find((r) => r.id === key);
-    if (run) return `${sizeFor(doc, run.nps)} pipe · ${run.spool}`;
+    if (run) return `${specSizeText(doc, run.specId, run.nps)} pipe · ${run.spool}`;
     const node = doc.nodes.find((n) => n.id === key);
     return node ? [COMPONENT_TYPES.find((t) => t.code === node.component)?.label ?? KIND_LABELS[node.kind] ?? node.kind, node.tag].filter(Boolean).join(" · ") : key;
   };

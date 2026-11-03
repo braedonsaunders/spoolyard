@@ -300,6 +300,11 @@ test('library pipe sizes have their published B36.10M/B36.19M wall and the mass 
   const dir = new URL('../public/library/specs/', import.meta.url);
   for (const file of readdirSync(dir).filter(f => f.endsWith('.json'))) {
     const spec = JSON.parse(readFileSync(new URL(file, dir), 'utf8')) as PipeSpec;
+    // Sanitary tube is sized by its outside diameter, not by B36 pipe schedules.
+    if (spec.sizing === 'tube-od') {
+      for (const size of spec.sizes) assert.ok(Math.abs(size.od - size.nps * 25.4) < 0.01, `${file} ${size.nps}`);
+      continue;
+    }
     for (const size of spec.sizes) {
       const at = `${file} NPS ${size.nps} ${size.schedule}`;
       assert.equal(size.wall, pipeWall(size.nps, size.schedule ?? spec.schedule), at);

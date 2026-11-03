@@ -117,6 +117,16 @@ export interface PipeSize {
 export interface PipeSpec {
   id: string
   name: string
+  /**
+   * How its sizes are named: by nominal pipe size (default), or by tube outside diameter (sanitary tube: a 1.5" tube is
+   * 1.5" outside, and is written `1.5" OD`).
+   */
+  sizing?: 'nps' | 'tube-od'
+  /**
+   * Whether a component it has no dimensioned row for takes the built-in ASME pipe-fitting standards. False for tube
+   * specifications, whose fittings those standards (sized by NPS) do not dimension: a missing row is reported instead.
+   */
+  standardDimensions?: boolean
   material: string
   schedule: string
   rating: string
@@ -1021,6 +1031,15 @@ export function prepAt(run: PipeRun, index: number): EndPrep {
 /** Socket-weld gap of a specification: its own, else 1/16″ (ASME B31.3 Fig. 328.5.2C). */
 export const DEFAULT_SOCKET_GAP = SOCKET_WELD_GAP
 export const socketGapOf = (spec: PipeSpec) => spec.socketGap ?? DEFAULT_SOCKET_GAP
+/** Carbon steel pipe of Schedule 80 (XS) or heavier: where a shop that fits light and stainless pipe tight opens a root gap. */
+export function heavyCarbon(spec: PipeSpec, size?: PipeSize): boolean {
+  const material = `${size?.material ?? ''} ${spec.material}`
+  if (/stainless|A312|A358|A403|\b3[01]6L?\b|\b304L?\b|duplex|alloy|nickel/i.test(material)) return false
+  const sch = (size?.schedule ?? spec.schedule ?? '').toUpperCase().replace(/^SCH(EDULE)?\.?\s*/, '').replace(/\.$/, '')
+  if (/^X+S$/.test(sch)) return true
+  const n = Number(/^(\d+)/.exec(sch)?.[1])
+  return Number.isFinite(n) && n >= 80
+}
 
 const outsideDiameter = (doc: IsoDocument, run: PipeRun) =>
   getSpec(doc, run.specId).sizes.find(s => s.nps === run.nps)?.od ?? pipeOd(run.nps)
@@ -1133,16 +1152,20 @@ export function runResult(doc: IsoDocument, run: PipeRun): RunResult {
   const fit = [run.fromFieldFit, run.toFieldFit].map(f => f && !run.connector && !body ? fieldFitMakeup(doc) : 0) as [number, number]
   // Fittings welded face to face (a close-coupled assembly) share one root gap.
   const welded = run.connector && !boltedConnector(doc, run) && !stubInFlange(doc, run) && [a, b].every(n => !['end', 'support', 'annotation', 'gasket', 'bolt'].includes(n.kind))
-  // A shop that takes up its weld gaps at fit-up cuts to the takeouts alone (Project profile › Weld gaps).
-  const ignoreGaps = doc.profile?.weldGaps === 'ignore'
+  // A shop that takes up its weld gaps at fit-up cuts to the takeouts alone (Project profile › Weld gaps); one that opens a
+  // root gap only on heavy carbon pipe deducts it there alone.
+  const gapRule = doc.profile?.weldGaps ?? 'deduct'
+  const ignoreGaps = gapRule === 'ignore'
+  const rootGap = gapRule === 'heavy-carbon' && !heavyCarbon(spec, size) ? 0 : run.rootGap ?? spec.rootGap
+  const socketGap = doc.profile?.socketPullBack ?? socketGapOf(spec)
   const gaps = [a, b].map((n, i) => {
     if (ignoreGaps || body || fit[i] || ['end', 'support', 'annotation', 'gasket', 'bolt'].includes(n.kind) || isFormedBend(doc, n)) return 0
     const prep = pipePrepAt(doc, run, i)
     // Fittings welded face to face share one root gap; a pipe-to-pipe butt weld splits its root gap; a socket stops
     // the pipe short of its bottom.
-    if (run.connector) return welded && prep === 'BW' ? (run.rootGap ?? spec.rootGap) / 2 : 0
-    if (prep === 'BW') return (run.rootGap ?? spec.rootGap) / (n.kind === 'weld' ? 2 : 1)
-    return prep === 'SW' && n.kind !== 'weld' ? socketGapOf(spec) : 0
+    if (run.connector) return welded && prep === 'BW' ? rootGap / 2 : 0
+    if (prep === 'BW') return rootGap / (n.kind === 'weld' ? 2 : 1)
+    return prep === 'SW' && n.kind !== 'weld' ? socketGap : 0
   }) as [number, number]
   const cut = overall - ts[0] - ts[1] - gaps[0] - gaps[1] + fit[0] + fit[1]
   return {
@@ -2355,6 +2378,8 @@ function readPiping(raw: string, where: { at: string }): IsoDocument {
         throw new Error('Invalid pipe specification description.')
     if (
       [s.service, s.revision].some(v => v != null && !isString(v)) ||
+      (s.sizing != null && s.sizing !== 'nps' && s.sizing !== 'tube-od') ||
+      (s.standardDimensions != null && typeof s.standardDimensions !== 'boolean') ||
       !validSpecDesign(s.design) ||
       (s.parameters != null &&
         (typeof s.parameters !== 'object' ||

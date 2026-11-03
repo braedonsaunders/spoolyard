@@ -1,6 +1,6 @@
 import type { PaperLabel } from "../../core/drawing";
 import { COMPONENT_TYPES } from "../../core/components";
-import { sizeFor } from "../../core/format";
+import { specSizeText } from "../../core/format";
 import { getNode, type IsoDocument } from "../../core/model";
 import { paperUnits } from "../paper";
 import { Actions, Note, NumberInput, PairHead, PaperPointInputs, Row, Section, TextInput } from "./kit";
@@ -38,7 +38,7 @@ export function labelKind(label: PaperLabel) {
 export function labelOwnerName(doc: IsoDocument, label: PaperLabel) {
   const node = doc.nodes.find((n) => n.id === label.owner), run = doc.runs.find((r) => r.id === label.owner);
   if (node) return [COMPONENT_TYPES.find((t) => t.code === node.component)?.label ?? node.kind, node.tag].filter(Boolean).join(" · ");
-  if (run) return `${sizeFor(doc, run.nps)} pipe`;
+  if (run) return `${specSizeText(doc, run.specId, run.nps)} pipe`;
   return undefined;
 }
 

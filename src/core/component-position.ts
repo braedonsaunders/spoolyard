@@ -403,20 +403,23 @@ export function placeAtOpenEnd(doc: IsoDocument, runId: string, end: 0 | 1, type
 }
 
 /**
- * A 45° offset put into a straight pipe, as a fitter rolls one in: at the point clicked the line turns 45° toward
- * `toward` (a plant axis square to the pipe), runs on until it has moved `offset` across, and turns back through a
- * second 45° to carry on parallel. The line beyond keeps its length along the run, so everything beyond moves across
- * by the offset. Both turns take the specification's 45° elbows. Returns the two elbows.
+ * An offset put into a straight pipe, as a fitter rolls one in: at the point clicked the line turns toward `across` (a
+ * vector square to the pipe: a plain offset along one plant axis, or a rolling offset across two), moves that far
+ * across, and turns back to carry on parallel. Through 45° elbows the offset also takes as much run along the pipe as
+ * it moves across, and the line beyond keeps its length along the run; through 90° elbows it takes none. Everything
+ * beyond moves across by the offset. Both turns take the specification's elbows. Returns the two elbows.
  */
-export function insertOffset45(doc: IsoDocument, runId: string, fraction: number, toward: Vec3, offset: number): [PipeNode, PipeNode] {
+export function insertOffset(doc: IsoDocument, runId: string, fraction: number, across: Vec3, angle: 45 | 90 = 45): [PipeNode, PipeNode] {
   const run = doc.runs.find(r => r.id === runId && !r.connector);
   if (!run) throw new Error('Click a straight pipe to put the offset in.');
+  const offset = length(across);
   if (!(offset > 0)) throw new Error('Enter the offset: how far across the line moves.');
   const a = getNode(doc, run.from).position, b = getNode(doc, run.to).position, span = length(sub(b, a));
-  const u = mul(sub(b, a), 1 / (span || 1)), t = mul(toward, 1 / (length(toward) || 1));
-  if (Math.abs(dot(u, t)) > 1e-6) throw new Error('The offset goes across the pipe: choose a direction square to it, not along it.');
+  const u = mul(sub(b, a), 1 / (span || 1));
+  if (Math.abs(dot(u, across)) > 1e-6 * offset) throw new Error('The offset goes across the pipe: choose directions square to it, not along it.');
   if (!(fraction > 0 && fraction < 1)) throw new Error('Click between the pipe ends to put the offset in.');
-  if ((1 - fraction) * span <= offset) throw new Error('The pipe beyond that point is too short for an offset that size: a 45° offset needs as much run along the pipe as it moves across. Click nearer the start, or enter a smaller offset.');
+  const run45 = angle === 45 ? offset : 0;
+  if ((1 - fraction) * span <= run45) throw new Error('The pipe beyond that point is too short for an offset that size: a 45° offset needs as much run along the pipe as it moves across. Click nearer the start, or enter a smaller offset.');
   const turn = insertComponent(doc, run.id, 'weld', fraction), onward = doc.runs.find(r => r.from === turn.id)!;
   // Everything beyond the offset moves across with the line: its connections, and what sits on its pipes.
   const moving = new Set<string>([onward.to]), queue = [onward.to], runsMoved = new Set<string>([onward.id]);
@@ -432,10 +435,9 @@ export function insertOffset45(doc: IsoDocument, runId: string, fraction: number
     }
     for (const n of doc.nodes) if (n.associatedRunId && runsMoved.has(n.associatedRunId) && !moving.has(n.id)) { moving.add(n.id); queue.push(n.id); }
   }
-  const across = mul(t, offset);
   for (const id of moving) { const n = getNode(doc, id); n.position = add(n.position, across); }
-  // The second turn, one offset along and one across; the pipe beyond it carries on as before.
-  const back: PipeNode = { id: id(), kind: 'end', position: add(turn.position, add(mul(u, offset), across)) };
+  // The second turn, across (and, through 45s, as far along); the pipe beyond it carries on as before.
+  const back: PipeNode = { id: id(), kind: 'end', position: add(turn.position, add(mul(u, run45), across)) };
   doc.nodes.push(back);
   const rest: PipeRun = { ...onward, id: id(), from: back.id };
   delete rest.fromPrep; delete rest.fromField; delete rest.fromFieldFit; delete rest.fromTag;
@@ -443,7 +445,7 @@ export function insertOffset45(doc: IsoDocument, runId: string, fraction: number
   delete onward.toPrep; delete onward.toField; delete onward.toFieldFit; delete onward.toTag;
   doc.runs.push(rest);
   for (const n of doc.nodes) if (n.associatedRunId === onward.id) {
-    if (dot(sub(n.position, back.position), u) <= 0) throw new Error('A component on the pipe sits where the offset would go. Click beyond it, or move it first.');
+    if (dot(sub(n.position, back.position), u) <= (angle === 90 ? 1e-6 : 0)) throw new Error('A component on the pipe sits where the offset would go. Click beyond it, or move it first.');
     n.associatedRunId = rest.id;
   }
   setAutoFitting(doc, turn.id);
@@ -454,6 +456,92 @@ export function insertOffset45(doc: IsoDocument, runId: string, fraction: number
   }
   return [getNode(doc, turn.id), back];
 }
+
+/**
+ * The outlet a fitting gets with nothing beyond it yet: an open end one port's takeout out along `dir`, joined to the
+ * fitting with no pipe (a connector). Routing on from it later carries the pipe on from the fitting itself.
+ */
+function openOutlet(doc: IsoDocument, node: PipeNode, from: PipeRun, dir: Vec3): PipeRun {
+  const outlet: PipeNode = { id: id(), kind: 'end', position: add(node.position, dir) }
+  doc.nodes.push(outlet)
+  const prep = prepAt(from, from.from === node.id ? 0 : 1)
+  const stub: PipeRun = { id: id(), from: node.id, to: outlet.id, specId: from.specId, nps: from.nps, spool: from.spool, line: from.line, heat: '', endPrep: prep, fromPrep: prep, toPrep: prep, connector: true }
+  doc.runs.push(stub)
+  return stub
+}
+/** Moves an open outlet out to its fitting's port: one takeout from the fitting along its stub. */
+function seatOutlet(doc: IsoDocument, node: PipeNode, stub: PipeRun, label: string) {
+  const reach = takeout(doc, node, stub.id)
+  if (reach == null || !Number.isFinite(reach) || reach <= 0)
+    throw new Error(`The ${label} has no length in the specification or the standards, so its open end cannot be placed. Give its specification row a takeout.`)
+  const outlet = getNode(doc, stub.to), dir = sub(outlet.position, node.position)
+  outlet.position = add(node.position, mul(dir, reach / (length(dir) || 1)))
+}
+
+/**
+ * Turn a pipe's open end through a 45° or 90° elbow toward a plant direction square to the pipe, with nothing beyond
+ * the elbow yet: its outlet is left open (the natural end of a spool, or where the next pipe is routed on from later).
+ * The pipe keeps its length to the elbow's centre. Returns the elbow.
+ */
+export function turnAtOpenEnd(doc: IsoDocument, runId: string, end: 0 | 1, toward: Vec3, angle: 45 | 90): PipeNode {
+  const run = doc.runs.find(r => r.id === runId && !r.connector)
+  if (!run) throw new Error('Click the open end of a pipe.')
+  const node = getNode(doc, end === 0 ? run.from : run.to), far = getNode(doc, end === 0 ? run.to : run.from)
+  if (node.kind !== 'end' || node.associatedRunId || connected(doc, node.id).length !== 1)
+    throw new Error('That pipe end already has a fitting. Click an open pipe end.')
+  const out = sub(node.position, far.position), u = mul(out, 1 / (length(out) || 1)), t = mul(toward, 1 / (length(toward) || 1))
+  if (Math.abs(dot(u, t)) > 1e-6) throw new Error('The elbow turns across the pipe: choose a direction square to it, not along it.')
+  const dir = angle === 90 ? t : mul(add(u, t), Math.SQRT1_2)
+  const stub = openOutlet(doc, node, run, dir)
+  setAutoFitting(doc, node.id)
+  seatOutlet(doc, node, stub, `${angle}° elbow`)
+  return node
+}
+
+/**
+ * A 45° lateral put into a straight pipe at the point clicked, its branch leaning forward along the pipe and toward a
+ * plant direction square to it. The branch is left open at the lateral's outlet, to be routed on from. Returns the
+ * lateral.
+ */
+export function insertLateral(doc: IsoDocument, runId: string, fraction: number, toward: Vec3): PipeNode {
+  const run = doc.runs.find(r => r.id === runId && !r.connector)
+  if (!run) throw new Error('Click a straight pipe to put the lateral in.')
+  if (!(fraction > 0 && fraction < 1)) throw new Error('Click between the pipe ends to put the lateral in.')
+  const a = getNode(doc, run.from).position, b = getNode(doc, run.to).position, u = mul(sub(b, a), 1 / (length(sub(b, a)) || 1))
+  const t = mul(toward, 1 / (length(toward) || 1))
+  if (Math.abs(dot(u, t)) > 1e-6) throw new Error('A lateral branches across the pipe: choose a direction square to it, not along it.')
+  const node = insertComponent(doc, run.id, 'tee', fraction)
+  const stub = openOutlet(doc, node, run, mul(add(u, t), Math.SQRT1_2))
+  setAutoFitting(doc, node.id)
+  if (!node.branchEdgeId) throw new Error('The lateral could not be fitted to that pipe.')
+  seatOutlet(doc, node, stub, 'lateral')
+  for (const edge of connected(doc, node.id)) {
+    const cut = runResult(doc, edge).cut
+    if (!edge.connector && Number.isFinite(cut) && cut <= 0)
+      throw new Error('That position leaves no pipe beside the lateral after its takeouts. Click farther from the fittings.')
+  }
+  return node
+}
+
+/**
+ * Routing on from a fitting's open outlet (an elbow, lateral or valve left open on its end): straight on along the
+ * outlet, the outlet goes and the new pipe starts at the fitting itself, so it is one pipe with one weld. Returns the
+ * connection to route from and the offset from it, or nothing when the route is not from such an outlet.
+ */
+export function throughOutlet(doc: IsoDocument, nodeId: string, delta: Vec3): { from: string; delta: Vec3 } | undefined {
+  const node = doc.nodes.find(n => n.id === nodeId), edges = node ? connected(doc, node.id) : []
+  if (!node || node.kind !== 'end' || node.associatedRunId || edges.length !== 1 || !edges[0].connector) return undefined
+  const stub = edges[0], fitting = getNode(doc, stub.from === nodeId ? stub.to : stub.from), along = sub(node.position, fitting.position)
+  if (!(length(along) > 0) || length(sub(mul(along, 1 / length(along)), mul(delta, 1 / (length(delta) || 1)))) > 1e-6) return undefined
+  doc.runs.splice(doc.runs.indexOf(stub), 1)
+  doc.nodes.splice(doc.nodes.indexOf(node), 1)
+  if (fitting.portFlanges) delete fitting.portFlanges[stub.id]
+  return { from: fitting.id, delta: add(along, delta) }
+}
+
+/** A 45° offset of `offset` toward a plant direction square to the pipe (see `insertOffset`). */
+export const insertOffset45 = (doc: IsoDocument, runId: string, fraction: number, toward: Vec3, offset: number) =>
+  insertOffset(doc, runId, fraction, mul(toward, offset / (length(toward) || 1)), 45);
 
 /** Whether a connection is a square turn between two pipes, where an angle body (angle or relief valve) can sit. */
 export function isSquareTurn(doc: IsoDocument, nodeId: string): boolean {

@@ -98,11 +98,17 @@ export function pickOrthoPoint(
   const origin = drawing.project(anchor),
     m: Point = [sheet[0] - origin[0], sheet[1] - origin[1]]
   let best: { along: Vec3; t: number; residual: number } | null = null
+  // A direction drawn along the same line on the page as one before it (north-east and up, on isometric paper) is left
+  // to that one: the routing plane's own directions come first.
+  const seen: Point[] = []
   for (const along of routingDirections(!!settings.polar45, settings.plane)) {
     const q = drawing.project(anchor.map((v, i) => v + along[i]) as Vec3),
       d: Point = [q[0] - origin[0], q[1] - origin[1]],
       dd = d[0] * d[0] + d[1] * d[1]
     if (dd < 1e-12) continue // edge-on in this view
+    const unit: Point = [d[0] / Math.sqrt(dd), d[1] / Math.sqrt(dd)]
+    if (seen.some(s => Math.abs(s[0] * unit[1] - s[1] * unit[0]) < 1e-3 && s[0] * unit[0] + s[1] * unit[1] > 0)) continue
+    seen.push(unit)
     const t = (m[0] * d[0] + m[1] * d[1]) / dd,
       residual = Math.hypot(m[0] - t * d[0], m[1] - t * d[1])
     if (t >= 0 && (!best || residual < best.residual - 1e-9)) best = { along, t, residual }
@@ -113,14 +119,17 @@ export function pickOrthoPoint(
 }
 
 /**
- * The directions a pick routes along: the six plant axes; with `polar45`, the four along the routing plane's two axes
- * and the four 45° diagonals between them. A diagonal is a step of one along each of its two axes, so its travel along
- * each axis is whole blocks.
+ * The directions a pick routes along, first choice first: the six plant axes; with `polar45`, the routing plane's two
+ * axes and the four 45° diagonals between them first, then the third axis and the 45°s rising or falling from the
+ * plane (where the page does not draw them along one of the first; see `pickOrthoPoint`). A diagonal is a step of one
+ * along each of its two axes, so its travel along each axis is whole blocks.
  */
 export function routingDirections(polar45: boolean, plane: GridPlane = 'xy'): Vec3[] {
-  const out: Vec3[] = [], [a, b] = axes(plane)
-  for (const axis of polar45 ? [a, b] : [0, 1, 2]) for (const s of [1, -1]) { const v: Vec3 = [0, 0, 0]; v[axis] = s; out.push(v) }
-  if (polar45) for (const sa of [1, -1]) for (const sb of [1, -1]) { const v: Vec3 = [0, 0, 0]; v[a] = sa; v[b] = sb; out.push(v) }
+  const out: Vec3[] = [], [a, b] = axes(plane), c = 3 - a - b
+  const axis = (k: number) => { for (const s of [1, -1]) { const v: Vec3 = [0, 0, 0]; v[k] = s; out.push(v) } }
+  const diagonals = (p: number, q: number) => { for (const sp of [1, -1]) for (const sq of [1, -1]) { const v: Vec3 = [0, 0, 0]; v[p] = sp; v[q] = sq; out.push(v) } }
+  if (!polar45) { for (const k of [0, 1, 2]) axis(k); return out }
+  axis(a); axis(b); diagonals(a, b); axis(c); diagonals(a, c); diagonals(b, c)
   return out
 }
 
