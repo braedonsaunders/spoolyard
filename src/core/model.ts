@@ -3,7 +3,7 @@ import { COMPONENT_TYPES, COMPONENT_TYPE_BY_CODE, SYMBOL_FAMILIES, type SymbolFa
 import { unitsPerMm } from './paper'
 import { boltedConnector, boltedDirect, breakOwner, stubInFlange, defaultCode, flangedAllowance, flangedJoints, matingFlange, spansSpools, nippleEnds, nippleLength, nippleText, nodeItem, pipeEndPrep, specRating } from './joints'
 import { formatLength } from './format'
-import { flange, GASKET_THICKNESS, pipeOd, SOCKET_WELD_GAP, tangentLength, type ButterflyBody, type ButterflyCategory, type ValvePattern } from './standards'
+import { flange, GASKET_THICKNESS, pipeOd, pipeWall, SOCKET_WELD_GAP, tangentLength, type ButterflyBody, type ButterflyCategory, type ValvePattern } from './standards'
 import { validCatalogDesign, validSpecDesign, type SpecDesign } from './spec-design'
 import { materialErrors, materialTakeoff, routeOrder } from './material-list'
 import { profileError, profileOf, type FabricationProfile } from './profile'
@@ -483,6 +483,11 @@ export interface PipeRun {
   fromTag?: string
   toTag?: string
   rootGap?: number
+  /**
+   * The pipe's schedule when it differs from its size's in the specification (`SCH.40S`, `STD.`, `XS`): its wall,
+   * weight and material text follow it, and so do the butt-weld fittings on it.
+   */
+  schedule?: string
   endPrep: EndPrep
   /**
    * Listed by length, without a cut: the piece runs on through a drawing break as one length, or is a full random
@@ -1032,6 +1037,32 @@ export function prepAt(run: PipeRun, index: number): EndPrep {
 export const DEFAULT_SOCKET_GAP = SOCKET_WELD_GAP
 export const socketGapOf = (spec: PipeSpec) => spec.socketGap ?? DEFAULT_SOCKET_GAP
 /** Carbon steel pipe of Schedule 80 (XS) or heavier: where a shop that fits light and stainless pipe tight opens a root gap. */
+/** A schedule as compared: `SCH.40S`, `40S` and `SCH 40S` are one schedule, as are `STD.` and `STD`. */
+export const scheduleKey = (text = '') => text.trim().toUpperCase().replace(/^SCH(EDULE)?\.?\s*/, '').replace(/\.$/, '')
+/**
+ * The pipe a run is bought as: its size in the specification, at the run's own schedule where it has one (that
+ * schedule's ASME B36.10M/B36.19M wall, and the weight the wall gives at the specification's density).
+ */
+export function runPipeSize(doc: Pick<IsoDocument, 'specs'>, run: Pick<PipeRun, 'specId' | 'nps' | 'schedule'>): PipeSize | undefined {
+  const spec = getSpec(doc as IsoDocument, run.specId), size = spec.sizes.find(s => s.nps === run.nps)
+  if (!run.schedule || scheduleKey(run.schedule) === scheduleKey(size?.schedule ?? spec.schedule)) return size
+  const od = size?.od ?? pipeOd(run.nps), wall = pipeWall(run.nps, run.schedule)
+  if (od == null || wall == null) return size
+  const kgM = Math.round(Math.PI * (od - wall) * wall * spec.density / 1e6 * 1000) / 1000
+  return { ...(size ?? { nps: run.nps }), od, wall, kgM, schedule: run.schedule, bomDescription: undefined }
+}
+/**
+ * The schedules a pipe of this size can be bought in instead of its specification's: the ASME B36.19M stainless
+ * schedules for a stainless specification, else the B36.10M ones, each where it lists a wall at the size. None for tube.
+ */
+export function scheduleChoices(spec: PipeSpec, nps: number): string[] {
+  if (spec.sizing === 'tube-od') return []
+  const material = `${spec.sizes.find(s => s.nps === nps)?.material ?? ''} ${spec.material}`
+  const stainless = /stainless|A312|A358|A403|\b3[01]6L?\b|\b304L?\b/i.test(material)
+  const all = stainless ? ['SCH.5S', 'SCH.10S', 'SCH.40S', 'SCH.80S', 'SCH.160', 'XXS']
+    : ['SCH.10', 'SCH.20', 'SCH.30', 'STD.', 'SCH.40', 'SCH.60', 'XS', 'SCH.80', 'SCH.100', 'SCH.120', 'SCH.140', 'SCH.160', 'XXS']
+  return all.filter(s => pipeWall(nps, s) != null)
+}
 export function heavyCarbon(spec: PipeSpec, size?: PipeSize): boolean {
   const material = `${size?.material ?? ''} ${spec.material}`
   if (/stainless|A312|A358|A403|\b3[01]6L?\b|\b304L?\b|duplex|alloy|nickel/i.test(material)) return false
@@ -1141,7 +1172,7 @@ export function runResult(doc: IsoDocument, run: PipeRun): RunResult {
   const a = getNode(doc, run.from),
     b = getNode(doc, run.to),
     spec = getSpec(doc, run.specId),
-    size = spec.sizes.find(s => s.nps === run.nps)
+    size = runPipeSize(doc, run)
   const overall = overallOf(doc, run, a, b)
   const ts: [number, number] = [
     takeout(doc, a, run.id) ?? NaN,
@@ -2489,6 +2520,8 @@ function readPiping(raw: string, where: { at: string }): IsoDocument {
         throw new Error('Invalid pipe attributes.')
     if (r.rootGap != null && !nonnegative(r.rootGap))
       throw new Error('Invalid pipe root gap.')
+    if (r.schedule != null && !isString(r.schedule, 20))
+      throw new Error('Invalid pipe schedule.')
     if ([r.fromTag, r.toTag].some(v => v != null && !isString(v)))
       throw new Error('Invalid weld tag.')
     getNode(d, r.from)

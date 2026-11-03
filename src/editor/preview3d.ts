@@ -9,6 +9,7 @@ import {
   sub,
   mul,
   add,
+  runPipeSize,
   runResult,
   takeout,
   connected,
@@ -84,7 +85,7 @@ export function mountPreview3d(container: HTMLElement, doc: IsoDocument, spool =
   /**
    * A flange whose face is at `face`, its hub running back along `axis` (unit, away from the gasket) toward the pipe it
    * is welded to: the plate (its outside diameter and thickness), a raised face where it has one, and a weld-neck's
-   * tapered hub or a slip-on's or socket's collar, down to the pipe.
+   * tapered hub or a slip-on's or socket's collar, down to the pipe. Returns where its hub ends.
    */
   const flange = (face: THREE.Vector3, axis: THREE.Vector3, code: string, row: CatalogItem | undefined, pipeR: number, nps?: number, rating?: string | number) => {
     // A sanitary ferrule: a thin lip at the face, a tube-sized body back to its weld, and the clamp round the lips.
@@ -93,7 +94,7 @@ export function mountPreview3d(container: HTMLElement, doc: IsoDocument, spool =
       solid(face, face.clone().addScaledVector(axis, lip), od / 2);
       solid(face.clone().addScaledVector(axis, lip), face.clone().addScaledVector(axis, Math.max(lip * 2, row?.takeout ?? pipeR)), pipeR * 1.02);
       solid(face, face.clone().addScaledVector(axis, lip * 1.6), od / 2 * 1.12, od / 2 * 0.98);
-      return;
+      return face.clone().addScaledVector(axis, Math.max(lip * 2, row?.takeout ?? pipeR));
     }
     const { od, t } = flangeSize(row, pipeR, nps, rating), item = row as (CatalogItem & { lengthThroughHub?: number }) | undefined, blind = /BL$|BLND/.test(code);
     const std = nps ? standardFlange(nps, rating ?? row?.rating) : undefined;
@@ -101,11 +102,20 @@ export function mountPreview3d(container: HTMLElement, doc: IsoDocument, spool =
     if (raised) solid(face, face.clone().addScaledVector(axis, raised), Math.min(od / 2 * 0.62, pipeR * 1.7));
     const back = face.clone().addScaledVector(axis, raised), plate = back.clone().addScaledVector(axis, t);
     solid(back, plate, od / 2);
-    if (blind) return;
+    if (blind) return plate;
     const weldNeck = /WN|MSS/.test(code);
-    const hub = weldNeck ? Math.max(t * 1.2, (item?.lengthThroughHub ?? std?.wnLength ?? item?.takeout ?? t * 2.5) - t - raised)
+    // A weld neck's own row gives its length through the hub (a long weld neck's runs well past the standard one).
+    const own = item && !item.takeoutMissing && item.takeout > 0 ? item.takeout : undefined;
+    const hub = weldNeck ? Math.max(t * 1.2, (item?.lengthThroughHub ?? own ?? std?.wnLength ?? t * 2.5) - t - raised)
       : Math.max(t * 0.45, (item?.lengthThroughHub ?? std?.soLength ?? t * 1.4) - t - raised);
-    solid(plate, plate.clone().addScaledVector(axis, hub), Math.min(od / 2 * 0.8, pipeR * (weldNeck ? 1.45 : 1.3)), pipeR * (weldNeck ? 1.02 : 1.3));
+    const end = plate.clone().addScaledVector(axis, hub);
+    if (weldNeck && hub > t * 3) {
+      // A long weld neck: a short taper, then a straight barrel at the pipe's size.
+      const taper = plate.clone().addScaledVector(axis, t * 1.5);
+      solid(plate, taper, Math.min(od / 2 * 0.8, pipeR * 1.45), pipeR * 1.08);
+      solid(taper, end, pipeR * 1.08);
+    } else solid(plate, end, Math.min(od / 2 * 0.8, pipeR * (weldNeck ? 1.45 : 1.3)), pipeR * (weldNeck ? 1.02 : 1.3));
+    return end;
   };
   /** A flange's outside diameter and thickness: its row's, else ASME B16.5's for its size and class, else in proportion. */
   function flangeSize(row: CatalogItem | undefined, pipeR: number, nps?: number, rating?: string | number) {
@@ -122,10 +132,11 @@ export function mountPreview3d(container: HTMLElement, doc: IsoDocument, spool =
       result = runResult(doc, r),
       span = sub(b.position, a.position),
       norm = Math.hypot(...span);
-    const size = getSpec(doc, r.specId).sizes.find((s) => s.nps === r.nps);
+    const size = runPipeSize(doc, r);
     if (!size || !norm || !Number.isFinite(result.cut) || result.cut <= 0) continue;
-    const start = vector(add(a.position, mul(span, (result.takeouts[0] + result.gaps[0]) / norm))),
-      end = vector(add(b.position, mul(span, -(result.takeouts[1] + result.gaps[1]) / norm)));
+    // Drawn to each fitting's end: the weld fills the root gap, so the model shows no gap at a joint.
+    const start = vector(add(a.position, mul(span, result.takeouts[0] / norm))),
+      end = vector(add(b.position, mul(span, -result.takeouts[1] / norm)));
     cylinder(start, end, size.od / 2, size.od / 2, metal);
     cylinder(start, end, size.od / 2 - size.wall, size.od / 2 - size.wall, metal);
     for (const point of [start, end]) {
@@ -141,19 +152,34 @@ export function mountPreview3d(container: HTMLElement, doc: IsoDocument, spool =
     const centre = vector(j.position), g = j.gasket?.thickness ?? 3;
     const sides = j.runIds.map((id) => runs.find((r) => r.id === id)).filter((r): r is (typeof runs)[number] => !!r);
     let gasketR = 0, gasketAxis: THREE.Vector3 | undefined;
+    // At a flanged component's port the joint sits at the component's face, and the gasket lies against it.
+    const port = j.kind === "component-port", seat = port ? centre.clone() : undefined;
     sides.forEach((r, i) => {
-      const far = getNode(doc, r.from === j.nodeId ? r.to : r.from).position, axis = vector(far).sub(centre).normalize();
+      const node = getNode(doc, j.nodeId), far = getNode(doc, r.from === j.nodeId ? r.to : r.from).position, axis = vector(far).sub(centre).normalize();
       if (!Number.isFinite(axis.x)) return;
       const f = j.flanges[i] ?? j.flanges[0];
       if (!f) return;
       gasketAxis ??= axis;
       const pipeR = pipeRadius(r), size = flangeSize(f.item, pipeR, j.nps, j.rating);
-      flange(centre.clone().addScaledVector(axis, g / 2), axis, f.code, f.item, pipeR, j.nps, j.rating);
+      let face = centre.clone().addScaledVector(axis, port ? g : g / 2);
+      // A lap-joint flange rides on its stub end: the stub's lap at the face, the flange behind it.
+      const s = j.stubRunIds.indexOf(r.id), stub = s >= 0 ? j.stubEnds[s] : undefined;
+      if (stub) {
+        const wall = runPipeSize(doc, r)?.wall ?? pipeR * 0.1;
+        const lap = Math.max(2, stub.thickness ?? wall * 1.5);
+        solid(face, face.clone().addScaledVector(axis, lap), Math.min(size.od / 2 * 0.62, pipeR * 1.7));
+        face = face.clone().addScaledVector(axis, lap);
+      }
+      const reached = flange(face, axis, f.code, f.item, pipeR, j.nps, j.rating);
+      // The stub end's barrel, or the neck of a fitting longer than drawn, carries on to where the pipe starts.
+      const result = runResult(doc, r), side = r.from === j.nodeId ? 0 : 1;
+      const pipeEnd = vector(node.position).addScaledVector(axis, result.takeouts[side]);
+      if (reached && pipeEnd.clone().sub(reached).dot(axis) > 0.5) solid(reached, pipeEnd, pipeR);
       gasketR = Math.max(gasketR, Math.min(size.od / 2 * 0.62, pipeR * 1.7));
       // Equipment, or an existing flange beyond the drawing: its plate across the gasket.
       if (j.kind === "equipment") solid(centre.clone().addScaledVector(axis, -g / 2), centre.clone().addScaledVector(axis, -g / 2 - size.t), size.od / 2, undefined, existingMaterial);
     });
-    if (j.gasket && gasketR && gasketAxis) gasket(centre, gasketAxis, g, gasketR);
+    if (j.gasket && gasketR && gasketAxis) gasket(seat ? seat.clone().addScaledVector(gasketAxis, g / 2) : centre, gasketAxis, g, gasketR);
     if (getNode(doc, j.nodeId).kind === "flange") jointNodes.add(j.nodeId);
   }
   for (const n of doc.nodes.filter((n) => n.kind !== "end" && n.kind !== "weld" && !jointNodes.has(n.id))) {

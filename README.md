@@ -71,7 +71,7 @@ where it powers piping isometrics in Files and Tools.
   on "No pipe: fittings welded together", to weld fittings straight to each other. Choose the mating flanges a
   flanged valve comes with as you insert it, or later for both ends at once. Double-click any dimension on the sheet
   to type its length in place. Esc puts a tool down in one press, as in AutoCAD.
-- **Sheets.** Each spool is a sheet. **New sheet** starts the next one; **Split sheet** (or right-click › Continue
+- **Sheets.** Each spool is a sheet. **New sheet** starts the next one, listed until it is drawn on; **Split sheet** (or right-click › Continue
   on a new sheet here) breaks a line onto a new sheet at a point or a connection. Window and crossing selection,
   and Copy, Ctrl+C and Ctrl+V, place copies where you pick; a branch copied with its olet goes onto the pipe it is
   pasted on.
@@ -94,7 +94,8 @@ where it powers piping isometrics in Files and Tools.
   stainless steel Class 150 to 900, with about 11,000 rows and complete purchase descriptions. SAN-A is 316L
   sanitary tube, ½" to 6" OD, sized by tube OD (`1.5" OD TUBE`), with orbital-weld fittings and tri-clamp joints
   (each listed as two ferrules, a gasket and a clamp). Every row is editable, and you can add your own
-  specifications, sizes and components.
+  specifications, sizes and components. A pipe can be bought in another schedule than its specification's (Sch 40S
+  in a Sch 10S spec): its wall, weight and text follow, and so do its butt-weld fittings.
 - **Your own specification library.** Save a specification you have refined to your library and every new drawing
   starts from it in place of the standard one; other drawings add it from the specification lists. In the browser
   and the desktop app the library is kept on your device; inside BidWright it is your organisation's, shared by

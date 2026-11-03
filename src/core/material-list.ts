@@ -4,7 +4,7 @@ import { ratingClass } from './standards'
 import { boltSizeText, compose, draftLength, listLength, purchaseText, orderedLength, scheduleText, sizeText, specSizeText } from './format'
 import { profileOf } from './profile'
 import {
-  bendArc, connected, deflection, dimensionSource, fitting, isReturnBody, returnPartner, flatSideText, getNode, getSpec, isFormedBend, withIndex, nippleDescription, nippleOf, pipePrepAt, round, runById, runResult, supportListed,
+  bendArc, connected, deflection, dimensionSource, fitting, isReturnBody, returnPartner, flatSideText, getNode, getSpec, isFormedBend, withIndex, nippleDescription, nippleOf, pipePrepAt, round, runById, runPipeSize, runResult, supportListed,
   type BomRow, type CatalogItem, type DimensionSource, type IsoDocument, type IssuedCells, type PipeNode, type PipeRun
 } from './model'
 
@@ -134,7 +134,7 @@ export const pieceEnds = (doc: IsoDocument, piece: PipePiece): [PipeEnd, PipeEnd
 /** The material text of a pipe: its own description, else its size's BOM text or description with the piece's ends. */
 export function pipeText(doc: IsoDocument, run: PipeRun, ends: readonly PipeEnd[]): string {
   if (run.description) return run.description.toUpperCase()
-  const spec = getSpec(doc, run.specId), size = spec.sizes.find(s => s.nps === run.nps)
+  const spec = getSpec(doc, run.specId), size = runPipeSize(doc, run)
   if (size?.bomDescription) return withPipeEnds(size.bomDescription.toUpperCase(), ends)
   return compose(withPipeEnds(size?.description ?? 'PIPE', ends), size?.material ?? spec.material, scheduleText(size?.schedule ?? spec.schedule))
 }
@@ -155,6 +155,17 @@ export function lugBoltText(own: string, nuts: number): string {
   return /STUD/.test(one) ? one.replace(/STUD/g, 'LUG') : 'LUG BOLTS, ' + one
 }
 
+/**
+ * A butt-weld fitting's schedule where its pipe is bought at another schedule than the specification's: each end
+ * matches the pipe welded to it (a reducer's text gives both, large end first).
+ */
+export function fittingSchedule(item: CatalogItem | undefined, edges: readonly PipeRun[]): string | undefined {
+  if (!item?.schedule || !edges.some(r => r.schedule)) return item?.schedule
+  const type = COMPONENT_TYPE_BY_CODE[item.component ?? '']
+  if (type?.endPrep !== 'BW' || !['elbow90', 'elbow45', 'tee', 'reducer', 'cap', 'flange'].includes(item.kind)) return item.schedule
+  const parts = item.schedule.split('/'), at = (nps: number, fallback: string) => edges.find(r => r.nps === nps && r.schedule)?.schedule ?? fallback
+  return parts.length === 2 ? `${at(item.nps, parts[0])}/${at(item.smallerNps ?? item.nps, parts[1])}` : at(item.nps, parts[0])
+}
 /** The drawing text of a catalogue row: its own BOM text, else description, material, schedule and rating. */
 export function rowDescription(item: CatalogItem | undefined, fallback: string): string {
   if (item?.bomDescription) return item.bomDescription.toUpperCase()
@@ -334,7 +345,7 @@ function buildRows(doc: IsoDocument, spool: string, options: SheetMaterialOption
   const sizes = [...new Set(spoolRuns.filter(r => !r.connector).map(r => r.nps))].sort((a, b) => a - b)
   const listed = new Set<PipePiece>()
   for (const run of sizes.flatMap(nps => routeOrder(doc, spoolRuns, nps).filter(r => !r.connector && r.nps === nps))) {
-    const spec = getSpec(doc, run.specId), pipeSize = spec.sizes.find(s => s.nps === run.nps)
+    const spec = getSpec(doc, run.specId), pipeSize = runPipeSize(doc, run)
     if (run.nipple) {
       // A nipple is a bought piece, counted like a fitting.
       const description = nippleDescription(doc, run), own = spec.nipples?.find(n => n.nps === run.nps)
@@ -408,7 +419,9 @@ function buildRows(doc: IsoDocument, spool: string, options: SheetMaterialOption
     const flanges = pair ? pairFlangesOn(doc, node, spool) : 0
     if (pair ? !flanges : spool && spansSpools(doc, node) && breakOwner(doc, node) !== spool) continue
     const label = node.description ?? COMPONENT_TYPE_BY_CODE[code]?.label ?? node.kind
-    const named = node.description ? node.description.toUpperCase() : rowDescription(item, label), flat = flatSideText(node)
+    // On pipe bought at its own schedule, a butt-weld fitting is bought to match.
+    const schedule = fittingSchedule(item, edges), bought = item && schedule !== item.schedule ? { ...item, schedule } : item
+    const named = node.description ? node.description.toUpperCase() : rowDescription(bought, label), flat = flatSideText(node)
     // A description read with its flat side already in it (an imported material text) names it once.
     const description = flat && named.split(',').some(p => p.trim() === flat) ? named : [named, flat].filter(Boolean).join(', ')
     const category = categoryOf(node.kind, code)
@@ -416,7 +429,7 @@ function buildRows(doc: IsoDocument, spool: string, options: SheetMaterialOption
     // An item with no catalogue entry is known only by its measured dimensions; a catalogued one by what is bought,
     // whatever takeout was measured for it.
     const identity: MaterialIdentity = {
-      category, code: code || node.kind, nps, smallerNps: smaller, rating: item?.rating, schedule: scheduleText(item?.schedule) || undefined,
+      category, code: code || node.kind, nps, smallerNps: smaller, rating: item?.rating, schedule: scheduleText(bought?.schedule) || undefined,
       material: item?.material, face: node.kind === 'flange' || node.kind === 'gasket' ? faceOfCode(code) : undefined,
       ...(code || item ? {} : { measured: [node.takeout ?? null, node.branchTakeout ?? null, node.portTakeouts ? Object.values(node.portTakeouts).sort((a, b) => a - b) : null] })
     }
@@ -656,7 +669,7 @@ const each = (item: Priced | undefined, qty = 1, per = 1): Measure => ({
 export function measureMember(doc: IsoDocument, member: string, qty: number, joints: FlangedJoint[]): Measure {
   const run = doc.runs.find(r => r.id === member)
   if (run) {
-    const spec = getSpec(doc, run.specId), size = spec.sizes.find(s => s.nps === run.nps)
+    const spec = getSpec(doc, run.specId), size = runPipeSize(doc, run)
     // A nipple is counted; it weighs its catalogued length of pipe.
     const length = run.nipple ? (nippleOf(doc, run)?.length ?? runResult(doc, run).cut) * qty : qty
     const m = Number.isFinite(length) && length > 0 ? length / 1000 : NaN, known = Number.isFinite(m)

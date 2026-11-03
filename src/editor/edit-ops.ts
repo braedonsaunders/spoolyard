@@ -527,11 +527,12 @@ export function parseBendRadius(raw: string, units: IsoDocument["units"], od: nu
  * preparation, lengthens that pipe: there is no joint there to weld, so no new connection and no extra cut piece.
  * Returns the lengthened pipe, or null when the route needs a new pipe (a turn, a change of size, or a joint).
  */
-export function extendRun(d: IsoDocument, nodeId: string, delta: Vec3, route: { specId: string; nps: number; spool: string; line: string; prep: PipeRun["endPrep"] }): PipeRun | null {
+export function extendRun(d: IsoDocument, nodeId: string, delta: Vec3, route: { specId: string; nps: number; spool: string; line: string; prep: PipeRun["endPrep"]; schedule?: string }): PipeRun | null {
   const node = d.nodes.find((n) => n.id === nodeId), edges = node ? connected(d, node.id) : [];
   if (!node || node.kind !== "end" || node.associatedRunId || edges.length !== 1) return null;
   const run = edges[0], index = run.from === node.id ? 0 : 1;
   if (run.connector || run.nipple || run.uncut || run.nps !== route.nps || run.specId !== route.specId || run.spool !== route.spool || run.line !== route.line) return null;
+  if ((run.schedule ?? "") !== (route.schedule ?? "")) return null;
   if (prepAt(run, index) !== route.prep) return null;
   const along = sub(node.position, getNode(d, index === 0 ? run.to : run.from).position);
   if (!parallel(along, delta) || dot(along, delta) <= 0) return null;

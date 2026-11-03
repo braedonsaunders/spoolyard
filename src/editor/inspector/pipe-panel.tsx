@@ -11,7 +11,10 @@ import {
   prepAt,
   resizeRun,
   resizeRunToCut,
+  runPipeSize,
   runResult,
+  scheduleChoices,
+  scheduleKey,
   sub,
   type EndPrep,
   type IsoDocument,
@@ -72,7 +75,7 @@ export function PipePanel({ doc, run, commit, onError, library, libraryError, sp
 
   const fabrication = (
     <>
-      <Section id="pipe.pipe" title="Pipe" defaultOpen summary={`${specSizeText(doc, run.specId, run.nps)} · ${scheduleText(spec.sizes.find((z) => z.nps === run.nps)?.schedule || spec.schedule)} · ${spec.name}`}>
+      <Section id="pipe.pipe" title="Pipe" defaultOpen summary={`${specSizeText(doc, run.specId, run.nps)} · ${scheduleText(runPipeSize(doc, run)?.schedule || spec.schedule)} · ${spec.name}`}>
         <Row label="Specification">
           <SpecSelect doc={doc} aria="Pipe specification" value={run.specId} library={library} libraryError={libraryError} busy={specBusy} onChange={(v) => void chooseSpec(v, run.id)} />
         </Row>
@@ -87,6 +90,19 @@ export function PipePanel({ doc, run, commit, onError, library, libraryError, sp
             })()}
           </select>
         </Row>
+        {(() => {
+          const choices = scheduleChoices(spec, run.nps), own = spec.sizes.find((z) => z.nps === run.nps)?.schedule || spec.schedule;
+          if (!choices.length) return null;
+          return (
+            <Row label="Schedule" keywords="schedule wall thickness sch 40 80 10" modified={!!run.schedule} onReset={() => edit((r) => { delete r.schedule; })}
+              hint="Pipe bought heavier or lighter than the specification's: its wall, weight and material text follow, and so do the butt-weld fittings on it.">
+              <select aria-label="Pipe schedule" value={run.schedule ?? ""} onChange={(e) => edit((r) => { if (e.target.value) r.schedule = e.target.value; else delete r.schedule; })}>
+                <option value="">{`As the specification · ${scheduleText(own)}`}</option>
+                {choices.filter((c) => scheduleKey(c) !== scheduleKey(own)).map((c) => <option key={c} value={c}>{scheduleText(c)}</option>)}
+              </select>
+            </Row>
+          );
+        })()}
         <Toggle label="No pipe: fittings welded together" keywords="close coupled fitting to fitting connector makeup no pipe"
           hint={run.connector ? "The fittings at its ends are welded (or screwed) straight to each other; turn off to put pipe back, then set its length." : "Weld the fittings at its ends straight to each other: the length becomes their makeup and nothing is cut. Dragging a fitting up to the next does the same."}
           checked={!!run.connector} onChange={(on) => commit((d) => { if (on) closeCouple(d, run.id); else { const r = d.runs.find((x) => x.id === run.id); if (r) delete r.connector; } })} />

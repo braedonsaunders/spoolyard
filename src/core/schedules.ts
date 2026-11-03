@@ -4,7 +4,7 @@ import { allowanceText, draftLength, scheduleText, sizeFor, sizeHeader, UNKNOWN 
 import { feetThreshold } from './profile'
 import { measureMember, packageSpools, pieceEnds, sheetMaterials, type MaterialRow, type PipeEnd, type PipePiece } from './material-list'
 import {
-  csv, getNode, getSpec, round, runResult, sheetInfoOf, weldDiameterInches, weldHours, welds, withIndex, runById,
+  csv, getNode, getSpec, round, runPipeSize, runResult, sheetInfoOf, weldDiameterInches, weldHours, welds, withIndex, runById,
   type IsoDocument, type PipeNode, type PipeRun, type Weld
 } from './model'
 import { pipeStation } from './stations'
@@ -183,7 +183,7 @@ export function weldRow(doc: IsoDocument, weld: Weld): WeldRow {
   // A branch or pad weld joins the header the outlet sits on.
   const branch = weld.type === 'BR' || weld.type === 'RP'
   const run = (branch ? doc.runs.find(r => r.id === node.associatedRunId) : undefined) ?? doc.runs.find(r => r.id === weld.runId)!
-  const spec = getSpec(doc, run.specId), size = spec.sizes.find(s => s.nps === run.nps)
+  const spec = getSpec(doc, run.specId), size = runPipeSize(doc, run)
   const type = WELD_TYPE[weld.type]
   // A pipe-to-pipe weld, a pipe into a fitting, or two fittings welded straight together.
   const far = run.from === node.id ? run.to : run.from

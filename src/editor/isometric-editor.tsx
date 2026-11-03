@@ -77,6 +77,8 @@ import {
   styleOf,
   resizeRun,
   resizeRunToCut,
+  scheduleChoices,
+  scheduleKey,
   sub,
   takeout,
   validateIso,
@@ -352,6 +354,8 @@ export function IsometricEditor({
     [spec, setSpec] = useState(""),
     [nps, setNps] = useState(0);
   const [routingPrep, setRoutingPrep] = useState<EndPrep>("BW");
+  /** The schedule pipes are routed in when it is not the specification's for the size ("" for the specification's). */
+  const [routingSchedule, setRoutingSchedule] = useState("");
   const [span, setSpan] = useState(""),
     [spool, setSpool] = useState("SP-001"),
     [line, setLine] = useState(""),
@@ -439,11 +443,15 @@ export function IsometricEditor({
     commit((d) => { d.grid = { ...(d.grid ?? defaultGrid()), spacing }; });
   };
   // Routing from a connection keeps its end preparation (an olet's socket, say) rather than the size's default.
-  const connectionPrep = useRef<{ prep: EndPrep; spec: string; nps: number; fixed?: boolean } | null>(null);
-  /** The end preparation routing starts with; `fixed` keeps it at any size (an olet's socket or thread). */
-  const routeWith = (prep: EndPrep, specId: string, size: number, fixed = false) => {
-    connectionPrep.current = { prep, spec: specId, nps: size, fixed };
+  const connectionPrep = useRef<{ prep: EndPrep; spec: string; nps: number; fixed?: boolean; schedule?: string } | null>(null);
+  /**
+   * The end preparation (and schedule) routing starts with; `fixed` keeps the preparation at any size (an olet's
+   * socket or thread). Both hold until the size or the specification changes.
+   */
+  const routeWith = (prep: EndPrep, specId: string, size: number, fixed = false, schedule = "") => {
+    connectionPrep.current = { prep, spec: specId, nps: size, fixed, schedule };
     setRoutingPrep(prep);
+    setRoutingSchedule(schedule);
   };
   useEffect(() => {
     if (!ready || !activeSpec) return;
@@ -451,6 +459,7 @@ export function IsometricEditor({
     if (!activeSizes.sizes.includes(nps)) setNps(activeSizes.listed ? defaultNps(activeSpec) : activeSizes.sizes.includes(2) ? 2 : activeSizes.sizes[0] ?? 2);
     const kept = connectionPrep.current;
     setRoutingPrep(kept && kept.spec === spec && (kept.nps === nps || kept.fixed) ? kept.prep : defaultEndPrep(activeSpec, nps));
+    setRoutingSchedule(kept && kept.spec === spec && kept.nps === nps && kept.schedule && scheduleChoices(activeSpec, nps).includes(kept.schedule) ? kept.schedule : "");
   }, [spec, activeSpec, activeSizes, nps, ready]);
 
   const target: SaveTarget = saveTarget ?? (chrome === "embedded" ? "host" : onSaveFile ? "disk" : "browser");
@@ -504,6 +513,7 @@ export function IsometricEditor({
     setPending(null);
     setSpan(lengthInputValue(DEFAULT_ROUTE_BLOCKS * defaultBlockSpacing(loaded.units), loaded.units));
     setSpool(loaded.runs[0]?.spool ?? "SP-001");
+    setBlankSheets([]);
     showHome();
     viewHistory.current = [];
   };
@@ -636,15 +646,22 @@ export function IsometricEditor({
   // A Pipe-tool click routes on only from a start the user chose: the connection they picked, the end they just
   // routed to, or a pending start. The last open end left over from opening, undo or delete is not one.
   const routing = !!pending || (!!startNode && primary === start);
-  const spools = useMemo(() => [...new Set([...doc.runs.map((r) => r.spool), spool])].sort(), [doc.runs, spool]);
+  // Sheets started with New sheet and not drawn on yet: kept in the sheet list until drawn on, so switching to another
+  // sheet and back neither loses one nor skips its number.
+  const [blankSheets, setBlankSheets] = useState<string[]>([]);
+  const sheetList = useMemo(() => [...new Set([...doc.runs.map((r) => r.spool), ...blankSheets])], [doc.runs, blankSheets]);
+  const spools = useMemo(() => [...new Set([...sheetList, spool])].sort(), [sheetList, spool]);
   /** A new sheet: the next spool, shown on its own blank sheet; the next pipe drawn starts it. */
   const newSpool = () => {
-    const next = nextSpool(spools);
+    // A blank sheet already started is opened again; otherwise the next number after the drawn and blank sheets.
+    const blank = sheetList.find((s) => !doc.runs.some((r) => r.spool === s));
+    const next = blank ?? nextSpool(sheetList.length ? sheetList : [spool]);
+    setBlankSheets((b) => (b.includes(next) ? b : [...b, next]));
     setSpool(next);
     setStart("");
     setSelection([]);
     setPending(null);
-    if (doc.runs.length) setFilter(next);
+    if (doc.runs.length || sheetList.length > 1) setFilter(next);
     activateTool("pipe");
     setNotice({ text: `New sheet ${next} · click the paper to start its first pipe, or pick an open end to continue onto it` });
   };
@@ -963,7 +980,7 @@ export function IsometricEditor({
       setLine(run.line);
       setSpec(run.specId);
       setNps(run.nps);
-      routeWith(prepAt(run, run.from === key ? 0 : 1), run.specId, run.nps);
+      routeWith(prepAt(run, run.from === key ? 0 : 1), run.specId, run.nps, false, run.schedule ?? "");
     } else if (host && node?.kind === "olet") {
       // An olet's branch is routed at the olet's size, with its socket, thread or butt weld.
       const size = oletBranchSize(d, node) ?? nodeItem(d, node)?.nps ?? host.nps;
@@ -1062,8 +1079,9 @@ export function IsometricEditor({
       const problem = from && routeError(d, from, delta);
       if (problem) throw new Error(problem);
       // Straight on from an open end at the same size, the pipe lengthens: there is no joint to weld.
-      const extended = from && !pend ? extendRun(d, from, delta, { specId: activeSpec.id, nps, spool, line, prep: routingPrep }) : null;
+      const extended = from && !pend ? extendRun(d, from, delta, { specId: activeSpec.id, nps, spool, line, prep: routingPrep, schedule: routingSchedule }) : null;
       const node = extended ? getNode(d, from!) : appendRun(d, from, delta, activeSpec.id, nps, spool, line, routingPrep);
+      if (!extended && routingSchedule) d.runs.at(-1)!.schedule = routingSchedule;
       // An olet takes the row for the branch actually routed from it (header by branch size).
       if (from && !extended) fitOletToBranch(d, from);
       // Routed on at another size, the line gets a reducer at the joint; it carries its flow on.
@@ -1124,8 +1142,7 @@ export function IsometricEditor({
       if (!p || n.kind !== "end" || n.associatedRunId || connected(doc, id).length !== 1) return [];
       const q = toClient(p), a = drawing.positions.get(end === 0 ? run.to : run.from), ta = a && toClient(a), span = ta ? Math.hypot(ta[0] - q[0], ta[1] - q[1]) : 0;
       const distance = Math.hypot(q[0] - clientX, q[1] - clientY);
-      // An elbow goes on the end only when clicked at it: further along the pipe it puts in an offset.
-      return distance <= (turnType(type) ? END_SNAP_PX : Math.max(END_SNAP_PX, span * 0.2)) ? [{ end, distance }] : [];
+      return distance <= Math.max(END_SNAP_PX, span * 0.2) ? [{ end, distance }] : [];
     });
     const nearest = ends.sort((x, y) => x.distance - y.distance)[0];
     return nearest ? { ...hit, end: nearest.end, fraction: nearest.end } : hit;
@@ -1224,7 +1241,7 @@ export function IsometricEditor({
     setLine(run.line);
     setSpec(run.specId);
     setNps(run.nps);
-    routeWith(prepAt(run, 0), run.specId, run.nps);
+    routeWith(prepAt(run, 0), run.specId, run.nps, false, run.schedule ?? "");
     setError("");
     setArmed(null);
     setTool("pipe");
@@ -1298,16 +1315,20 @@ export function IsometricEditor({
     const p = sheetAt(clientX, clientY), snap = transient.get().snap;
     return pickFor(p, snap, from ?? gridOrigin, !!from && grid.ortho !== false);
   };
+  /** Measuring on not-to-scale paper: points off the work are lattice picks from the first point. */
+  const measureAlongLattice = surface === "paper" && sheetStyle.layout === "schematic";
   const measureText = (a: Vec3, b: Vec3) =>
     `${offsetText(a, b, doc.units)}  ·  from ${coordinateText(doc, a).join(" ")} to ${coordinateText(doc, b).join(" ")}`;
   const measureClick = (clientX: number, clientY: number) => {
     try {
       // On a not-to-scale sheet the paper between pipes stands for no plant point: measure between points on the work.
-      const snapped = transient.get().snap;
-      if (!snapped && surface === "paper" && sheetStyle.layout === "schematic")
-        return setError("This sheet is not to scale, so open paper has no true position. Click a pipe end, fitting, face or pipe (the snap marker shows where).");
+      const snapped = transient.get().snap, second = !!measure && !measure.to;
+      // Open paper has no true position on a not-to-scale sheet: the first point is on the work, and a second point
+      // off it is taken as the Pipe tool would route there from the first.
+      if (!snapped && !second && measureAlongLattice)
+        return setError("This sheet is not to scale, so open paper has no true position. Click a pipe end, fitting, face or pipe first (the snap marker shows where); the second point can be on open paper.");
       const p = sheetAt(clientX, clientY);
-      const at = pickFor(p, snapped, measure && !measure.to ? measure.from : gridOrigin, false);
+      const at = pickFor(p, snapped, second ? measure!.from : gridOrigin, second && measureAlongLattice);
       if (!measure || measure.to) setMeasure({ from: at });
       else {
         setMeasure({ from: measure.from, to: at });
@@ -1374,7 +1395,12 @@ export function IsometricEditor({
       // An elbow on an open end turns it, with its outlet left open; on a straight it rolls in an offset. A lateral
       // branches the straight at 45°. Direction, offset and roll come from the ribbon.
       const angle: 45 | 90 = armed.type.kind === "elbow90" ? 90 : 45;
-      const raw = insertionTarget(clientX, clientY, owner ?? ""), hit = raw && endward(raw, armed.type, clientX, clientY);
+      // The open end's own marker clicked: the elbow goes on that end of its pipe.
+      const endId = node ?? (owner && doc.nodes.some((n) => n.id === owner) ? owner : undefined), endAt = endId ? getNode(doc, endId) : undefined;
+      const endRuns = endAt && endAt.kind === "end" && !endAt.associatedRunId ? connected(doc, endAt.id) : [];
+      const onEnd: PipeHit | null = turnType(armed.type) && endRuns.length === 1 && !endRuns[0].connector
+        ? { runId: endRuns[0].id, end: endRuns[0].from === endAt!.id ? 0 : 1, fraction: endRuns[0].from === endAt!.id ? 0 : 1, distance: 0 } : null;
+      const raw = onEnd ?? insertionTarget(clientX, clientY, owner ?? ""), hit = raw && (onEnd ?? endward(raw, armed.type, clientX, clientY));
       if (!hit) return setError(lateralType(armed.type) ? "Click a straight pipe where the lateral branches off." : "Click an open pipe end to turn it, or a straight pipe to put an offset in.");
       try {
         const toward = DIRECTIONS.find((x) => x.name === offset45.toward)!.vector;
@@ -1569,6 +1595,9 @@ export function IsometricEditor({
       setStart(lastOpenEnd(next));
       setSelection([]);
       setSelectedLabel(null);
+      setBlankSheets([]);
+      setSpool(next.runs[0]?.spool ?? "SP-001");
+      setFilter("");
       showHome();
       if (result.warnings.length) showWarnings(file.name, result.warnings, "imported");
       else setNotice({ text: `Imported ${file.name}: ${next.runs.length} pipes, ${next.nodes.length} connections.` });
@@ -2340,8 +2369,9 @@ export function IsometricEditor({
       patch.insertHover = branch && snapHit(branch);
       try {
         const from = tool === "pipe" ? anchor : tool === "measure" ? (measure && !measure.to ? measure.from : gridOrigin) : transform?.base ?? gridOrigin;
-        // Measure takes the true distance between its points: it is never held to one axis.
-        const ortho = tool === "pipe" ? routing && grid.ortho !== false : tool === "measure" ? false : !!transform?.base && grid.ortho !== false;
+        // Measure takes the true distance between its points; off the work on a not-to-scale sheet, along the paper's
+        // directions from the first point, as a pipe would be routed there.
+        const ortho = tool === "pipe" ? routing && grid.ortho !== false : tool === "measure" ? !!measure && !measure.to && measureAlongLattice : !!transform?.base && grid.ortho !== false;
         patch.cursor = pickFor(p, snap, from, ortho);
         lastPickError.current = "";
       } catch (err) {
@@ -2693,6 +2723,19 @@ export function IsometricEditor({
                   title={'Feet and inches or millimetres, for example 10\', 2\' 3 1/2", 12 in, or 1000 mm.'} onChange={(e) => setSpan(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Escape") e.currentTarget.blur(); }} />
               </RibbonField>
+              {activeSpec && scheduleChoices(activeSpec, nps).length > 0 && (() => {
+                const own = activeSpec.sizes.find((z) => z.nps === nps)?.schedule || activeSpec.schedule;
+                return (
+                  <RibbonField label="Schedule">
+                    <select aria-label="Routing pipe schedule" value={routingSchedule}
+                      title="Pipe heavier or lighter than the specification's at this size; kept until you change it, the size or the specification"
+                      onChange={(e) => routeWith(routingPrep, activeSpec.id, nps, connectionPrep.current?.fixed, e.target.value)}>
+                      <option value="">{`Spec · ${scheduleText(own)}`}</option>
+                      {scheduleChoices(activeSpec, nps).filter((c) => scheduleKey(c) !== scheduleKey(own)).map((c) => <option key={c} value={c}>{scheduleText(c)}</option>)}
+                    </select>
+                  </RibbonField>
+                );
+              })()}
               <RibbonField label="Preparation">
                 <select aria-label="Routing end preparation" value={routingPrep}
                   title="Kept for every pipe routed until you change it, the size or the specification"
@@ -2863,9 +2906,10 @@ export function IsometricEditor({
                   onChange={(e) => commit((d) => { d.style = { ...styleOf(d), layout: e.target.value as "scale" | "schematic" }; })}>
                   {SCALES.map((s) => <option key={s.value} value={s.value} title={s.title}>{s.label}</option>)}
                 </select>
-                <select aria-label="Visible spool" value={filter} title="Each spool is issued on a sheet of its own" onChange={(e) => setFilter(e.target.value)}>
+                <select aria-label="Visible spool" value={filter} title="Each spool is issued on a sheet of its own"
+                  onChange={(e) => { setFilter(e.target.value); if (e.target.value) setSpool(e.target.value); }}>
                   <option value="">All sheets</option>
-                  {[...new Set([...doc.runs.map((r) => r.spool), ...(filter ? [filter] : [])])].map((s, i) => <option key={s} value={s}>{`Sheet ${i + 1} · ${s}`}</option>)}
+                  {[...new Set([...sheetList, ...(filter ? [filter] : [])])].map((s, i) => <option key={s} value={s}>{`Sheet ${i + 1} · ${s}${doc.runs.some((r) => r.spool === s) ? "" : " (empty)"}`}</option>)}
                 </select>
                 {sheetKinds.length > 1 && (
                   <select aria-label="Sheet" value={shownSheet} title="This spool is issued on more than one sheet: its drawing, then its material list"
